@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+.python-version
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+media/
+staticfiles/
+static_collected/
+
+# Environment files
+!.env
+.env.*
+!.env.example
+
+# Vim / editor temporary files
+*.swp
+*.swo
+*.swn
+*.bak
+*~
+.vscode/
+.idea/
+
+# Celery
+celerybeat-schedule
+celerybeat-schedule.*
+*.pid
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# PostgreSQL / database dumps
+*.sql
+*.dump
+*.backup
+
+# Test / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+.cache/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# OS files
+.DS_Store
+Thumbs.db
