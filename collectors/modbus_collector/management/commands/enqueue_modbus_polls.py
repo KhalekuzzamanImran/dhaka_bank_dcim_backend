@@ -1,0 +1,13 @@
+from django.core.management.base import BaseCommand
+from collectors.modbus_collector.tasks import enqueue_due_modbus_polls
+
+
+class Command(BaseCommand):
+    help = "Enqueue due Modbus polls using Celery."
+
+    def add_arguments(self, parser):
+        parser.add_argument("--limit", type=int, default=100)
+
+    def handle(self, *args, **options):
+        result = enqueue_due_modbus_polls.delay(limit=options["limit"])
+        self.stdout.write(self.style.SUCCESS(f"Submitted enqueue task {result.id}"))

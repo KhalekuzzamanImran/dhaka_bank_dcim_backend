@@ -1,0 +1,103 @@
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_DB: dcim
+      POSTGRES_USER: dcim
+      POSTGRES_PASSWORD: dcim
+    ports: ['5432:5432']
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U dcim -d dcim']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports: ['6379:6379']
+
+  api:
+    build: .
+    command: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 4 --timeout 120
+    env_file: .env
+    ports: ['8000:8000']
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_started}
+    volumes: ['.:/app']
+
+  scheduler-worker:
+    build: .
+    command: celery -A config worker -l info -Q scheduler --concurrency=1 --hostname=scheduler@%h
+    env_file: .env
+    depends_on: [api, redis]
+    volumes: ['.:/app']
+
+  snmp-worker-1:
+    build: .
+    command: celery -A config worker -l info -Q snmp_high,snmp_normal,snmp_low --concurrency=6 --hostname=snmp1@%h
+    env_file: .env
+    depends_on: [api, redis]
+    volumes: ['.:/app']
+
+  snmp-worker-2:
+    build: .
+    command: celery -A config worker -l info -Q snmp_high,snmp_normal,snmp_low --concurrency=6 --hostname=snmp2@%h
+    env_file: .env
+    depends_on: [api, redis]
+    volumes: ['.:/app']
+
+  modbus-worker-1:
+    build: .
+    command: celery -A config worker -l info -Q modbus_high,modbus_normal,modbus_low --concurrency=4 --hostname=modbus1@%h
+    env_file: .env
+    depends_on: [api, redis]
+    volumes: ['.:/app']
+
+  modbus-worker-2:
+    build: .
+    command: celery -A config worker -l info -Q modbus_high,modbus_normal,modbus_low --concurrency=4 --hostname=modbus2@%h
+    env_file: .env
+    depends_on: [api, redis]
+    volumes: ['.:/app']
+
+  trap-receiver:
+    build: .
+    command: python -m collectors.snmp_trap_receiver.receiver
+    ports:
+      - '162:1162/udp'
+    env_file: .env
+    depends_on: [redis]
+    volumes: ['.:/app']
+
+  trap-processor-worker:
+    build: .
+    command: celery -A config worker -l info -Q traps --concurrency=4 --hostname=traps@%h
+    env_file: .env
+    depends_on: [api, redis]
+    volumes: ['.:/app']
+
+  alert-worker:
+    build: .
+    command: celery -A config worker -l info -Q alerts --concurrency=4 --hostname=alerts@%h
+    env_file: .env
+    depends_on: [api, redis]
+    volumes: ['.:/app']
+
+  report-worker:
+    build: .
+    command: celery -A config worker -l info -Q reports --concurrency=1 --hostname=reports@%h
+    env_file: .env
+    depends_on: [api, redis]
+    volumes: ['.:/app']
+
+  beat:
+    build: .
+    command: celery -A config beat -l info
+    env_file: .env
+    depends_on: [api, redis]
+    volumes: ['.:/app']
+
+volumes:
+  postgres_data:
