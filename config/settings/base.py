@@ -14,6 +14,7 @@ DJANGO_APPS = [
 ]
 THIRD_PARTY_APPS = [
     'rest_framework', 'rest_framework_simplejwt', 'django_filters', 'corsheaders', 'drf_spectacular',
+    'drf_spectacular_sidecar',
 ]
 LOCAL_APPS = [
     'apps.common', 'apps.accounts', 'apps.organizations', 'apps.access_control', 'apps.datacenters',
@@ -78,14 +79,16 @@ SPECTACULAR_SETTINGS = {
     'DESCRIPTION': 'Production-grade DCIM backend API for bank data center infrastructure management.',
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
+    'SWAGGER_UI_DIST': 'SIDECAR',
+    'SWAGGER_UI_FAVICON_HREF': 'SIDECAR',
 }
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'Asia/Dhaka'
 USE_I18N = True
 USE_TZ = True
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
-MEDIA_URL = 'media/'
+MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOWED_ORIGINS = [o.strip() for o in config('CORS_ALLOWED_ORIGINS', default='http://localhost:3000,http://localhost:5173').split(',') if o.strip()]

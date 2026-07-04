@@ -29,4 +29,4 @@ class UserSerializer(serializers.ModelSerializer):
 
 class MeSerializer(UserSerializer):
     class Meta(UserSerializer.Meta):
-        read_only_fields = UserSerializer.Meta.read_only_fields + ['is_active','is_staff']
+        read_only_fields = tuple(UserSerializer.Meta.read_only_fields) + ('is_active', 'is_staff')
