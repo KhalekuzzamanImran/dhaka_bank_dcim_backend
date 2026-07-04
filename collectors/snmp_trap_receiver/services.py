@@ -5,6 +5,7 @@ from apps.alerts.models import AlertEvent
 from apps.devices.models import Device
 from apps.telemetry.models import DeviceEvent
 from apps.traps.models import SNMPTrapEvent, SNMPTrapOIDMapping, SNMPTrapSource
+from .pac_alarm_handler import is_pac_confirmation_trap, is_pac_device
 
 
 @transaction.atomic
@@ -56,6 +57,7 @@ def process_snmp_trap(*, source_ip, trap_oid, raw_varbinds):
     )
 
     if device and mapping:
+        is_pac_confirmation = is_pac_device(device) and is_pac_confirmation_trap(mapping.event_code)
         DeviceEvent.objects.create(
             organization=device.organization,
             data_center=device.data_center,
@@ -67,7 +69,9 @@ def process_snmp_trap(*, source_ip, trap_oid, raw_varbinds):
             occurred_at=received_at,
             raw_payload=raw_varbinds or {},
         )
-        if mapping.create_alert:
+        # PAC trap codes only tell us something changed. The confirmation task polls
+        # the alarm OIDs immediately so we can persist the exact alarm state.
+        if mapping.create_alert and not is_pac_confirmation:
             AlertEvent.objects.create(
                 organization=device.organization,
                 data_center=device.data_center,
@@ -78,5 +82,15 @@ def process_snmp_trap(*, source_ip, trap_oid, raw_varbinds):
                 status="OPEN",
                 message=message,
                 triggered_at=received_at,
+            )
+        if is_pac_confirmation:
+            from .tasks import process_pac_trap_alarm_confirmation_task
+
+            transaction.on_commit(
+                lambda: process_pac_trap_alarm_confirmation_task.delay(
+                    device_id=str(device.pk),
+                    trap_event_id=str(event.pk),
+                    event_code=mapping.event_code,
+                )
             )
     return event
