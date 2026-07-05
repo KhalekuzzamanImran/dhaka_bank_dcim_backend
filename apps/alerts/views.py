@@ -6,8 +6,10 @@ from apps.common.audit import write_audit
 from .models import AlertRule, AlertEvent, AlertStatus
 from .serializers import AlertRuleSerializer, AlertEventSerializer
 class AlertRuleViewSet(ScopedModelViewSet):
+    access_scope = 'mixed'
     queryset = AlertRule.objects.select_related('organization','data_center','device_type','device','metric').all(); serializer_class = AlertRuleSerializer; permission_module = 'alert'; audit_resource_type = 'AlertRule'; filterset_fields = ['organization','data_center','device_type','device','metric','severity','is_active']
 class AlertEventViewSet(ScopedModelViewSet):
+    access_scope = 'mixed'
     queryset = AlertEvent.objects.select_related('organization','data_center','device','metric','alert_rule').all().order_by('-triggered_at'); serializer_class = AlertEventSerializer; permission_module = 'alert'; audit_resource_type = 'AlertEvent'; filterset_fields = ['organization','data_center','device','metric','severity','status']; search_fields = ['message']
     @action(detail=True, methods=['post'])
     def acknowledge(self, request, pk=None):

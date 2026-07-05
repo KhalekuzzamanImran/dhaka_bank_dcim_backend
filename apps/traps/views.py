@@ -4,6 +4,7 @@ from .serializers import SNMPTrapSourceSerializer, SNMPTrapOIDMappingSerializer,
 
 
 class SNMPTrapSourceViewSet(ScopedModelViewSet):
+    access_scope = "device"
     queryset = SNMPTrapSource.objects.select_related("organization", "data_center", "device").all()
     serializer_class = SNMPTrapSourceSerializer
     permission_module = "traps"
@@ -22,6 +23,7 @@ class SNMPTrapOIDMappingViewSet(AuditModelViewSet):
 
 
 class SNMPTrapEventViewSet(ScopedModelViewSet):
+    access_scope = "device"
     queryset = SNMPTrapEvent.objects.select_related("organization", "data_center", "device").all()
     serializer_class = SNMPTrapEventSerializer
     permission_module = "traps"

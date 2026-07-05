@@ -4,7 +4,7 @@ from apps.organizations.models import Organization
 from apps.datacenters.models import DataCenter, Room, Row, Rack
 from apps.devices.models import DeviceType, DeviceCategory, Vendor, DeviceModel, Device, DeviceProtocolConfig, DeviceCredential, PollingProfile, DevicePollingConfig, ProtocolType, SNMPVersion, SNMPOIDMapping, ModbusRegisterMapping
 from apps.telemetry.models import MetricDefinition, MetricCategory, MetricDataType
-from apps.access_control.models import Role, Permission, RolePermission, UserDataCenterRole, RoleScope
+from apps.access_control.models import Role, Permission, RolePermission, RoleScope, UserResourceAccess
 from collectors.snmp_collector.security import encrypt_secret
 from apps.traps.models import SNMPTrapSource, SNMPTrapOIDMapping
 from django.utils import timezone
@@ -12,6 +12,8 @@ from django.utils import timezone
 PERMISSIONS = [
     'organization.view','organization.create','organization.update','organization.delete',
     'datacenter.view','datacenter.create','datacenter.update','datacenter.delete',
+    'room.view','room.create','room.update','room.delete',
+    'rack.view','rack.create','rack.update','rack.delete',
     'device.view','device.create','device.update','device.delete','device.credential.manage',
     'telemetry.view','telemetry.create','telemetry.export',
     'alert.view','alert.create','alert.update','alert.delete','alert.acknowledge','alert.resolve',
@@ -20,6 +22,8 @@ PERMISSIONS = [
     'dashboard.view','dashboard.create','dashboard.update','dashboard.delete',
     'maintenance.view','maintenance.create','maintenance.update','maintenance.delete',
     'notification.view','notification.create','notification.update','notification.delete',
+    'trap.view',
+    'access.view','access.manage',
     'audit.view',
 ]
 METRICS = [
@@ -45,25 +49,113 @@ class Command(BaseCommand):
         dc, _ = DataCenter.objects.get_or_create(organization=org, code='PDC', defaults={'name':'Primary Data Center','city':'Dhaka','country':'Bangladesh','status':'ACTIVE'})
         room, _ = Room.objects.get_or_create(data_center=dc, code='SR-01', defaults={'name':'Server Room 01','room_type':'SERVER_ROOM','floor_name':'1st Floor'})
         row, _ = Row.objects.get_or_create(data_center=dc, room=room, code='ROW-A', defaults={'name':'Row A','position_x':1,'position_y':1})
-        rack, _ = Rack.objects.get_or_create(data_center=dc, room=room, row=row, code='RACK-01', defaults={'name':'Rack 01','rack_u_height':42,'status':'ACTIVE','position_in_row':1})
+        rack, _ = Rack.objects.get_or_create(data_center=dc, code='RACK-01', defaults={'room':room,'row':row,'name':'Rack 01','rack_u_height':42,'status':'ACTIVE','position_in_row':1})
         for code in PERMISSIONS:
             module = code.split('.')[0]
             Permission.objects.get_or_create(code=code, defaults={'module':module, 'description':code})
-        bank_admin, _ = Role.objects.get_or_create(code='BANK_ADMIN', defaults={'name':'Bank Admin','scope':RoleScope.ORGANIZATION,'status':'ACTIVE'})
-        dc_admin, _ = Role.objects.get_or_create(code='DATA_CENTER_ADMIN', defaults={'name':'Data Center Admin','scope':RoleScope.DATA_CENTER,'status':'ACTIVE'})
-        viewer, _ = Role.objects.get_or_create(code='VIEWER', defaults={'name':'Viewer','scope':RoleScope.DATA_CENTER,'status':'ACTIVE'})
-        for p in Permission.objects.all():
-            RolePermission.objects.get_or_create(role=bank_admin, permission=p)
-            RolePermission.objects.get_or_create(role=dc_admin, permission=p)
-        for p in Permission.objects.filter(code__endswith='.view'):
-            RolePermission.objects.get_or_create(role=viewer, permission=p)
-        UserDataCenterRole.objects.get_or_create(user=admin, organization=org, data_center=None, role=bank_admin, defaults={'assigned_by':admin,'is_active':True})
+        roles = {
+            'SUPER_ADMIN': Role.objects.update_or_create(code='SUPER_ADMIN', defaults={'name':'Super Admin','scope':RoleScope.GLOBAL,'status':'ACTIVE'})[0],
+            'BANK_ADMIN': Role.objects.update_or_create(code='BANK_ADMIN', defaults={'name':'Bank Admin','scope':RoleScope.ORGANIZATION,'status':'ACTIVE'})[0],
+            'DATA_CENTER_ADMIN': Role.objects.update_or_create(code='DATA_CENTER_ADMIN', defaults={'name':'Data Center Admin','scope':RoleScope.DATA_CENTER,'status':'ACTIVE'})[0],
+            'ROOM_ADMIN': Role.objects.update_or_create(code='ROOM_ADMIN', defaults={'name':'Room Admin','scope':RoleScope.ROOM,'status':'ACTIVE'})[0],
+            'RACK_ADMIN': Role.objects.update_or_create(code='RACK_ADMIN', defaults={'name':'Rack Admin','scope':RoleScope.RACK,'status':'ACTIVE'})[0],
+            'DEVICE_ADMIN': Role.objects.update_or_create(code='DEVICE_ADMIN', defaults={'name':'Device Admin','scope':RoleScope.DEVICE,'status':'ACTIVE'})[0],
+            'VIEWER': Role.objects.update_or_create(code='VIEWER', defaults={'name':'Viewer','scope':RoleScope.DATA_CENTER,'status':'ACTIVE'})[0],
+        }
+        all_permission_codes = list(PERMISSIONS)
+        if not all_permission_codes:
+            all_permission_codes = [p.code for p in Permission.objects.all()]
+        code_map = {p.code: p for p in Permission.objects.all()}
+        for code in all_permission_codes:
+            perm = code_map.get(code)
+            if perm is None:
+                perm = Permission.objects.create(code=code, module=code.split('.')[0], description=code)
+                code_map[code] = perm
+            else:
+                Permission.objects.update_or_create(code=code, defaults={'module': code.split('.')[0], 'description': code})
+        permission_qs = Permission.objects.all()
+        role_permissions = {
+            'SUPER_ADMIN': permission_qs,
+            'BANK_ADMIN': permission_qs.filter(code__in=[
+                'organization.view','organization.create','organization.update','organization.delete',
+                'datacenter.view','datacenter.create','datacenter.update','datacenter.delete',
+                'room.view','room.create','room.update','room.delete',
+                'rack.view','rack.create','rack.update','rack.delete',
+                'device.view','device.create','device.update','device.delete','device.credential.manage',
+                'telemetry.view','telemetry.export',
+                'alert.view','alert.acknowledge','alert.resolve',
+                'trap.view',
+                'notification.view',
+                'report.view','report.create','report.update','report.delete','report.generate','report.download',
+                'maintenance.view','maintenance.create','maintenance.update','maintenance.delete',
+                'audit.view',
+                'user.view','user.create','user.update','user.delete','user.assign_role',
+                'access.view','access.manage',
+                'dashboard.view','dashboard.create','dashboard.update','dashboard.delete',
+            ]),
+            'DATA_CENTER_ADMIN': permission_qs.filter(code__in=[
+                'datacenter.view',
+                'room.view','room.create','room.update',
+                'rack.view','rack.create','rack.update',
+                'device.view','device.create','device.update',
+                'telemetry.view','telemetry.export',
+                'alert.view','alert.acknowledge','alert.resolve',
+                'trap.view',
+                'notification.view',
+                'report.view','report.generate','report.download',
+                'maintenance.view','maintenance.create','maintenance.update',
+                'audit.view',
+            ]),
+            'ROOM_ADMIN': permission_qs.filter(code__in=[
+                'room.view',
+                'rack.view','rack.create','rack.update',
+                'device.view','device.create','device.update',
+                'telemetry.view',
+                'alert.view','alert.acknowledge','alert.resolve',
+                'trap.view',
+                'notification.view',
+                'report.view',
+                'maintenance.view','maintenance.create','maintenance.update',
+            ]),
+            'RACK_ADMIN': permission_qs.filter(code__in=[
+                'rack.view',
+                'device.view','device.update',
+                'telemetry.view',
+                'alert.view','alert.acknowledge',
+                'trap.view',
+                'notification.view',
+                'maintenance.view','maintenance.create','maintenance.update',
+            ]),
+            'DEVICE_ADMIN': permission_qs.filter(code__in=[
+                'device.view','device.update',
+                'telemetry.view',
+                'alert.view','alert.acknowledge',
+                'trap.view',
+                'notification.view',
+                'maintenance.view','maintenance.create','maintenance.update',
+            ]),
+            'VIEWER': permission_qs.filter(code__endswith='.view'),
+        }
+        for role_code, perms in role_permissions.items():
+            role = roles[role_code]
+            for p in perms:
+                RolePermission.objects.update_or_create(role=role, permission=p)
+        UserResourceAccess.objects.update_or_create(
+            user=admin,
+            organization=None,
+            data_center=None,
+            room=None,
+            rack=None,
+            device=None,
+            role=roles['SUPER_ADMIN'],
+            defaults={'assigned_by':admin,'is_active':True},
+        )
         for name, cat in [('UPS',DeviceCategory.POWER),('PAC',DeviceCategory.COOLING),('ATS',DeviceCategory.POWER),('PDU',DeviceCategory.POWER),('AVR',DeviceCategory.POWER),('Temperature Sensor',DeviceCategory.ENVIRONMENT),('Water Leak Sensor',DeviceCategory.ENVIRONMENT)]:
             DeviceType.objects.get_or_create(code=name.upper().replace(' ','_'), defaults={'name':name,'category':cat})
         vendor, _ = Vendor.objects.get_or_create(code='GENERIC', defaults={'name':'Generic Vendor'})
         ups_type = DeviceType.objects.get(code='UPS')
         model, _ = DeviceModel.objects.get_or_create(vendor=vendor, device_type=ups_type, model_number='GENERIC-UPS', defaults={'name':'Generic UPS'})
-        device, _ = Device.objects.get_or_create(organization=org, data_center=dc, room=room, rack=rack, device_type=ups_type, device_model=model, code='UPS-01', defaults={'name':'UPS 01','ip_address':'10.10.10.10','status':'UNKNOWN'})
+        device, _ = Device.objects.get_or_create(data_center=dc, code='UPS-01', defaults={'organization':org,'room':room,'rack':rack,'device_type':ups_type,'device_model':model,'name':'UPS 01','ip_address':'10.10.10.10','status':'UNKNOWN'})
         for code,name,cat,dtype,unit in METRICS:
             MetricDefinition.objects.get_or_create(code=code, defaults={'name':name,'category':cat,'data_type':dtype,'unit':unit,'is_active':True})
 
@@ -93,7 +185,7 @@ class Command(BaseCommand):
         # Production Modbus worker baseline sample meter.
         meter_type, _ = DeviceType.objects.get_or_create(code='ENERGY_METER', defaults={'name':'Energy Meter','category':DeviceCategory.POWER})
         meter_model, _ = DeviceModel.objects.get_or_create(vendor=vendor, device_type=meter_type, model_number='GENERIC-METER', defaults={'name':'Generic Energy Meter'})
-        meter, _ = Device.objects.get_or_create(organization=org, data_center=dc, room=room, rack=rack, device_type=meter_type, device_model=meter_model, code='METER-01', defaults={'name':'Energy Meter 01','ip_address':'10.10.10.20','status':'UNKNOWN'})
+        meter, _ = Device.objects.get_or_create(data_center=dc, code='METER-01', defaults={'organization':org,'room':room,'rack':rack,'device_type':meter_type,'device_model':meter_model,'name':'Energy Meter 01','ip_address':'10.10.10.20','status':'UNKNOWN'})
         modbus_profile, _ = PollingProfile.objects.get_or_create(name='Modbus Normal 60s', protocol=ProtocolType.MODBUS_TCP, defaults={'interval_seconds':60,'timeout_seconds':5,'retry_count':2,'stale_after_seconds':180,'is_active':True})
         DeviceProtocolConfig.objects.update_or_create(device=meter, protocol=ProtocolType.MODBUS_TCP, host=meter.ip_address or '10.10.10.20', port=502, defaults={'timeout_seconds':5,'retry_count':2,'is_primary':True,'is_enabled':True})
         DevicePollingConfig.objects.update_or_create(device=meter, defaults={'polling_profile':modbus_profile,'is_enabled':True,'next_poll_at':timezone.now()})

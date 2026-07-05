@@ -4,17 +4,20 @@ from .serializers import DataCenterSerializer, RoomSerializer, RowSerializer, Ra
 
 
 class DataCenterViewSet(ScopedModelViewSet):
+    access_scope = 'data_center'
+    data_center_field = 'id'
     queryset = DataCenter.objects.select_related('organization').all()
     serializer_class = DataCenterSerializer
     permission_module = 'datacenter'
     audit_resource_type = 'DataCenter'
-    data_center_field = 'id'
     filterset_fields = ['organization', 'status']
     search_fields = ['name', 'code', 'city', 'address']
     ordering_fields = ['name', 'code', 'created_at']
 
 
 class RoomViewSet(ScopedModelViewSet):
+    access_scope = 'room'
+    room_field = 'id'
     queryset = Room.objects.select_related('data_center').all()
     serializer_class = RoomSerializer
     permission_module = 'datacenter'
@@ -24,6 +27,7 @@ class RoomViewSet(ScopedModelViewSet):
 
 
 class RowViewSet(ScopedModelViewSet):
+    access_scope = 'room'
     queryset = Row.objects.select_related('data_center', 'room').all()
     serializer_class = RowSerializer
     permission_module = 'datacenter'
@@ -33,6 +37,8 @@ class RowViewSet(ScopedModelViewSet):
 
 
 class RackViewSet(ScopedModelViewSet):
+    access_scope = 'rack'
+    rack_field = 'id'
     queryset = Rack.objects.select_related('data_center', 'room', 'row').all()
     serializer_class = RackSerializer
     permission_module = 'datacenter'

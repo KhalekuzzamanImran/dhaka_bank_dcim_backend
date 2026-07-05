@@ -9,6 +9,7 @@ from .services import ingest_points
 class MetricDefinitionViewSet(AuditModelViewSet):
     queryset = MetricDefinition.objects.all(); serializer_class = MetricDefinitionSerializer; permission_module = 'telemetry'; audit_resource_type = 'MetricDefinition'; filterset_fields = ['category','data_type','is_active']; search_fields = ['code','name','unit']
 class TelemetryPointViewSet(ScopedModelViewSet):
+    access_scope = 'device'
     http_method_names = ['get','head','options']
     queryset = TelemetryPoint.objects.select_related('organization','data_center','device','metric').all().order_by('-time'); serializer_class = TelemetryPointSerializer; permission_module = 'telemetry'; audit_resource_type = 'TelemetryPoint'; filterset_fields = ['organization','data_center','device','metric','quality']; ordering_fields = ['time','created_at']
     @action(detail=False, methods=['get'])
@@ -19,6 +20,7 @@ class TelemetryPointViewSet(ScopedModelViewSet):
             return self.get_paginated_response(TelemetryPointSerializer(page, many=True).data)
         return Response(TelemetryPointSerializer(qs[:1000], many=True).data)
 class LatestTelemetryViewSet(ScopedModelViewSet):
+    access_scope = 'device'
     http_method_names = ['get','head','options']
     queryset = LatestTelemetry.objects.select_related('organization','data_center','device','metric').all(); serializer_class = LatestTelemetrySerializer; permission_module = 'telemetry'; audit_resource_type = 'LatestTelemetry'; filterset_fields = ['organization','data_center','device','metric','quality']; ordering_fields = ['last_seen_at']
     @action(detail=False, methods=['get'])
@@ -26,9 +28,11 @@ class LatestTelemetryViewSet(ScopedModelViewSet):
         qs = self.filter_queryset(self.get_queryset())
         return Response({'total_latest_points': qs.count(), 'good': qs.filter(quality='GOOD').count(), 'bad': qs.filter(quality='BAD').count(), 'stale': qs.filter(quality='STALE').count()})
 class TelemetryIngestLogViewSet(ScopedModelViewSet):
+    access_scope = 'device'
     http_method_names = ['get','head','options']
     queryset = TelemetryIngestLog.objects.select_related('device','device__data_center').all().order_by('-started_at'); serializer_class = TelemetryIngestLogSerializer; permission_module = 'telemetry'; audit_resource_type = 'TelemetryIngestLog'; data_center_field = 'device__data_center'; filterset_fields = ['device','protocol','status']
 class DeviceEventViewSet(ScopedModelViewSet):
+    access_scope = 'device'
     queryset = DeviceEvent.objects.select_related('organization','data_center','device').all().order_by('-occurred_at'); serializer_class = DeviceEventSerializer; permission_module = 'telemetry'; audit_resource_type = 'DeviceEvent'; filterset_fields = ['organization','data_center','device','severity']; search_fields = ['event_code','event_name','message']
 class TelemetryIngestViewSet(viewsets.ViewSet):
     permission_module = 'telemetry'

@@ -1,5 +1,6 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
-from .models import Role, Permission, RolePermission, UserDataCenterRole
+from .models import Role, Permission, RolePermission, UserResourceAccess
 
 class RoleSerializer(serializers.ModelSerializer):
     class Meta:
@@ -16,7 +17,21 @@ class RolePermissionSerializer(serializers.ModelSerializer):
         model = RolePermission
         fields = "__all__"
 
-class UserDataCenterRoleSerializer(serializers.ModelSerializer):
+class UserResourceAccessSerializer(serializers.ModelSerializer):
     class Meta:
-        model = UserDataCenterRole
+        model = UserResourceAccess
         fields = "__all__"
+
+    def validate(self, attrs):
+        instance = self.instance or UserResourceAccess()
+        for key, value in attrs.items():
+            setattr(instance, key, value)
+        try:
+            instance.full_clean()
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages)
+        return attrs
+
+
+# Backward-compatible aliases for existing imports.
+UserDataCenterRoleSerializer = UserResourceAccessSerializer

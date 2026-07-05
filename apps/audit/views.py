@@ -1,8 +1,12 @@
-from apps.common.viewsets import AuditModelViewSet, ScopedModelViewSet
+from apps.common.viewsets import ScopedModelViewSet
 from .models import AuditLog
 from .serializers import AuditLogSerializer
-class AuditLogViewSet(AuditModelViewSet):
+
+
+class AuditLogViewSet(ScopedModelViewSet):
     http_method_names = ['get','head','options']
+    access_scope = 'organization'
+    organization_field = 'id'
     queryset = AuditLog.objects.all()
     serializer_class = AuditLogSerializer
     permission_module = 'audit'

@@ -1,4 +1,5 @@
 from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from apps.common.viewsets import AuditModelViewSet
 from .models import User
@@ -16,6 +17,11 @@ class UserViewSet(AuditModelViewSet):
         if self.action == 'me':
             return MeSerializer
         return super().get_serializer_class()
+
+    def get_permissions(self):
+        if self.action == "me":
+            return [IsAuthenticated()]
+        return super().get_permissions()
 
     @action(detail=False, methods=['get','patch'])
     def me(self, request):
