@@ -100,6 +100,49 @@ docker compose exec api python manage.py process_trap_once 10.10.10.10 1.3.6.1.4
 
 Before production use, replace seed OIDs/registers with real vendor maps, configure network/firewall rules, set a stable encryption key, and test device-specific SNMP/Modbus behavior.
 
+## Notification and alert hardening
+
+- Alert creation, update, resolve, and trap-confirmed PAC handling go through the central alert engine.
+- Notification rows are created first, then Celery sends them asynchronously.
+- Email and SMS support console/testing backends by default.
+- Old `PENDING` notifications can be requeued with:
+
+```bash
+docker compose exec api python manage.py retry_pending_notifications --older-than-minutes 5 --limit 100
+```
+
+## Production hardening: running Celery workers as non-root
+
+Celery currently runs as root in the default Compose setup, which is acceptable for local testing but not recommended for production.
+
+The Docker image now creates a non-root `appuser` and `appgroup` so you can run services under a less privileged account in a production override.
+
+Recommended production pattern:
+
+```yaml
+services:
+  api:
+    user: "10001:10001"
+  alert-worker:
+    user: "10001:10001"
+  notification-worker:
+    user: "10001:10001"
+  beat:
+    user: "10001:10001"
+```
+
+Make sure the following paths are writable by that user if you enable it:
+
+- `/app/staticfiles`
+- `/app/media`
+- any log directory you mount
+
+After changing the runtime user, restart the containers:
+
+```bash
+docker compose restart api beat alert-worker notification-worker
+```
+
 
 ## Troubleshooting
 

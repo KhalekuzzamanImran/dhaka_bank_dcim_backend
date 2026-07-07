@@ -171,7 +171,7 @@ def poll_modbus_device(device_id: str, evaluate_alerts=True) -> ModbusPollOutcom
             try:
                 raw = _read_mapping(client, mapping)
                 value = normalize_value(raw, mapping.data_type, mapping.scale_factor, mapping.offset_value)
-                readings.append({"metric": mapping.metric, "value": value, "quality": TelemetryQuality.GOOD})
+                readings.append({"metric": mapping.metric, "value": value, "quality": TelemetryQuality.GOOD, "raw_value_text": str(raw)})
                 success_count += 1
             except Exception as exc:
                 failure_count += 1

@@ -1,10 +1,10 @@
 from django.db import models, transaction
 from django.utils import timezone
 
-from apps.alerts.models import AlertEvent
 from apps.devices.models import Device
 from apps.telemetry.models import DeviceEvent
 from apps.traps.models import SNMPTrapEvent, SNMPTrapOIDMapping, SNMPTrapSource
+from apps.alerts.services import create_or_update_trap_alert
 from .pac_alarm_handler import is_pac_confirmation_trap, is_pac_device
 
 
@@ -72,16 +72,15 @@ def process_snmp_trap(*, source_ip, trap_oid, raw_varbinds):
         # PAC trap codes only tell us something changed. The confirmation task polls
         # the alarm OIDs immediately so we can persist the exact alarm state.
         if mapping.create_alert and not is_pac_confirmation:
-            AlertEvent.objects.create(
-                organization=device.organization,
-                data_center=device.data_center,
+            create_or_update_trap_alert(
                 device=device,
-                metric=None,
-                alert_rule=None,
+                event_code=mapping.event_code,
+                event_name=mapping.event_name,
                 severity=mapping.severity,
-                status="OPEN",
                 message=message,
                 triggered_at=received_at,
+                trap_oid=trap_oid,
+                raw_payload=raw_varbinds or {},
             )
         if is_pac_confirmation:
             from .tasks import process_pac_trap_alarm_confirmation_task

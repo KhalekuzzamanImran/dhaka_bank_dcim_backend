@@ -24,6 +24,7 @@ class TelemetryIngestItemSerializer(serializers.Serializer):
     value_integer = serializers.IntegerField(required=False, allow_null=True)
     value_boolean = serializers.BooleanField(required=False, allow_null=True)
     value_text = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    raw_value_text = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     quality = serializers.CharField(required=False, default='GOOD')
     source = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 

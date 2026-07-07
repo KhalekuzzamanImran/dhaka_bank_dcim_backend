@@ -85,6 +85,13 @@ services:
     depends_on: [api, redis]
     volumes: ['.:/app']
 
+  notification-worker:
+    build: .
+    command: celery -A config worker -l info -Q notifications --concurrency=2 --hostname=notifications@%h
+    env_file: .env
+    depends_on: [api, redis]
+    volumes: ['.:/app']
+
   report-worker:
     build: .
     command: celery -A config worker -l info -Q reports --concurrency=1 --hostname=reports@%h

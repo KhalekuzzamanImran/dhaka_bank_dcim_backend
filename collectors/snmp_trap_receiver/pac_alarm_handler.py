@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from apps.alerts.models import AlertEvent, AlertSeverity, AlertStatus
 from apps.devices.models import Device
-from apps.telemetry.models import DeviceEvent, DeviceEventSeverity, MetricDataType
+from apps.telemetry.models import DeviceEvent, DeviceEventSeverity, MetricDataType, LatestTelemetry
 from apps.traps.models import SNMPTrapEvent
 from collectors.common.telemetry_writer import write_device_telemetry_bulk
 from collectors.snmp_collector.client import SNMPClient
@@ -287,33 +287,22 @@ def process_pac_trap_alarm_confirmation(*, device_id: str, trap_event_id: str, e
             if state is None:
                 raise ValueError(f"Unrecognized PAC alarm value for {mapping.metric.code}: {scaled_value!r}")
 
-            payload = _telemetry_payload(mapping.metric, state)
             write_device_telemetry_bulk(
                 organization=device.organization,
                 data_center=device.data_center,
                 device=device,
-                readings=[{"metric": mapping.metric, "value": state}],
+                readings=[{"metric": mapping.metric, "value": state, "raw_value_text": result.raw_value}],
                 source="TRAP_CONFIRMED_POLL",
                 ingest_id=trap_event.id,
                 timestamp=confirmation_at,
             )
+            latest = LatestTelemetry.objects.select_related("organization", "data_center", "device", "metric").get(
+                device=device,
+                metric=mapping.metric,
+            )
+            from apps.alerts.services import evaluate_latest
 
-            with transaction.atomic():
-                if state == 1:
-                    _open_or_update_exact_alert(
-                        device=device,
-                        metric=mapping.metric,
-                        state=state,
-                        confirmation_at=confirmation_at,
-                        payload=payload,
-                    )
-                else:
-                    _resolve_exact_alert(
-                        device=device,
-                        metric=mapping.metric,
-                        confirmation_at=confirmation_at,
-                        payload=payload,
-                    )
+            evaluate_latest(latest)
 
             _create_device_event(
                 device=device,

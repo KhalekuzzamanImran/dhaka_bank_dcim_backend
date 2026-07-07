@@ -16,6 +16,7 @@ class Notification(TimeStampedModel):
     organization = models.ForeignKey("organizations.Organization", on_delete=models.CASCADE, related_name="notifications")
     recipient = models.ForeignKey("accounts.User", on_delete=models.SET_NULL, related_name="notifications", blank=True, null=True)
     channel = models.CharField(max_length=30, choices=NotificationChannel.choices)
+    dedupe_key = models.CharField(max_length=255, blank=True, null=True, unique=True)
     subject = models.CharField(max_length=255, blank=True, null=True)
     message = models.TextField()
     status = models.CharField(max_length=30, choices=NotificationStatus.choices, default=NotificationStatus.PENDING)
@@ -24,4 +25,4 @@ class Notification(TimeStampedModel):
     metadata = models.JSONField(default=dict, blank=True)
     class Meta:
         db_table = "notifications"
-        indexes = [models.Index(fields=["organization"]), models.Index(fields=["recipient"]), models.Index(fields=["channel"]), models.Index(fields=["status"]), models.Index(fields=["created_at"])]
+        indexes = [models.Index(fields=["organization"]), models.Index(fields=["recipient"]), models.Index(fields=["channel"]), models.Index(fields=["status"]), models.Index(fields=["dedupe_key"]), models.Index(fields=["created_at"])]

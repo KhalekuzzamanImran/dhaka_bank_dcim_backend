@@ -57,6 +57,7 @@ def ingest_points(points, source="api"):
             "value_integer": item.get("value_integer"),
             "value_boolean": item.get("value_boolean"),
             "value_text": item.get("value_text"),
+            "raw_value_text": item.get("raw_value_text"),
             "quality": quality,
             "source": point_source,
         }

@@ -74,6 +74,19 @@ SIMPLE_JWT = {
     'BLACKLIST_AFTER_ROTATION': False,
     'UPDATE_LAST_LOGIN': True,
 }
+EMAIL_BACKEND = config("EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend")
+DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="dcim-alerts@test.local")
+EMAIL_HOST = config("EMAIL_HOST", default="")
+EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
+EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
+EMAIL_USE_SSL = config("EMAIL_USE_SSL", default=False, cast=bool)
+EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
+SMS_BACKEND = config("SMS_BACKEND", default="console")
+SMS_API_URL = config("SMS_API_URL", default="")
+SMS_API_KEY = config("SMS_API_KEY", default="")
+SMS_DEFAULT_SENDER = config("SMS_DEFAULT_SENDER", default="DCIM")
+SMS_TIMEOUT_SECONDS = config("SMS_TIMEOUT_SECONDS", default=15, cast=int)
 SPECTACULAR_SETTINGS = {
     'TITLE': 'Bank DCIM Backend API',
     'DESCRIPTION': 'Production-grade DCIM backend API for bank data center infrastructure management.',
@@ -91,8 +104,18 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-CORS_ALLOWED_ORIGINS = [o.strip() for o in config('CORS_ALLOWED_ORIGINS', default='http://localhost:3000,http://localhost:5173').split(',') if o.strip()]
-CSRF_TRUSTED_ORIGINS = [o.strip() for o in config('CSRF_TRUSTED_ORIGINS', default='http://localhost:3000,http://localhost:5173').split(',') if o.strip()]
+
+def _csv_setting(name, default=''):
+    return [item.strip() for item in config(name, default=default).split(',') if item.strip()]
+
+CORS_ALLOWED_ORIGINS = _csv_setting('CORS_ALLOWED_ORIGINS', default='http://localhost:3000,http://localhost:5173')
+FRONTEND_ORIGIN = config('FRONTEND_ORIGIN', default='').strip()
+if FRONTEND_ORIGIN and FRONTEND_ORIGIN not in CORS_ALLOWED_ORIGINS:
+    CORS_ALLOWED_ORIGINS.append(FRONTEND_ORIGIN)
+
+CSRF_TRUSTED_ORIGINS = _csv_setting('CSRF_TRUSTED_ORIGINS', default='http://localhost:3000,http://localhost:5173')
+if FRONTEND_ORIGIN and FRONTEND_ORIGIN not in CSRF_TRUSTED_ORIGINS:
+    CSRF_TRUSTED_ORIGINS.append(FRONTEND_ORIGIN)
 CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default='redis://localhost:6379/1')
 CACHES = {'default': {'BACKEND': 'django_redis.cache.RedisCache', 'LOCATION': config('REDIS_CACHE_URL', default='redis://localhost:6379/2'), 'OPTIONS': {'CLIENT_CLASS': 'django_redis.client.DefaultClient'}}}
@@ -127,6 +150,7 @@ CELERY_TASK_ROUTES = {
     'collectors.modbus_collector.tasks.enqueue_due_modbus_polls': {'queue': 'scheduler'},
     'collectors.snmp_trap_receiver.tasks.process_snmp_trap_task': {'queue': 'traps'},
     'apps.alerts.tasks.*': {'queue': 'alerts'},
+    'apps.notifications.tasks.*': {'queue': 'notifications'},
     'apps.reports.tasks.*': {'queue': 'reports'},
 }
 
