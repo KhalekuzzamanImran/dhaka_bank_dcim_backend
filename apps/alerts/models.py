@@ -1,5 +1,10 @@
-from django.db import models
+import logging
+
+from django.core.exceptions import ValidationError
+from django.db import models, transaction
 from apps.common.models import TimeStampedModel
+
+logger = logging.getLogger(__name__)
 
 
 class AlertSeverity(models.TextChoices):
@@ -45,6 +50,98 @@ class AlertRule(TimeStampedModel):
 
     def __str__(self):
         return self.name
+
+    def clean(self):
+        super().clean()
+
+        errors = {}
+
+        threshold_fields = (
+            "threshold_float",
+            "threshold_integer",
+            "threshold_boolean",
+            "threshold_text",
+        )
+        set_threshold_fields = [field for field in threshold_fields if getattr(self, field) is not None]
+        if len(set_threshold_fields) != 1:
+            message = "Exactly one threshold field must be set."
+            for field in threshold_fields:
+                errors.setdefault(field, []).append(message)
+
+        if self.device_id:
+            device = self.device
+            if self.organization_id and device.organization_id != self.organization_id:
+                errors.setdefault("organization", []).append("Must match the selected device organization.")
+            if self.data_center_id and device.data_center_id != self.data_center_id:
+                errors.setdefault("data_center", []).append("Must match the selected device data center.")
+            if self.device_type_id and device.device_type_id != self.device_type_id:
+                errors.setdefault("device_type", []).append("Must match the selected device type.")
+
+        if self.data_center_id and self.organization_id and self.data_center.organization_id != self.organization_id:
+            errors.setdefault("data_center", []).append("Data center must belong to the selected organization.")
+
+        if not errors and self.is_active:
+            threshold_field = set_threshold_fields[0]
+            duplicate_qs = AlertRule.objects.filter(
+                is_active=True,
+                organization_id=self.organization_id,
+                data_center_id=self.data_center_id,
+                device_type_id=self.device_type_id,
+                device_id=self.device_id,
+                metric_id=self.metric_id,
+                operator=self.operator,
+            )
+            for field in threshold_fields:
+                value = getattr(self, field)
+                if field == threshold_field:
+                    duplicate_qs = duplicate_qs.filter(**{field: value})
+                else:
+                    duplicate_qs = duplicate_qs.filter(**{f"{field}__isnull": True})
+            if self.pk:
+                duplicate_qs = duplicate_qs.exclude(pk=self.pk)
+            if duplicate_qs.exists():
+                errors.setdefault("__all__", []).append(
+                    "An active alert rule with the same scope, operator, metric, and threshold already exists."
+                )
+
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        result = super().save(*args, **kwargs)
+
+        def _invalidate_after_commit():
+            try:
+                from .services.cache import invalidate_alert_rule_match_cache
+
+                invalidate_alert_rule_match_cache()
+            except Exception:
+                # Cache invalidation must never block a rule write.
+                logger.warning(
+                    "Failed to invalidate alert rule matching cache after save.",
+                    exc_info=True,
+                )
+
+        transaction.on_commit(_invalidate_after_commit)
+        return result
+
+    def delete(self, *args, **kwargs):
+        result = super().delete(*args, **kwargs)
+
+        def _invalidate_after_commit():
+            try:
+                from .services.cache import invalidate_alert_rule_match_cache
+
+                invalidate_alert_rule_match_cache()
+            except Exception:
+                logger.warning(
+                    "Failed to invalidate alert rule matching cache after delete.",
+                    exc_info=True,
+                )
+
+        transaction.on_commit(_invalidate_after_commit)
+        return result
 
 class AlertStatus(models.TextChoices):
     OPEN = "OPEN", "Open"
@@ -213,6 +310,55 @@ class AlertEscalationPolicy(TimeStampedModel):
     def __str__(self):
         return f"{self.severity} escalation policy"
 
+    def clean(self):
+        super().clean()
+
+        errors = {}
+
+        if self.if_not_acknowledged_minutes is None and self.if_not_resolved_minutes is None:
+            errors.setdefault("if_not_acknowledged_minutes", []).append(
+                "At least one escalation trigger must be configured."
+            )
+            errors.setdefault("if_not_resolved_minutes", []).append(
+                "At least one escalation trigger must be configured."
+            )
+
+        for field in ("if_not_acknowledged_minutes", "if_not_resolved_minutes"):
+            value = getattr(self, field)
+            if value is not None and value <= 0:
+                errors.setdefault(field, []).append("Must be a positive integer.")
+
+        if self.channel not in {"WEB", "EMAIL", "SMS", "WEBHOOK"}:
+            errors.setdefault("channel", []).append("Invalid escalation channel.")
+
+        if self.organization_id and self.data_center_id and self.data_center.organization_id != self.organization_id:
+            errors.setdefault("data_center", []).append("Data center must belong to the selected organization.")
+
+        if self.is_active:
+            duplicate_qs = AlertEscalationPolicy.objects.filter(
+                is_active=True,
+                organization_id=self.organization_id,
+                data_center_id=self.data_center_id,
+                severity=self.severity,
+                if_not_acknowledged_minutes=self.if_not_acknowledged_minutes,
+                if_not_resolved_minutes=self.if_not_resolved_minutes,
+                target_role_id=self.target_role_id,
+                channel=self.channel,
+            )
+            if self.pk:
+                duplicate_qs = duplicate_qs.exclude(pk=self.pk)
+            if duplicate_qs.exists():
+                errors.setdefault("__all__", []).append(
+                    "An active escalation policy with the same scope and trigger already exists."
+                )
+
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
 
 class AlertSuppressionWindow(TimeStampedModel):
     organization = models.ForeignKey("organizations.Organization", on_delete=models.CASCADE, related_name="alert_suppression_windows")
@@ -237,3 +383,56 @@ class AlertSuppressionWindow(TimeStampedModel):
 
     def __str__(self):
         return f"Suppression {self.organization_id}"
+
+    def clean(self):
+        super().clean()
+
+        errors = {}
+
+        if self.organization_id is None:
+            errors.setdefault("organization", []).append("Organization is required.")
+
+        if self.starts_at is None:
+            errors.setdefault("starts_at", []).append("Start time is required.")
+        if self.ends_at is None:
+            errors.setdefault("ends_at", []).append("End time is required.")
+        if self.starts_at is not None and self.ends_at is not None and self.starts_at >= self.ends_at:
+            errors.setdefault("starts_at", []).append("Start time must be earlier than end time.")
+            errors.setdefault("ends_at", []).append("End time must be later than start time.")
+
+        if not any(getattr(self, field) is not None for field in ("organization", "data_center", "device", "metric")):
+            errors.setdefault("__all__", []).append(
+                "At least one scope field must be selected for a suppression window."
+            )
+
+        if self.organization_id and self.data_center_id and self.data_center.organization_id != self.organization_id:
+            errors.setdefault("data_center", []).append("Data center must belong to the selected organization.")
+
+        if self.device_id:
+            device = self.device
+            if self.organization_id and device.organization_id != self.organization_id:
+                errors.setdefault("organization", []).append("Must match the selected device organization.")
+            if self.data_center_id and device.data_center_id != self.data_center_id:
+                errors.setdefault("data_center", []).append("Must match the selected device data center.")
+
+        if self.is_active and self.starts_at is not None and self.ends_at is not None and self.organization_id is not None:
+            overlap_qs = AlertSuppressionWindow.objects.filter(
+                is_active=True,
+                organization_id=self.organization_id,
+                data_center_id=self.data_center_id,
+                device_id=self.device_id,
+                metric_id=self.metric_id,
+            ).filter(starts_at__lt=self.ends_at, ends_at__gt=self.starts_at)
+            if self.pk:
+                overlap_qs = overlap_qs.exclude(pk=self.pk)
+            if overlap_qs.exists():
+                errors.setdefault("__all__", []).append(
+                    "An active suppression window with the same scope overlaps the selected time range."
+                )
+
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)

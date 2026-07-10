@@ -9,6 +9,7 @@ class NotificationChannel(models.TextChoices):
 
 class NotificationStatus(models.TextChoices):
     PENDING = "PENDING", "Pending"
+    DELIVERING = "DELIVERING", "Delivering"
     SENT = "SENT", "Sent"
     FAILED = "FAILED", "Failed"
 
@@ -21,8 +22,26 @@ class Notification(TimeStampedModel):
     message = models.TextField()
     status = models.CharField(max_length=30, choices=NotificationStatus.choices, default=NotificationStatus.PENDING)
     sent_at = models.DateTimeField(blank=True, null=True)
+    read_at = models.DateTimeField(blank=True, null=True)
     error_message = models.TextField(blank=True, null=True)
     metadata = models.JSONField(default=dict, blank=True)
+
+    @property
+    def is_read(self):
+        return self.read_at is not None
+
+    @property
+    def is_unread(self):
+        return self.read_at is None
+
     class Meta:
         db_table = "notifications"
-        indexes = [models.Index(fields=["organization"]), models.Index(fields=["recipient"]), models.Index(fields=["channel"]), models.Index(fields=["status"]), models.Index(fields=["dedupe_key"]), models.Index(fields=["created_at"])]
+        indexes = [
+            models.Index(fields=["organization"]),
+            models.Index(fields=["recipient"]),
+            models.Index(fields=["channel"]),
+            models.Index(fields=["status"]),
+            models.Index(fields=["dedupe_key"]),
+            models.Index(fields=["read_at"]),
+            models.Index(fields=["created_at"]),
+        ]

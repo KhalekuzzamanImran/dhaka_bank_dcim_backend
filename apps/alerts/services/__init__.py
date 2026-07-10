@@ -17,9 +17,21 @@ from .engine import (
     suppress_alert,
     update_active_alert,
 )
+from .summary import (
+    build_active_by_severity,
+    build_alert_summary,
+    build_dashboard_payload,
+    build_recent_alerts,
+    build_top_devices,
+)
 
 __all__ = [
     "acknowledge_alert",
+    "build_active_by_severity",
+    "build_alert_summary",
+    "build_dashboard_payload",
+    "build_recent_alerts",
+    "build_top_devices",
     "create_alert_log",
     "create_or_update_trap_alert",
     "evaluate_latest",

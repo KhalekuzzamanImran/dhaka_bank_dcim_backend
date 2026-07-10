@@ -1,6 +1,6 @@
 from apps.common.middleware import get_current_request
 
-SENSITIVE_KEYS = {'password', 'token', 'secret', 'credential', 'community', 'auth_key', 'priv_key'}
+SENSITIVE_KEYS = {'password', 'token', 'secret', 'credential', 'community', 'auth_key', 'priv_key', 'api_key'}
 
 def redact(value):
     if isinstance(value, dict):

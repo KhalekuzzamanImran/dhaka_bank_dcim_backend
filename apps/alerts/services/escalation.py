@@ -4,7 +4,7 @@ from django.utils import timezone
 
 from apps.alerts.models import AlertEscalationPolicy, AlertEvent, AlertEventLogAction, AlertStatus
 from .engine import create_alert_log
-from .notifications import create_notifications_for_alert_opened
+from .notifications import create_notifications_for_alert_escalated
 
 
 def _policy_matches(alert: AlertEvent, policy: AlertEscalationPolicy) -> bool:
@@ -17,15 +17,46 @@ def _policy_matches(alert: AlertEvent, policy: AlertEscalationPolicy) -> bool:
     return True
 
 
+def _escalation_reason(alert: AlertEvent, policy: AlertEscalationPolicy) -> str:
+    severity = (alert.severity or "UNKNOWN").upper()
+    device_name = getattr(alert.device, "name", "unknown device")
+    if alert.status == AlertStatus.OPEN and policy.if_not_acknowledged_minutes is not None:
+        return (
+            f"ESCALATION: {severity} alert {alert.message} on {device_name} "
+            f"has not been acknowledged for {policy.if_not_acknowledged_minutes} minutes."
+        )
+    if policy.if_not_resolved_minutes is not None:
+        return (
+            f"ESCALATION: {severity} alert {alert.message} on {device_name} "
+            f"has not been resolved for {policy.if_not_resolved_minutes} minutes."
+        )
+    return f"ESCALATION: {severity} alert {alert.message} on {device_name} requires attention."
+
+
+def _policy_trigger_met(alert: AlertEvent, policy: AlertEscalationPolicy, now):
+    open_elapsed = (now - alert.triggered_at).total_seconds() / 60.0
+    resolved_elapsed = (now - (alert.acknowledged_at or alert.triggered_at)).total_seconds() / 60.0
+
+    if alert.status == AlertStatus.OPEN and policy.if_not_acknowledged_minutes is not None:
+        if open_elapsed >= policy.if_not_acknowledged_minutes:
+            return True
+    if policy.if_not_resolved_minutes is not None and resolved_elapsed >= policy.if_not_resolved_minutes:
+        return True
+    return False
+
+
 def escalate_alert(alert: AlertEvent, policy: AlertEscalationPolicy):
     now = timezone.now()
     metadata = dict(alert.metadata or {})
-    last_escalated_at = metadata.get("last_escalated_at")
-    if last_escalated_at and policy.pk and metadata.get("last_escalation_policy_id") == str(policy.pk):
+    policy_key = str(policy.pk)
+    escalated_policies = metadata.get("escalated_policy_ids", [])
+    if policy_key in escalated_policies:
         return None
 
+    escalated_policies.append(policy_key)
     metadata["last_escalated_at"] = now.isoformat()
-    metadata["last_escalation_policy_id"] = str(policy.pk)
+    metadata["last_escalation_policy_id"] = policy_key
+    metadata["escalated_policy_ids"] = escalated_policies
     alert.metadata = metadata
     alert.save(update_fields=["metadata", "updated_at"])
     create_alert_log(
@@ -33,10 +64,10 @@ def escalate_alert(alert: AlertEvent, policy: AlertEscalationPolicy):
         AlertEventLogAction.ESCALATED,
         old_status=alert.status,
         new_status=alert.status,
-        message="Alert escalation triggered",
-        metadata={"policy_id": str(policy.pk)},
+        message=_escalation_reason(alert, policy),
+        metadata={"policy_id": policy_key},
     )
-    create_notifications_for_alert_opened(alert)
+    create_notifications_for_alert_escalated(alert, policy)
     return alert
 
 
@@ -49,13 +80,7 @@ def run_alert_escalation_check():
         for policy in policies:
             if not _policy_matches(alert, policy):
                 continue
-            elapsed_minutes = (now - (alert.acknowledged_at or alert.triggered_at)).total_seconds() / 60.0
-            if alert.status == AlertStatus.OPEN and policy.if_not_acknowledged_minutes is not None and elapsed_minutes >= policy.if_not_acknowledged_minutes:
-                result = escalate_alert(alert, policy)
-                if result:
-                    escalated.append(result)
-                break
-            if policy.if_not_resolved_minutes is not None and elapsed_minutes >= policy.if_not_resolved_minutes:
+            if _policy_trigger_met(alert, policy, now):
                 result = escalate_alert(alert, policy)
                 if result:
                     escalated.append(result)

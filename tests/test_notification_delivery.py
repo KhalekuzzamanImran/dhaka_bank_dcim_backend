@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from datetime import timedelta
 from io import StringIO
+from unittest.mock import patch
 
 import pytest
 from celery.exceptions import Retry
@@ -217,6 +218,76 @@ def test_send_notification_task_does_not_resend_when_already_sent():
     assert result["status"] == "sent"
     notification.refresh_from_db()
     assert notification.status == NotificationStatus.SENT
+
+
+@pytest.mark.django_db
+def test_send_notification_task_does_not_resend_when_already_delivering():
+    org = _notification_org()
+    user = _user()
+    notification = Notification.objects.create(
+        organization=org,
+        recipient=user,
+        channel=NotificationChannel.WEB,
+        subject="Test",
+        message="Hello",
+        status=NotificationStatus.DELIVERING,
+    )
+
+    with patch("apps.notifications.tasks.deliver_notification") as deliver_mock:
+        result = send_notification_task.apply(args=[str(notification.id)]).get()
+
+    deliver_mock.assert_not_called()
+    assert result["status"] == "delivering"
+    notification.refresh_from_db()
+    assert notification.status == NotificationStatus.DELIVERING
+
+
+@pytest.mark.django_db
+def test_pending_notification_is_claimed_before_delivery():
+    org = _notification_org()
+    user = _user()
+    notification = Notification.objects.create(
+        organization=org,
+        recipient=user,
+        channel=NotificationChannel.WEB,
+        subject="Test",
+        message="Hello",
+        status=NotificationStatus.PENDING,
+    )
+
+    def _deliver(row):
+        assert row.status == NotificationStatus.DELIVERING
+        return row
+
+    with patch("apps.notifications.tasks.deliver_notification", side_effect=_deliver):
+        result = send_notification_task.apply(args=[str(notification.id)]).get()
+
+    assert result["status"] == "sent"
+    notification.refresh_from_db()
+    assert notification.status == NotificationStatus.SENT
+    assert notification.sent_at is not None
+
+
+@pytest.mark.django_db
+def test_failed_delivery_moves_notification_to_failed():
+    org = _notification_org()
+    user = _user()
+    notification = Notification.objects.create(
+        organization=org,
+        recipient=user,
+        channel=NotificationChannel.WEB,
+        subject="Test",
+        message="Hello",
+        status=NotificationStatus.PENDING,
+    )
+
+    with patch("apps.notifications.tasks.deliver_notification", side_effect=ValueError("boom")):
+        with pytest.raises(Retry):
+            send_notification_task.apply(args=[str(notification.id)]).get()
+
+    notification.refresh_from_db()
+    assert notification.status == NotificationStatus.FAILED
+    assert "boom" in (notification.error_message or "")
 
 
 @pytest.mark.django_db

@@ -1,5 +1,5 @@
-from django.db.models import Count
-from django.utils import timezone
+from django.db.models import Prefetch
+from zoneinfo import ZoneInfo
 from rest_framework.views import APIView
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -7,17 +7,67 @@ from rest_framework.response import Response
 from apps.common.access import filter_queryset_for_user
 from apps.common.viewsets import ScopedModelViewSet
 from apps.common.audit import write_audit
-from .models import AlertRule, AlertEvent, AlertStatus
-from .serializers import AlertRuleSerializer, AlertEventSerializer
+from .models import AlertComment, AlertEvent, AlertEventLog, AlertRule
+from .serializers import (
+    AlertAcknowledgeSerializer,
+    AlertEventDetailSerializer,
+    AlertEventListSerializer,
+    AlertResolveSerializer,
+    AlertRuleSerializer,
+)
 from .services import acknowledge_alert, manually_resolve_alert
+from .services.summary import (
+    build_active_by_severity,
+    build_dashboard_payload,
+    build_recent_alerts,
+    build_top_devices,
+)
+
+
+def _alert_event_queryset():
+    return (
+        AlertEvent.objects.select_related(
+            "organization",
+            "data_center",
+            "device",
+            "device__room",
+            "device__rack",
+            "device__device_type",
+            "metric",
+            "alert_rule",
+            "acknowledged_by",
+            "resolved_by",
+        )
+        .prefetch_related(
+            Prefetch("comments", queryset=AlertComment.objects.select_related("user").order_by("created_at")),
+            Prefetch("logs", queryset=AlertEventLog.objects.select_related("actor").order_by("created_at")),
+        )
+        .all()
+        .order_by("-triggered_at")
+    )
 
 
 def get_alert_queryset_for_user(user):
-    return filter_queryset_for_user(
-        AlertEvent.objects.select_related("organization", "data_center", "device", "metric", "alert_rule").all().order_by("-triggered_at"),
-        user,
-        access_scope="mixed",
+    return filter_queryset_for_user(_alert_event_queryset(), user, access_scope="mixed")
+
+
+def _summary_timezone_for_queryset(queryset):
+    """Prefer the single data center timezone when the alert scope is narrow.
+
+    If the queryset spans multiple data centers, fall back to the current Django
+    timezone and let the summary service compute dates safely in that timezone.
+    """
+
+    timezone_names = list(
+        queryset.order_by().values_list("data_center__timezone", flat=True).distinct()[:2]
     )
+    timezone_names = [name for name in timezone_names if name]
+    if len(timezone_names) == 1:
+        try:
+            return ZoneInfo(timezone_names[0])
+        except Exception:
+            return None
+    return None
 
 
 class AlertRuleViewSet(ScopedModelViewSet):
@@ -31,61 +81,56 @@ class AlertRuleViewSet(ScopedModelViewSet):
 
 class AlertEventViewSet(ScopedModelViewSet):
     access_scope = "mixed"
-    queryset = AlertEvent.objects.select_related("organization", "data_center", "device", "metric", "alert_rule").all().order_by("-triggered_at")
-    serializer_class = AlertEventSerializer
+    queryset = _alert_event_queryset()
+    serializer_class = AlertEventDetailSerializer
     permission_module = "alert"
     audit_resource_type = "AlertEvent"
     filterset_fields = ["organization", "data_center", "device", "metric", "severity", "status"]
     search_fields = ["message"]
 
+    def get_serializer_class(self):
+        if self.action in {"list", "recent"}:
+            return AlertEventListSerializer
+        if self.action == "retrieve":
+            return AlertEventDetailSerializer
+        return AlertEventDetailSerializer
+
     @action(detail=True, methods=["post"])
     def acknowledge(self, request, pk=None):
         event = self.get_object()
-        comment = request.data.get("comment")
+        serializer = AlertAcknowledgeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        comment = serializer.validated_data.get("comment")
         event = acknowledge_alert(event, request.user, comment=comment)
         write_audit("ALERT_ACKNOWLEDGED", "AlertEvent", event.pk, organization=event.organization, actor=request.user, message=comment)
-        return Response(AlertEventSerializer(event).data)
+        return Response(AlertEventDetailSerializer(event, context=self.get_serializer_context()).data)
 
     @action(detail=True, methods=["post"])
     def resolve(self, request, pk=None):
         event = self.get_object()
-        comment = request.data.get("comment")
+        serializer = AlertResolveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        comment = serializer.validated_data.get("comment")
         event = manually_resolve_alert(event, request.user, comment=comment)
         write_audit("ALERT_RESOLVED", "AlertEvent", event.pk, organization=event.organization, actor=request.user, message=comment)
-        return Response(AlertEventSerializer(event).data)
+        return Response(AlertEventDetailSerializer(event, context=self.get_serializer_context()).data)
 
     @action(detail=False, methods=["get"])
     def summary(self, request):
         qs = self.get_queryset()
-        open_qs = qs.filter(status__in=[AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED])
-        data = {
-            "open_total": open_qs.count(),
-            "critical_open": open_qs.filter(severity="CRITICAL").count(),
-            "warning_open": open_qs.filter(severity="WARNING").count(),
-            "acknowledged_total": qs.filter(status=AlertStatus.ACKNOWLEDGED).count(),
-            "resolved_today": qs.filter(status=AlertStatus.RESOLVED, resolved_at__date=timezone.localdate()).count(),
-            "unacknowledged_critical": qs.filter(status=AlertStatus.OPEN, severity="CRITICAL").count(),
-            "by_severity": {row["severity"]: row["total"] for row in open_qs.values("severity").annotate(total=Count("id")).order_by("severity")},
-            "by_status": {row["status"]: row["total"] for row in qs.values("status").annotate(total=Count("id")).order_by("status")},
-        }
-        return Response(data)
+        return Response(build_dashboard_payload(qs, business_timezone=_summary_timezone_for_queryset(qs)))
 
     @action(detail=False, methods=["get"])
     def active_by_severity(self, request):
-        qs = self.get_queryset().filter(status__in=[AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED])
-        data = list(qs.values("severity").annotate(total=Count("id")).order_by("severity"))
-        return Response(data)
+        return Response(build_active_by_severity(self.get_queryset()))
 
     @action(detail=False, methods=["get"])
     def top_devices(self, request):
-        qs = self.get_queryset().filter(status__in=[AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED])
-        data = list(qs.values("device_id", "device__name").annotate(total=Count("id")).order_by("-total")[:10])
-        return Response(data)
+        return Response(build_top_devices(self.get_queryset()))
 
     @action(detail=False, methods=["get"])
     def recent(self, request):
-        qs = self.get_queryset()[:20]
-        return Response(AlertEventSerializer(qs, many=True).data)
+        return Response(build_recent_alerts(self.get_queryset(), limit=20, context=self.get_serializer_context()))
 
 
 class AlertSummaryAPIView(APIView):
@@ -93,46 +138,25 @@ class AlertSummaryAPIView(APIView):
 
     def get(self, request):
         qs = get_alert_queryset_for_user(request.user)
-        open_qs = qs.filter(status__in=[AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED])
-        data = {
-            "open_total": open_qs.count(),
-            "critical_open": open_qs.filter(severity="CRITICAL").count(),
-            "warning_open": open_qs.filter(severity="WARNING").count(),
-            "acknowledged_total": qs.filter(status=AlertStatus.ACKNOWLEDGED).count(),
-            "resolved_today": qs.filter(status=AlertStatus.RESOLVED, resolved_at__date=timezone.localdate()).count(),
-            "unacknowledged_critical": qs.filter(status=AlertStatus.OPEN, severity="CRITICAL").count(),
-            "by_severity": {row["severity"]: row["total"] for row in qs.values("severity").annotate(total=Count("id")).order_by("severity")},
-            "by_status": {row["status"]: row["total"] for row in qs.values("status").annotate(total=Count("id")).order_by("status")},
-            "by_data_center": {row["data_center__name"]: row["total"] for row in qs.values("data_center__name").annotate(total=Count("id")).order_by("data_center__name")},
-            "by_device_type": {row["device__device_type__name"]: row["total"] for row in qs.values("device__device_type__name").annotate(total=Count("id")).order_by("device__device_type__name")},
-        }
-        return Response(data)
+        return Response(build_dashboard_payload(qs, business_timezone=_summary_timezone_for_queryset(qs)))
 
 
 class AlertActiveBySeverityAPIView(APIView):
     permission_module = "alert"
 
     def get(self, request):
-        qs = get_alert_queryset_for_user(request.user).filter(status__in=[AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED])
-        return Response(list(qs.values("severity").annotate(total=Count("id")).order_by("severity")))
+        return Response(build_active_by_severity(get_alert_queryset_for_user(request.user)))
 
 
 class AlertTopDevicesAPIView(APIView):
     permission_module = "alert"
 
     def get(self, request):
-        qs = get_alert_queryset_for_user(request.user).filter(status__in=[AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED])
-        data = list(
-            qs.values("device_id", "device__name", "severity")
-            .annotate(total=Count("id"))
-            .order_by("-total", "device__name")[:10]
-        )
-        return Response(data)
+        return Response(build_top_devices(get_alert_queryset_for_user(request.user)))
 
 
 class AlertRecentAPIView(APIView):
     permission_module = "alert"
 
     def get(self, request):
-        qs = get_alert_queryset_for_user(request.user)[:20]
-        return Response(AlertEventSerializer(qs, many=True).data)
+        return Response(build_recent_alerts(get_alert_queryset_for_user(request.user), limit=20, context={"request": request}))

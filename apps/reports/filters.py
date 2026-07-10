@@ -1,0 +1,20 @@
+from __future__ import annotations
+
+import django_filters
+
+from .models import ReportJob
+
+
+class ReportJobFilter(django_filters.FilterSet):
+    created_at = django_filters.DateTimeFromToRangeFilter()
+    completed_at = django_filters.DateTimeFromToRangeFilter()
+
+    class Meta:
+        model = ReportJob
+        fields = [
+            "status",
+            "template",
+            "organization",
+            "data_center",
+            "requested_by",
+        ]

@@ -12,6 +12,7 @@ import logging
 from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence
 
+from django.core.cache import cache
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -29,6 +30,7 @@ from apps.alerts.models import (
     AlertSuppressionWindow,
 )
 from apps.telemetry.models import LatestTelemetry
+from .cache import ALERT_RULE_MATCH_CACHE_TIMEOUT_SECONDS, get_alert_rule_match_cache_version
 
 logger = logging.getLogger(__name__)
 
@@ -96,31 +98,89 @@ def _severity_rank(severity: str) -> int:
 def _rule_specificity(rule: AlertRule) -> tuple:
     """Return a deterministic specificity ordering for overlapping rules."""
 
+    if rule.device_id:
+        rank = 4
+    elif rule.data_center_id and rule.device_type_id:
+        rank = 3
+    elif rule.data_center_id:
+        rank = 2
+    elif rule.device_type_id:
+        rank = 1
+    else:
+        rank = 0
     return (
-        1 if rule.device_id else 0,
-        1 if rule.data_center_id else 0,
-        1 if rule.device_type_id else 0,
-        1 if rule.organization_id else 0,
+        rank,
         rule.created_at or timezone.now(),
         str(rule.pk),
     )
 
 
-def get_matching_rules(latest: LatestTelemetry):
-    qs = AlertRule.objects.filter(is_active=True, metric=latest.metric)
-    matching = []
-    for rule in qs.select_related("organization", "data_center", "device_type", "device", "metric"):
-        if rule.organization_id != latest.organization_id:
-            continue
-        if rule.device_id and rule.device_id != latest.device_id:
-            continue
-        if rule.data_center_id and rule.data_center_id != latest.data_center_id:
-            continue
-        if rule.device_type_id and rule.device_type_id != latest.device.device_type_id:
-            continue
-        matching.append(rule)
+def _matching_rule_cache_key(latest: LatestTelemetry) -> str:
+    version = get_alert_rule_match_cache_version()
+    return ":".join(
+        [
+            "alert",
+            "matching-rules",
+            version,
+            str(latest.organization_id),
+            str(latest.data_center_id),
+            str(latest.device_id),
+            str(getattr(latest.device, "device_type_id", None)),
+            str(latest.metric_id),
+        ]
+    )
 
+
+def _matching_rule_queryset(latest: LatestTelemetry):
+    device_type_id = getattr(latest.device, "device_type_id", None)
+    conditions = Q(device_id=latest.device_id)
+    if latest.data_center_id and device_type_id:
+        conditions |= Q(
+            device_id__isnull=True,
+            data_center_id=latest.data_center_id,
+            device_type_id=device_type_id,
+        )
+    if latest.data_center_id:
+        conditions |= Q(
+            device_id__isnull=True,
+            data_center_id=latest.data_center_id,
+            device_type_id__isnull=True,
+        )
+    if device_type_id:
+        conditions |= Q(
+            device_id__isnull=True,
+            data_center_id__isnull=True,
+            device_type_id=device_type_id,
+        )
+    conditions |= Q(
+        device_id__isnull=True,
+        data_center_id__isnull=True,
+        device_type_id__isnull=True,
+    )
+    return (
+        AlertRule.objects.filter(
+            is_active=True,
+            organization_id=latest.organization_id,
+            metric_id=latest.metric_id,
+        )
+        .filter(conditions)
+        .select_related("organization", "data_center", "device_type", "device", "metric")
+    )
+
+
+def get_matching_rules(latest: LatestTelemetry):
+    cache_key = _matching_rule_cache_key(latest)
+    cached_ids = cache.get(cache_key)
+    if cached_ids is not None:
+        rule_map = {
+            rule.pk: rule
+            for rule in _matching_rule_queryset(latest).filter(pk__in=cached_ids)
+        }
+        return [rule_map[rule_id] for rule_id in cached_ids if rule_id in rule_map]
+
+    matching = list(_matching_rule_queryset(latest))
     matching.sort(key=_rule_specificity, reverse=True)
+    cache.set(cache_key, [rule.pk for rule in matching], ALERT_RULE_MATCH_CACHE_TIMEOUT_SECONDS)
     return matching
 
 
@@ -338,7 +398,6 @@ def resolve_alert(alert: AlertEvent, latest: LatestTelemetry | None, resolution_
     alert.resolved_by = actor
     alert.resolution_type = resolution_type
     alert.resolve_comment = comment or alert.resolve_comment
-    alert.message = f"{alert.message} (resolved)"
     alert.last_seen_at = now
     alert.save(
         update_fields=[
@@ -347,7 +406,6 @@ def resolve_alert(alert: AlertEvent, latest: LatestTelemetry | None, resolution_
             "resolved_by",
             "resolution_type",
             "resolve_comment",
-            "message",
             "last_seen_at",
             "updated_at",
         ]

@@ -141,6 +141,7 @@ POLLING_SCHEDULER_INTERVAL_SECONDS = config('POLLING_SCHEDULER_INTERVAL_SECONDS'
 POLLING_SCHEDULER_LIMIT = config('POLLING_SCHEDULER_LIMIT', default=200, cast=int)
 SNMP_TRAP_LISTEN_HOST = config('SNMP_TRAP_LISTEN_HOST', default='0.0.0.0')
 SNMP_TRAP_LISTEN_PORT = config('SNMP_TRAP_LISTEN_PORT', default=1162, cast=int)
+NOTIFICATION_DELIVERING_TIMEOUT_MINUTES = config('NOTIFICATION_DELIVERING_TIMEOUT_MINUTES', default=10, cast=int)
 
 CELERY_TASK_ROUTES = {
     'collectors.scheduler.tasks.enqueue_due_polls': {'queue': 'scheduler'},
@@ -159,5 +160,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'collectors.scheduler.tasks.enqueue_due_polls',
         'schedule': POLLING_SCHEDULER_INTERVAL_SECONDS,
         'kwargs': {'limit': POLLING_SCHEDULER_LIMIT},
+    },
+    'requeue-stale-delivering-notifications-every-10-minutes': {
+        'task': 'apps.notifications.tasks.requeue_stale_delivering_notifications_task',
+        'schedule': 600,
+        'kwargs': {'limit': 100},
     }
 }
