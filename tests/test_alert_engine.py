@@ -1477,6 +1477,56 @@ def test_generic_trap_creates_single_durable_alert():
 
 
 @pytest.mark.django_db
+def test_ups_abnormal_condition_trap_auto_resolves_on_normal_telemetry():
+    org, dc, device, _ = _device_setup()
+    status_metric = MetricDefinition.objects.create(
+        code="ups_output_status",
+        name="UPS Output Status",
+        category=MetricCategory.STATUS,
+        data_type=MetricDataType.INTEGER,
+        is_active=True,
+    )
+    SNMPTrapSource.objects.create(organization=org, data_center=dc, device=device, source_ip="10.10.10.51", is_enabled=True)
+    SNMPTrapOIDMapping.objects.create(
+        device_type=device.device_type,
+        device_model=device.device_model,
+        vendor=None,
+        trap_oid="1.3.6.1.4.1.318.0.77",
+        event_code="ups_abnormal_condition",
+        event_name="UPS Abnormal Condition",
+        severity="CRITICAL",
+        message_template="UPS abnormal condition has been detected.",
+        create_alert=True,
+        is_active=True,
+    )
+
+    process_snmp_trap(
+        source_ip="10.10.10.51",
+        trap_oid="1.3.6.1.4.1.318.0.77",
+        raw_varbinds={"abnormal": "1"},
+    )
+
+    alert = AlertEvent.objects.get(device=device, metric__isnull=True, status=AlertStatus.OPEN)
+
+    latest = LatestTelemetry.objects.create(
+        organization=org,
+        data_center=dc,
+        device=device,
+        metric=status_metric,
+        value_integer=2,
+        quality="GOOD",
+        last_seen_at=timezone.now(),
+        source="test",
+    )
+    evaluate_latest(latest)
+
+    alert.refresh_from_db()
+    assert alert.status == AlertStatus.RESOLVED
+    assert alert.resolution_type == "AUTO"
+    assert AlertEventLog.objects.filter(alert_event=alert, action=AlertEventLogAction.RESOLVED).exists()
+
+
+@pytest.mark.django_db
 def test_pending_web_notifications_are_delivered():
     org, _, _, _ = _device_setup()
     notification = Notification.objects.create(

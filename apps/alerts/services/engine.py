@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 
 
 ACTIVE_ALERT_STATUSES = {AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED}
+UPS_ABNORMAL_CONDITION_TRAP_CODE = "ups_abnormal_condition"
+UPS_ABNORMAL_CONDITION_METRIC_CODE = "ups_abnormal_conditions"
+UPS_OUTPUT_STATUS_METRIC_CODE = "ups_output_status"
+UPS_OUTPUT_STATUS_NORMAL_CODES = {2, 4, 12, 13, 18, 19, 20, 23, 25, 26, 27}
 
 
 def _value_from_latest(latest: LatestTelemetry):
@@ -660,6 +664,55 @@ def _resolve_if_needed(latest: LatestTelemetry, rule: AlertRule):
     return alert
 
 
+def _is_ups_abnormal_condition_cleared(latest: LatestTelemetry) -> bool:
+    metric_code = getattr(latest.metric, "code", None)
+    if metric_code == UPS_ABNORMAL_CONDITION_METRIC_CODE:
+        value = _value_from_latest(latest)
+        if value is None:
+            return False
+        normalized = str(value).strip().lower()
+        if normalized in {"0", "false", "normal", "restored", "clear", "cleared"}:
+            return True
+        return normalized != "" and set(normalized) <= {"0"}
+
+    if metric_code == UPS_OUTPUT_STATUS_METRIC_CODE:
+        value = _value_from_latest(latest)
+        try:
+            return int(value) in UPS_OUTPUT_STATUS_NORMAL_CODES
+        except (TypeError, ValueError):
+            return False
+
+    return False
+
+
+def _resolve_ups_trap_alert_if_needed(latest: LatestTelemetry):
+    if not _is_ups_abnormal_condition_cleared(latest):
+        return None
+
+    alert = (
+        AlertEvent.objects.select_for_update()
+        .filter(
+            organization=latest.organization,
+            data_center=latest.data_center,
+            device=latest.device,
+            metric__isnull=True,
+            alert_rule__isnull=True,
+            status__in=ACTIVE_ALERT_STATUSES,
+        )
+        .filter(
+            Q(metadata__trap_event_code=UPS_ABNORMAL_CONDITION_TRAP_CODE)
+            | Q(metadata__trap_oid="1.3.6.1.4.1.318.0.77")
+            | Q(message__icontains="UPS abnormal condition")
+        )
+        .order_by("-triggered_at", "-created_at")
+        .first()
+    )
+    if not alert:
+        return None
+
+    return resolve_alert(alert, latest, resolution_type="AUTO")
+
+
 def evaluate_latest(latest: LatestTelemetry):
     """Evaluate a single LatestTelemetry row and update the alert lifecycle."""
 
@@ -676,6 +729,11 @@ def evaluate_latest(latest: LatestTelemetry):
                 alert = _resolve_if_needed(latest, rule)
                 if alert:
                     created_or_updated.append(alert)
+
+    with transaction.atomic():
+        trap_alert = _resolve_ups_trap_alert_if_needed(latest)
+        if trap_alert:
+            created_or_updated.append(trap_alert)
     return created_or_updated
 
 
