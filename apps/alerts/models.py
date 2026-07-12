@@ -7,6 +7,12 @@ from apps.common.models import TimeStampedModel
 logger = logging.getLogger(__name__)
 
 
+def invalidate_alert_rule_match_cache():
+    from .services.cache import invalidate_alert_rule_match_cache as _invalidate
+
+    return _invalidate()
+
+
 class AlertSeverity(models.TextChoices):
     INFO = "INFO", "Info"
     WARNING = "WARNING", "Warning"
@@ -113,8 +119,6 @@ class AlertRule(TimeStampedModel):
 
         def _invalidate_after_commit():
             try:
-                from .services.cache import invalidate_alert_rule_match_cache
-
                 invalidate_alert_rule_match_cache()
             except Exception:
                 # Cache invalidation must never block a rule write.
@@ -131,8 +135,6 @@ class AlertRule(TimeStampedModel):
 
         def _invalidate_after_commit():
             try:
-                from .services.cache import invalidate_alert_rule_match_cache
-
                 invalidate_alert_rule_match_cache()
             except Exception:
                 logger.warning(
@@ -400,7 +402,7 @@ class AlertSuppressionWindow(TimeStampedModel):
             errors.setdefault("starts_at", []).append("Start time must be earlier than end time.")
             errors.setdefault("ends_at", []).append("End time must be later than start time.")
 
-        if not any(getattr(self, field) is not None for field in ("organization", "data_center", "device", "metric")):
+        if not any(getattr(self, f"{field}_id") is not None for field in ("organization", "data_center", "device", "metric")):
             errors.setdefault("__all__", []).append(
                 "At least one scope field must be selected for a suppression window."
             )

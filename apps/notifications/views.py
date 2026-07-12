@@ -1,5 +1,6 @@
 from django.utils import timezone
 from rest_framework.decorators import action
+from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.response import Response
 
 from apps.common.viewsets import ScopedModelViewSet
@@ -9,6 +10,7 @@ from .serializers import NotificationSerializer
 
 
 class NotificationViewSet(ScopedModelViewSet):
+    http_method_names = ["get", "head", "options", "post"]
     access_scope = "organization"
     organization_field = "organization"
     queryset = Notification.objects.select_related("organization", "recipient").all().order_by("-created_at")
@@ -24,6 +26,18 @@ class NotificationViewSet(ScopedModelViewSet):
         if user.is_superuser or user.is_staff:
             return qs
         return qs.filter(recipient=user)
+
+    def create(self, request, *args, **kwargs):
+        raise MethodNotAllowed("POST")
+
+    def update(self, request, *args, **kwargs):
+        raise MethodNotAllowed("PUT")
+
+    def partial_update(self, request, *args, **kwargs):
+        raise MethodNotAllowed("PATCH")
+
+    def destroy(self, request, *args, **kwargs):
+        raise MethodNotAllowed("DELETE")
 
     def _mark_read_queryset(self):
         user = self.request.user

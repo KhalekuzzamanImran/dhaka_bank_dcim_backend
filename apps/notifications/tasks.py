@@ -1,6 +1,7 @@
 import logging
 
 from celery import shared_task
+from celery.exceptions import Retry
 
 from apps.notifications.models import Notification, NotificationStatus
 from .services import (
@@ -52,6 +53,8 @@ def send_notification_task(self, notification_id):
             self.request.retries + 1,
             countdown,
         )
+        if getattr(self.request, "is_eager", False):
+            raise Retry(exc=exc, when=countdown)
         raise self.retry(exc=exc, countdown=countdown)
 
 

@@ -3,12 +3,15 @@ from __future__ import annotations
 import csv
 import io
 import logging
+from datetime import date, datetime, time
 from typing import Iterable
 
 from django.core.files.base import ContentFile
 from django.db import transaction
 from django.db.models import Count
+from django.utils.dateparse import parse_date, parse_datetime
 from django.utils import timezone
+from django.utils.text import slugify
 
 from apps.alerts.models import AlertEvent, AlertSeverity, AlertStatus
 from apps.common.audit import write_audit
@@ -40,9 +43,66 @@ def _resolve_report_type(job: ReportJob) -> str:
     return report_type
 
 
+def _get_parameter_value(parameters: dict, *keys: str):
+    for key in keys:
+        value = parameters.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _make_aware(value: datetime):
+    if timezone.is_naive(value):
+        return timezone.make_aware(value, timezone.get_current_timezone())
+    return value
+
+
+def _parse_range_value(raw_value, *, is_end: bool) -> datetime:
+    if isinstance(raw_value, datetime):
+        return _make_aware(raw_value)
+    if isinstance(raw_value, date):
+        raw_datetime = datetime.combine(raw_value, time.max if is_end else time.min)
+        return _make_aware(raw_datetime)
+    if isinstance(raw_value, str):
+        parsed_dt = parse_datetime(raw_value)
+        if parsed_dt is not None:
+            return _make_aware(parsed_dt)
+        parsed_date = parse_date(raw_value)
+        if parsed_date is not None:
+            raw_datetime = datetime.combine(parsed_date, time.max if is_end else time.min)
+            return _make_aware(raw_datetime)
+    raise ValueError(f"Invalid date value: {raw_value!r}")
+
+
+def _extract_date_range(job: ReportJob):
+    parameters = job.parameters if isinstance(job.parameters, dict) else {}
+    start_value = _get_parameter_value(parameters, "date_from", "start_date")
+    end_value = _get_parameter_value(parameters, "date_to", "end_date")
+    if start_value is None and end_value is None:
+        return None, None
+
+    start_dt = _parse_range_value(start_value, is_end=False) if start_value is not None else None
+    end_dt = _parse_range_value(end_value, is_end=True) if end_value is not None else None
+
+    if start_dt and end_dt and start_dt > end_dt:
+        raise ValueError("Invalid date range: date_from/start_date must be earlier than date_to/end_date.")
+    return start_dt, end_dt
+
+
+def _apply_date_range(queryset, job: ReportJob, field_name: str):
+    start_dt, end_dt = _extract_date_range(job)
+    if start_dt:
+        queryset = queryset.filter(**{f"{field_name}__gte": start_dt})
+    if end_dt:
+        queryset = queryset.filter(**{f"{field_name}__lte": end_dt})
+    return queryset
+
+
 def _report_filename(job: ReportJob, report_type: str) -> str:
     timestamp = timezone.now().strftime("%Y%m%d_%H%M%S")
-    return f"{job.organization_id}/{report_type}_{job.pk}_{timestamp}.csv"
+    org_label = getattr(job.organization, "code", None) or getattr(job.organization, "name", None) or str(job.organization_id)
+    org_slug = slugify(str(org_label)) or str(job.organization_id)
+    return f"{org_slug}/{report_type}_{job.pk}_{timestamp}.csv"
 
 
 def _render_csv(headers: Iterable[str], rows: Iterable[dict]) -> bytes:
@@ -58,6 +118,7 @@ def _alert_summary_rows(job: ReportJob) -> tuple[list[str], list[dict]]:
     qs = AlertEvent.objects.filter(organization_id=job.organization_id)
     if job.data_center_id:
         qs = qs.filter(data_center_id=job.data_center_id)
+    qs = _apply_date_range(qs, job, "triggered_at")
 
     active_qs = qs.filter(status__in=[AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED])
     summary_rows = [
@@ -94,6 +155,7 @@ def _notification_delivery_rows(job: ReportJob) -> tuple[list[str], list[dict]]:
             qs = qs.filter(metadata__alert_event_id__in=[str(alert_id) for alert_id in alert_event_ids])
         else:
             qs = qs.none()
+    qs = _apply_date_range(qs, job, "created_at")
 
     summary_rows = [
         {"section": "summary", "label": "total", "value": qs.count()},
@@ -174,7 +236,6 @@ def generate_report_job(report_job_id):
     with transaction.atomic():
         job = (
             ReportJob.objects.select_for_update()
-            .select_related("organization", "data_center", "template", "requested_by")
             .filter(pk=report_job_id)
             .first()
         )
@@ -193,10 +254,10 @@ def generate_report_job(report_job_id):
         job.error_message = ""
         job.save(update_fields=["status", "started_at", "error_message", "updated_at"])
 
-    _safe_write_audit(
-        "REPORT_GENERATION_STARTED",
-        "ReportJob",
-        job.pk,
+        _safe_write_audit(
+            "REPORT_GENERATION_STARTED",
+            "ReportJob",
+            job.pk,
         organization=job.organization,
         actor=job.requested_by,
         message=f"Report generation started for {job.report_type or 'unknown'}",
@@ -206,7 +267,7 @@ def generate_report_job(report_job_id):
         report_type, content = _build_report(job)
         filename = _report_filename(job, report_type)
         with transaction.atomic():
-            job = ReportJob.objects.select_for_update().select_related("organization", "data_center", "template", "requested_by").get(pk=job.pk)
+            job = ReportJob.objects.select_for_update().get(pk=job.pk)
             if job.status == ReportJobStatus.CANCELLED:
                 logger.info("Report job cancelled during generation job=%s", job.pk)
                 return job

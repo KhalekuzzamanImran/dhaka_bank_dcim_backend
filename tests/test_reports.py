@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 import os
 
 from django.core.exceptions import ValidationError
@@ -9,9 +10,11 @@ from rest_framework.test import APIClient
 from unittest.mock import patch
 
 from apps.access_control.models import Permission, Role, RolePermission, RoleScope, UserResourceAccess
+from apps.alerts.models import AlertEvent, AlertSeverity, AlertStatus
 from apps.accounts.models import User
 from apps.datacenters.models import DataCenter
 from apps.devices.models import Device, DeviceModel, DeviceType, Vendor
+from apps.notifications.models import Notification, NotificationChannel, NotificationStatus
 from apps.organizations.models import Organization
 from apps.reports.models import ReportJob, ReportJobStatus, ReportTemplate
 from apps.reports.services.generator import generate_report_job
@@ -247,8 +250,8 @@ class ReportTestCase(TestCase):
         self.assertEqual(generated.status, ReportJobStatus.COMPLETED)
         self.assertTrue(generated.file)
         self.assertTrue(os.path.exists(generated.file.path))
-        with generated.file.open("r", encoding="utf-8") as handle:
-            content = handle.read()
+        with generated.file.open("rb") as handle:
+            content = handle.read().decode("utf-8")
         self.assertIn("device_id", content)
         self.assertIn("UPS-01", content)
 
@@ -304,8 +307,8 @@ class ReportTestCase(TestCase):
         template = self._template(organization=empty_org, code="EMPTY_TEMPLATE")
         job = self._job(organization=empty_org, template=template, parameters={"report_type": "device_inventory"})
         generated = generate_report_job(job.id)
-        with generated.file.open("r", encoding="utf-8") as handle:
-            content = handle.read()
+        with generated.file.open("rb") as handle:
+            content = handle.read().decode("utf-8")
         self.assertIn("device_id", content)
         self.assertNotIn("UPS-01", content)
 
@@ -321,7 +324,101 @@ class ReportTestCase(TestCase):
         )
         job = self._job(template=template, data_center=self.dc, parameters={"report_type": "device_inventory"})
         generated = generate_report_job(job.id)
-        with generated.file.open("r", encoding="utf-8") as handle:
-            content = handle.read()
+        with generated.file.open("rb") as handle:
+            content = handle.read().decode("utf-8")
         self.assertIn("UPS-01", content)
         self.assertNotIn("UPS-OTHER-DC", content)
+
+    def test_alert_summary_report_respects_date_range(self):
+        template = self._template(code="ALERT_SUMMARY_TEMPLATE", report_type="alert_summary")
+        now = timezone.now()
+        old_alert = AlertEvent.objects.create(
+            organization=self.org,
+            data_center=self.dc,
+            device=self.device,
+            metric=None,
+            alert_rule=None,
+            severity=AlertSeverity.CRITICAL,
+            status=AlertStatus.OPEN,
+            message="Old alert",
+            triggered_at=now - timedelta(days=3),
+        )
+        recent_alert = AlertEvent.objects.create(
+            organization=self.org,
+            data_center=self.dc,
+            device=self.device,
+            metric=None,
+            alert_rule=None,
+            severity=AlertSeverity.CRITICAL,
+            status=AlertStatus.OPEN,
+            message="Recent alert",
+            triggered_at=now - timedelta(hours=1),
+        )
+        job = self._job(
+            template=template,
+            parameters={
+                "report_type": "alert_summary",
+                "date_from": (now - timedelta(hours=2)).isoformat(),
+                "date_to": (now + timedelta(hours=2)).isoformat(),
+            },
+        )
+        generated = generate_report_job(job.id)
+        with generated.file.open("rb") as handle:
+            content = handle.read().decode("utf-8")
+        self.assertIn("summary,open_total,1", content)
+        self.assertIn("summary,critical_open,1", content)
+        self.assertNotIn("summary,open_total,2", content)
+
+    def test_notification_delivery_report_respects_date_range(self):
+        template = self._template(code="NOTIF_TEMPLATE", report_type="notification_delivery")
+        now = timezone.now()
+        Notification.objects.create(
+            organization=self.org,
+            recipient=self.user,
+            channel=NotificationChannel.WEB,
+            subject="Old notification",
+            message="Old message",
+            status=NotificationStatus.SENT,
+        )
+        old_notification = Notification.objects.latest("created_at")
+        Notification.objects.filter(pk=old_notification.pk).update(created_at=now - timedelta(days=5))
+
+        Notification.objects.create(
+            organization=self.org,
+            recipient=self.user,
+            channel=NotificationChannel.EMAIL,
+            subject="Recent notification",
+            message="Recent message",
+            status=NotificationStatus.SENT,
+        )
+        recent_notification = Notification.objects.latest("created_at")
+        Notification.objects.filter(pk=recent_notification.pk).update(created_at=now - timedelta(hours=2))
+
+        job = self._job(
+            template=template,
+            parameters={
+                "report_type": "notification_delivery",
+                "start_date": (now - timedelta(hours=3)).isoformat(),
+                "end_date": (now + timedelta(hours=3)).isoformat(),
+            },
+        )
+        generated = generate_report_job(job.id)
+        with generated.file.open("rb") as handle:
+            content = handle.read().decode("utf-8")
+        self.assertIn("summary,total,1", content)
+        self.assertIn("summary,sent,1", content)
+        self.assertNotIn("summary,total,2", content)
+
+    def test_invalid_date_range_fails_cleanly(self):
+        template = self._template(code="INVALID_DATE_TEMPLATE", report_type="alert_summary")
+        job = self._job(
+            template=template,
+            parameters={
+                "report_type": "alert_summary",
+                "date_from": "2026-07-10",
+                "date_to": "2026-07-01",
+            },
+        )
+        generated = generate_report_job(job.id)
+        self.assertEqual(generated.status, ReportJobStatus.FAILED)
+        self.assertIn("Invalid date range", generated.error_message)

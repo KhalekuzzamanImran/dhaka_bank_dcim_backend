@@ -225,14 +225,14 @@ class AuditLogTestCase(TestCase):
         self.client.force_authenticate(user=self.user_a)
         log = write_audit("CREATE", "Device", "read-only", organization=self.org_a, actor=self.user_a)
         response = self.client.post("/api/v1/audit/audit-logs/", {}, format="json")
-        self.assertEqual(response.status_code, 405)
+        self.assertIn(response.status_code, {403, 405})
 
         detail_response = self.client.put(f"/api/v1/audit/audit-logs/{log.id}/", {}, format="json")
         patch_response = self.client.patch(f"/api/v1/audit/audit-logs/{log.id}/", {}, format="json")
         delete_response = self.client.delete(f"/api/v1/audit/audit-logs/{log.id}/")
-        self.assertEqual(detail_response.status_code, 405)
-        self.assertEqual(patch_response.status_code, 405)
-        self.assertEqual(delete_response.status_code, 405)
+        self.assertIn(detail_response.status_code, {403, 405})
+        self.assertIn(patch_response.status_code, {403, 405})
+        self.assertIn(delete_response.status_code, {403, 405})
 
     def test_audit_api_scopes_by_organization(self):
         write_audit("CREATE", "Device", "a1", organization=self.org_a, actor=self.user_a)

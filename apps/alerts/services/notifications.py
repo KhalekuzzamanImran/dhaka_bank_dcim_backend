@@ -375,7 +375,9 @@ def create_notifications_for_alert_escalated(alert, policy):
     created = []
     subject = f"ALERT ESCALATED: {alert.device.name}"
     message = _escalation_message(alert, policy)
-    channels = [policy.channel or NotificationChannel.WEB]
+    channels = [NotificationChannel.WEB]
+    if policy.channel and policy.channel != NotificationChannel.WEB:
+        channels.append(policy.channel)
 
     for user in recipients:
         for channel in channels:

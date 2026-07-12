@@ -489,3 +489,58 @@ class NotificationHardeningTests(TestCase):
         notification.refresh_from_db()
         self.assertEqual(notification.status, NotificationStatus.SENT)
         self.assertIsNotNone(notification.read_at)
+
+    def test_normal_user_cannot_create_notifications_via_api(self):
+        org = self._org()
+        role = self._role()
+        user = self._user(email="user1@example.com")
+        self._grant_access(user, org, role)
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.post(
+            "/api/v1/notifications/",
+            {
+                "organization": str(org.id),
+                "recipient": str(user.id),
+                "channel": NotificationChannel.WEB,
+                "subject": "Injected",
+                "message": "Should not be creatable",
+                "status": NotificationStatus.SENT,
+            },
+            format="json",
+        )
+
+        self.assertIn(response.status_code, {403, 405})
+        self.assertEqual(Notification.objects.filter(subject="Injected").count(), 0)
+
+    def test_normal_user_cannot_patch_delivery_lifecycle_fields(self):
+        org = self._org()
+        role = self._role()
+        user = self._user(email="user1@example.com")
+        self._grant_access(user, org, role)
+
+        notification = Notification.objects.create(
+            organization=org,
+            recipient=user,
+            channel=NotificationChannel.WEB,
+            subject="Read Only",
+            message="Message",
+            status=NotificationStatus.PENDING,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.patch(
+            f"/api/v1/notifications/{notification.id}/",
+            {
+                "status": NotificationStatus.SENT,
+                "sent_at": timezone.now().isoformat(),
+            },
+            format="json",
+        )
+
+        self.assertIn(response.status_code, {403, 405})
+        notification.refresh_from_db()
+        self.assertEqual(notification.status, NotificationStatus.PENDING)
+        self.assertIsNone(notification.sent_at)

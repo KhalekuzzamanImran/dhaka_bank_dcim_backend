@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
+import requests
 from django.db import transaction
 from django.utils import timezone
 
@@ -175,6 +176,24 @@ def deliver_notification(notification: Notification):
         send_email_notification(notification)
     elif notification.channel == NotificationChannel.SMS:
         send_sms_notification(notification)
+    elif notification.channel == NotificationChannel.WEBHOOK:
+        webhook_url = None
+        metadata = notification.metadata if isinstance(notification.metadata, dict) else {}
+        webhook_url = metadata.get("webhook_url") or metadata.get("url")
+        if not webhook_url:
+            raise ValueError("Webhook URL is missing for webhook notification")
+        timeout = float(metadata.get("timeout_seconds") or 10)
+        payload = {
+            "notification_id": str(notification.pk),
+            "subject": notification.subject,
+            "message": notification.message,
+            "status": notification.status,
+            "metadata": metadata,
+        }
+        logger.info("Sending webhook notification notification=%s url=%s", notification.pk, webhook_url)
+        response = requests.post(webhook_url, json=payload, timeout=timeout)
+        response.raise_for_status()
+        logger.info("Webhook notification sent notification=%s status=%s", notification.pk, response.status_code)
     else:
         notification.status = NotificationStatus.SENT
         notification.sent_at = timezone.now()

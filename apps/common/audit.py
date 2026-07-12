@@ -1,10 +1,36 @@
 from apps.common.middleware import get_current_request
 
-SENSITIVE_KEYS = {'password', 'token', 'secret', 'credential', 'community', 'auth_key', 'priv_key', 'api_key'}
+
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, set):
+        return [_json_safe(v) for v in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+SENSITIVE_KEYS = {'password', 'token', 'secret', 'credential', 'community', 'auth_key', 'priv_key', 'api_key', 'access', 'refresh'}
 
 def redact(value):
+    value = _json_safe(value)
     if isinstance(value, dict):
-        return {k: ('***REDACTED***' if any(s in k.lower() for s in SENSITIVE_KEYS) else redact(v)) for k, v in value.items()}
+        redacted = {}
+        for k, v in value.items():
+            if any(s in str(k).lower() for s in SENSITIVE_KEYS):
+                if isinstance(v, dict):
+                    redacted[k] = redact(v)
+                elif isinstance(v, list):
+                    redacted[k] = redact(v)
+                else:
+                    redacted[k] = "***REDACTED***"
+            else:
+                redacted[k] = redact(v)
+        return redacted
     if isinstance(value, list):
         return [redact(v) for v in value]
     return value
