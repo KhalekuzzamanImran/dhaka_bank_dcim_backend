@@ -17,12 +17,13 @@ from apps.alerts.models import AlertEvent, AlertSeverity, AlertStatus
 from apps.common.audit import write_audit
 from apps.devices.models import Device
 from apps.notifications.models import Notification, NotificationStatus
+from apps.telemetry.models import MetricDefinition, TelemetryPoint
 
 from ..models import ReportJob, ReportJobStatus
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_REPORT_TYPES = {"alert_summary", "notification_delivery", "device_inventory"}
+SUPPORTED_REPORT_TYPES = {"alert_summary", "notification_delivery", "device_inventory", "room_environment"}
 
 
 def _safe_write_audit(*args, **kwargs):
@@ -217,6 +218,91 @@ def _device_inventory_rows(job: ReportJob) -> tuple[list[str], list[dict]]:
     return headers, rows
 
 
+def _telemetry_value(point: TelemetryPoint):
+    if point.value_float is not None:
+        return point.value_float
+    if point.value_integer is not None:
+        return point.value_integer
+    if point.value_boolean is not None:
+        return point.value_boolean
+    if point.value_text is not None:
+        return point.value_text
+    return point.raw_value_text
+
+
+def _room_environment_rows(job: ReportJob) -> tuple[list[str], list[dict]]:
+    parameters = job.parameters if isinstance(job.parameters, dict) else {}
+    metric_codes = parameters.get("metrics")
+    if not isinstance(metric_codes, (list, tuple)):
+        metric_codes = []
+    metric_codes = [str(code).strip() for code in metric_codes if str(code).strip()]
+    if not metric_codes and job.template_id and isinstance(getattr(job.template, "config", None), dict):
+        template_metrics = job.template.config.get("metrics")
+        if isinstance(template_metrics, (list, tuple)):
+            metric_codes = [str(code).strip() for code in template_metrics if str(code).strip()]
+    if not metric_codes:
+        metric_codes = ["room_temperature", "room_humidity"]
+
+    metrics = MetricDefinition.objects.filter(code__in=metric_codes, is_active=True)
+    if not metrics.exists():
+        headers = [
+            "room_name",
+            "room_code",
+            "device_name",
+            "device_code",
+            "metric_code",
+            "metric_name",
+            "measured_at",
+            "value",
+            "unit",
+            "quality",
+            "source",
+        ]
+        return headers, []
+
+    qs = (
+        TelemetryPoint.objects.select_related("device__room", "metric")
+        .filter(organization_id=job.organization_id, metric_id__in=metrics.values_list("id", flat=True))
+    )
+    if job.data_center_id:
+        qs = qs.filter(data_center_id=job.data_center_id)
+    qs = _apply_date_range(qs, job, "time")
+
+    headers = [
+        "room_name",
+        "room_code",
+        "device_name",
+        "device_code",
+        "metric_code",
+        "metric_name",
+        "measured_at",
+        "value",
+        "unit",
+        "quality",
+        "source",
+    ]
+    rows = []
+    for point in qs.order_by("device__room__name", "device__name", "time", "metric__code"):
+        room = getattr(point.device, "room", None)
+        metric = point.metric
+        rows.append(
+            {
+                "room_name": getattr(room, "name", None) or "Unassigned",
+                "room_code": getattr(room, "code", None) or "",
+                "device_name": getattr(point.device, "name", None),
+                "device_code": getattr(point.device, "code", None),
+                "metric_code": getattr(metric, "code", None),
+                "metric_name": getattr(metric, "name", None),
+                "measured_at": point.time.isoformat() if point.time else None,
+                "value": _telemetry_value(point),
+                "unit": getattr(metric, "unit", None) or "",
+                "quality": point.quality,
+                "source": point.source or "",
+            }
+        )
+    return headers, rows
+
+
 def _build_report(job: ReportJob) -> tuple[str, bytes]:
     report_type = _resolve_report_type(job)
     if report_type == "alert_summary":
@@ -225,6 +311,8 @@ def _build_report(job: ReportJob) -> tuple[str, bytes]:
         headers, rows = _notification_delivery_rows(job)
     elif report_type == "device_inventory":
         headers, rows = _device_inventory_rows(job)
+    elif report_type == "room_environment":
+        headers, rows = _room_environment_rows(job)
     else:
         raise ValueError(f"Unsupported report type: {report_type}")
 

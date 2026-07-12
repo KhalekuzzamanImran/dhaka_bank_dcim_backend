@@ -18,6 +18,8 @@ from apps.notifications.models import Notification, NotificationChannel, Notific
 from apps.organizations.models import Organization
 from apps.reports.models import ReportJob, ReportJobStatus, ReportTemplate
 from apps.reports.services.generator import generate_report_job
+from apps.telemetry.models import MetricCategory, MetricDataType, MetricDefinition, TelemetryPoint
+from apps.datacenters.models import Room
 
 
 class ReportTestCase(TestCase):
@@ -408,6 +410,83 @@ class ReportTestCase(TestCase):
         self.assertIn("summary,total,1", content)
         self.assertIn("summary,sent,1", content)
         self.assertNotIn("summary,total,2", content)
+
+    def test_room_environment_report_generates_room_readings(self):
+        template = self._template(
+            code="ROOM_ENV_TEMPLATE",
+            report_type="room_environment",
+            config={"report_type": "room_environment", "output_format": "csv", "metrics": ["room_temperature", "room_humidity"]},
+        )
+        room = Room.objects.create(data_center=self.dc, name="Server Room 1", code="SR-1")
+        self.device.room = room
+        self.device.save(update_fields=["room"])
+
+        temp_metric = MetricDefinition.objects.create(
+            code="room_temperature",
+            name="Room Temperature",
+            category=MetricCategory.ENVIRONMENT,
+            data_type=MetricDataType.FLOAT,
+            unit="°C",
+        )
+        humidity_metric = MetricDefinition.objects.create(
+            code="room_humidity",
+            name="Room Humidity",
+            category=MetricCategory.ENVIRONMENT,
+            data_type=MetricDataType.FLOAT,
+            unit="%",
+        )
+
+        now = timezone.now()
+        TelemetryPoint.objects.create(
+            time=now - timedelta(hours=3),
+            organization=self.org,
+            data_center=self.dc,
+            device=self.device,
+            metric=temp_metric,
+            value_float=24.6,
+            raw_value_text="24.6",
+            quality="GOOD",
+        )
+        TelemetryPoint.objects.create(
+            time=now - timedelta(hours=1),
+            organization=self.org,
+            data_center=self.dc,
+            device=self.device,
+            metric=humidity_metric,
+            value_float=51.2,
+            raw_value_text="51.2",
+            quality="GOOD",
+        )
+        TelemetryPoint.objects.create(
+            time=now - timedelta(days=2),
+            organization=self.org,
+            data_center=self.dc,
+            device=self.device,
+            metric=temp_metric,
+            value_float=22.1,
+            raw_value_text="22.1",
+            quality="GOOD",
+        )
+
+        job = self._job(
+            template=template,
+            parameters={
+                "report_type": "room_environment",
+                "metrics": ["room_temperature", "room_humidity"],
+                "date_from": (now - timedelta(hours=4)).isoformat(),
+                "date_to": (now + timedelta(hours=1)).isoformat(),
+            },
+        )
+        generated = generate_report_job(job.id)
+        with generated.file.open("rb") as handle:
+            content = handle.read().decode("utf-8")
+        self.assertIn("room_name,room_code,device_name,device_code,metric_code", content)
+        self.assertIn("Server Room 1", content)
+        self.assertIn("room_temperature", content)
+        self.assertIn("room_humidity", content)
+        self.assertIn("24.6", content)
+        self.assertIn("51.2", content)
+        self.assertNotIn("22.1", content)
 
     def test_invalid_date_range_fails_cleanly(self):
         template = self._template(code="INVALID_DATE_TEMPLATE", report_type="alert_summary")

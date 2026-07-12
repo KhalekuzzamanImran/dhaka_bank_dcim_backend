@@ -17,15 +17,47 @@ services:
     image: redis:7-alpine
     ports: ['6379:6379']
 
+  mailpit:
+    image: axllent/mailpit:latest
+    command: ['--webroot', '/mailpit']
+    ports:
+      - '1025:1025'
+      - '8025:8025'
+    environment:
+      MP_DATABASE: /data/mailpit.db
+    volumes:
+      - mailpit_data:/data
+
   api:
     build: .
     command: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 4 --timeout 120
     env_file: .env
+    environment:
+      EMAIL_BACKEND: django.core.mail.backends.smtp.EmailBackend
+      EMAIL_HOST: mailpit
+      EMAIL_PORT: 1025
+      EMAIL_USE_TLS: 'False'
+      EMAIL_USE_SSL: 'False'
+      EMAIL_HOST_USER: ''
+      EMAIL_HOST_PASSWORD: ''
+      DEFAULT_FROM_EMAIL: dcim-alerts@mail.local
     ports: ['8000:8000']
     depends_on:
       db: {condition: service_healthy}
       redis: {condition: service_started}
+      mailpit: {condition: service_started}
     volumes: ['.:/app']
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      api: {condition: service_started}
+      mailpit: {condition: service_started}
+    ports:
+      - '80:80'
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./:/app:ro
 
   scheduler-worker:
     build: .
@@ -108,3 +140,4 @@ services:
 
 volumes:
   postgres_data:
+  mailpit_data:
