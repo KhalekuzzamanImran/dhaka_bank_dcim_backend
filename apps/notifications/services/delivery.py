@@ -26,7 +26,11 @@ def queue_notification_delivery(notification: Notification):
         notification.channel,
         notification.status,
     )
-    send_notification_task.delay(str(notification.pk))
+
+    def _dispatch():
+        send_notification_task.delay(str(notification.pk))
+
+    transaction.on_commit(_dispatch)
 
 
 def claim_notification_for_delivery(notification_id: str | int):

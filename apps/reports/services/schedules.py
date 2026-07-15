@@ -98,7 +98,6 @@ def claim_due_report_schedules(limit: int = 100) -> list[ClaimedSchedule]:
     with transaction.atomic():
         due_schedules = (
             ReportSchedule.objects.select_for_update(skip_locked=True)
-            .select_related("organization", "data_center", "created_by")
             .filter(is_active=True, next_run_at__lte=now)
             .order_by("next_run_at", "created_at")[:limit]
         )
