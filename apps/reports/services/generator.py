@@ -19,12 +19,10 @@ from apps.devices.models import Device
 from apps.notifications.models import Notification, NotificationStatus
 from apps.telemetry.models import MetricDefinition, TelemetryPoint
 
+from ..constants import SUPPORTED_REPORT_TYPES
 from ..models import ReportJob, ReportJobStatus
 
 logger = logging.getLogger(__name__)
-
-SUPPORTED_REPORT_TYPES = {"alert_summary", "notification_delivery", "device_inventory", "room_environment"}
-
 
 def _safe_write_audit(*args, **kwargs):
     try:

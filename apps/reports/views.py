@@ -11,14 +11,15 @@ from rest_framework.response import Response
 from apps.common.audit import write_audit
 from apps.common.viewsets import ScopedModelViewSet
 
-from .filters import ReportJobFilter
-from .models import ReportJob, ReportJobStatus, ReportTemplate
+from .filters import ReportJobFilter, ReportScheduleFilter
+from .models import ReportJob, ReportJobStatus, ReportSchedule, ReportTemplate
 from .serializers import (
     ReportJobCreateSerializer,
     ReportJobDetailSerializer,
     ReportJobGenerateSerializer,
     ReportJobListSerializer,
     ReportJobRetrySerializer,
+    ReportScheduleSerializer,
     ReportTemplateSerializer,
 )
 
@@ -181,3 +182,17 @@ class ReportJobViewSet(ScopedModelViewSet):
             as_attachment=True,
             filename=os.path.basename(job.file.name),
         )
+
+
+class ReportScheduleViewSet(ScopedModelViewSet):
+    access_scope = "mixed"
+    organization_field = "organization"
+    data_center_field = "data_center"
+    queryset = ReportSchedule.objects.select_related("organization", "data_center", "created_by", "last_job").all().order_by("-created_at")
+    serializer_class = ReportScheduleSerializer
+    permission_module = "report"
+    audit_resource_type = "ReportSchedule"
+    filterset_class = ReportScheduleFilter
+    search_fields = ["name", "report_type", "organization__name", "organization__code", "created_by__username", "created_by__email", "last_error_message"]
+    ordering_fields = ["created_at", "updated_at", "next_run_at", "last_run_at", "last_sent_at", "name", "report_type", "frequency"]
+    ordering = ["-created_at"]

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import time, timedelta
 import os
 
 from django.core.exceptions import ValidationError
@@ -16,8 +16,9 @@ from apps.datacenters.models import DataCenter
 from apps.devices.models import Device, DeviceModel, DeviceType, Vendor
 from apps.notifications.models import Notification, NotificationChannel, NotificationStatus
 from apps.organizations.models import Organization
-from apps.reports.models import ReportJob, ReportJobStatus, ReportTemplate
+from apps.reports.models import ReportJob, ReportJobStatus, ReportSchedule, ReportTemplate
 from apps.reports.services.generator import generate_report_job
+from apps.reports.services.schedules import execute_report_schedule
 from apps.telemetry.models import MetricCategory, MetricDataType, MetricDefinition, TelemetryPoint
 from apps.datacenters.models import Room
 
@@ -230,6 +231,32 @@ class ReportTestCase(TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json()["status"], ReportJobStatus.PENDING)
 
+    def test_report_schedule_create_accepts_ui_labels_and_sets_next_run(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post(
+            "/api/v1/reports/report-schedules/",
+            {
+                "organization": str(self.org.id),
+                "data_center": str(self.dc.id),
+                "name": "Environmental Trends Report",
+                "report_type": "Environmental Trends Report",
+                "frequency": "Daily",
+                "delivery_time": "06:00:00",
+                "output_format": "PDF / CSV",
+                "recipients": ["omar@adn", "noc@adn", "facilities@adn"],
+                "attach_raw_data": True,
+                "is_active": True,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["report_type"], "room_environment")
+        self.assertEqual(payload["frequency"], "DAILY")
+        self.assertEqual(payload["output_format"], "PDF_CSV")
+        self.assertEqual(payload["created_by"], str(self.user.id))
+        self.assertIsNotNone(payload["next_run_at"])
+
     def test_generate_action_enqueues_and_can_run_generation(self):
         self.client.force_authenticate(user=self.user)
         template = self._template(code="GENERATE_TEMPLATE")
@@ -264,6 +291,35 @@ class ReportTestCase(TestCase):
         generated.refresh_from_db()
         self.assertEqual(generated.status, ReportJobStatus.FAILED)
         self.assertIn("Unsupported report type", generated.error_message)
+
+    def test_report_schedule_execution_generates_job_and_emails_recipients(self):
+        schedule = ReportSchedule.objects.create(
+            organization=self.org,
+            data_center=self.dc,
+            name="Environmental Trends Report",
+            report_type="Environmental Trends Report",
+            frequency="Daily",
+            delivery_time=time(6, 0),
+            output_format="PDF / CSV",
+            recipients=["omar@adn", "noc@adn", "facilities@adn"],
+            attach_raw_data=True,
+            is_active=True,
+            created_by=self.user,
+            next_run_at=timezone.now() - timedelta(minutes=5),
+        )
+
+        with patch("apps.reports.services.schedules.EmailMessage.send", return_value=1) as mocked_send:
+            executed = execute_report_schedule(str(schedule.id))
+
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.last_delivery_status, "SENT")
+        self.assertIsNotNone(schedule.last_job)
+        self.assertEqual(schedule.last_job.status, ReportJobStatus.COMPLETED)
+        self.assertTrue(schedule.last_job.file)
+        self.assertTrue(mocked_send.called)
+        email_message = mocked_send.call_args[0][0]
+        self.assertEqual(sorted(email_message.to), ["facilities@adn", "noc@adn", "omar@adn"])
+        self.assertEqual(executed.pk, schedule.pk)
 
     def test_retry_works_only_for_failed_jobs(self):
         self.client.force_authenticate(user=self.user)

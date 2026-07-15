@@ -165,5 +165,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.notifications.tasks.requeue_stale_delivering_notifications_task',
         'schedule': 600,
         'kwargs': {'limit': 100},
+    },
+    'enqueue-due-report-schedules-every-minute': {
+        'task': 'apps.reports.tasks.enqueue_due_report_schedules_task',
+        'schedule': 60,
+        'kwargs': {'limit': 100},
     }
 }

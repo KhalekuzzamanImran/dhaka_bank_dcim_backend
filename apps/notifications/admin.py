@@ -32,3 +32,4 @@ class NotificationAdmin(admin.ModelAdmin):
         "message",
     )
     readonly_fields = ("created_at", "updated_at", "sent_at", "read_at", "error_message")
+    ordering = ("-created_at", "-sent_at", "-updated_at", "-id")

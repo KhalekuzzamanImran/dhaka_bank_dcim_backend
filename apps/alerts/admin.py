@@ -36,6 +36,7 @@ class AlertEventAdmin(admin.ModelAdmin):
     list_filter = ("severity", "status", "organization", "data_center", "metric", "triggered_at")
     search_fields = ("message", "device__name", "metric__code")
     readonly_fields = ("created_at", "updated_at")
+    ordering = ("-triggered_at", "-last_seen_at", "-created_at")
 
 
 @admin.register(AlertConditionState)
@@ -50,12 +51,14 @@ class AlertEventLogAdmin(admin.ModelAdmin):
     list_display = ("alert_event", "action", "old_status", "new_status", "actor", "created_at")
     list_filter = ("action", "old_status", "new_status", "created_at")
     search_fields = ("alert_event__message", "message")
+    ordering = ("-created_at", "-id")
 
 
 @admin.register(AlertComment)
 class AlertCommentAdmin(admin.ModelAdmin):
     list_display = ("alert_event", "user", "created_at")
     search_fields = ("comment", "alert_event__message", "user__username")
+    ordering = ("-created_at", "-id")
 
 
 @admin.register(AlertEscalationPolicy)
@@ -63,6 +66,7 @@ class AlertEscalationPolicyAdmin(admin.ModelAdmin):
     list_display = ("severity", "organization", "data_center", "if_not_acknowledged_minutes", "if_not_resolved_minutes", "target_role", "channel", "is_active")
     list_filter = ("severity", "channel", "is_active", "organization", "data_center", "target_role")
     search_fields = ("severity", "target_role__name")
+    ordering = ("-created_at", "-updated_at")
 
 
 @admin.register(AlertSuppressionWindow)
@@ -70,3 +74,4 @@ class AlertSuppressionWindowAdmin(admin.ModelAdmin):
     list_display = ("organization", "data_center", "device", "metric", "starts_at", "ends_at", "is_active")
     list_filter = ("is_active", "organization", "data_center", "device", "metric")
     search_fields = ("reason", "device__name", "metric__code")
+    ordering = ("-starts_at", "-created_at")

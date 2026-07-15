@@ -5,7 +5,13 @@ from rest_framework import serializers
 from apps.common.access import get_access_scope
 from apps.organizations.models import Organization
 
-from .models import ReportJob, ReportJobStatus, ReportTemplate
+from .constants import (
+    REPORT_TYPE_LABELS,
+    normalize_report_format,
+    normalize_report_frequency,
+    normalize_report_type,
+)
+from .models import ReportJob, ReportJobStatus, ReportSchedule, ReportTemplate
 
 
 def _user_can_access_organization(user, organization_id):
@@ -254,3 +260,171 @@ class ReportJobGenerateSerializer(serializers.Serializer):
 class ReportJobRetrySerializer(serializers.Serializer):
     class Meta:
         fields = ()
+
+
+class ReportScheduleSerializer(serializers.ModelSerializer):
+    organization_name = serializers.SerializerMethodField(read_only=True)
+    data_center_name = serializers.SerializerMethodField(read_only=True)
+    created_by_name = serializers.SerializerMethodField(read_only=True)
+    report_type_label = serializers.SerializerMethodField(read_only=True)
+    frequency_label = serializers.CharField(source="get_frequency_display", read_only=True)
+    output_format_label = serializers.CharField(source="get_output_format_display", read_only=True)
+    recipient_count = serializers.SerializerMethodField(read_only=True)
+    last_job_status = serializers.SerializerMethodField(read_only=True)
+    last_job_file_url = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = ReportSchedule
+        fields = (
+            "id",
+            "organization",
+            "organization_name",
+            "data_center",
+            "data_center_name",
+            "name",
+            "report_type",
+            "report_type_label",
+            "frequency",
+            "frequency_label",
+            "delivery_time",
+            "output_format",
+            "output_format_label",
+            "recipients",
+            "recipient_count",
+            "attach_raw_data",
+            "is_active",
+            "next_run_at",
+            "last_run_at",
+            "last_sent_at",
+            "last_delivery_status",
+            "last_error_message",
+            "last_job",
+            "last_job_status",
+            "last_job_file_url",
+            "created_by",
+            "created_by_name",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = (
+            "id",
+            "organization_name",
+            "data_center_name",
+            "report_type_label",
+            "frequency_label",
+            "output_format_label",
+            "recipient_count",
+            "next_run_at",
+            "last_run_at",
+            "last_sent_at",
+            "last_delivery_status",
+            "last_error_message",
+            "last_job",
+            "last_job_status",
+            "last_job_file_url",
+            "created_by",
+            "created_by_name",
+            "created_at",
+            "updated_at",
+        )
+
+    def get_organization_name(self, obj):
+        return getattr(obj.organization, "name", None)
+
+    def get_data_center_name(self, obj):
+        return getattr(obj.data_center, "name", None)
+
+    def get_created_by_name(self, obj):
+        if not obj.created_by_id:
+            return None
+        return getattr(obj.created_by, "full_name", None) or getattr(obj.created_by, "username", None) or getattr(obj.created_by, "email", None)
+
+    def get_report_type_label(self, obj):
+        return REPORT_TYPE_LABELS.get(obj.report_type, obj.report_type)
+
+    def get_recipient_count(self, obj):
+        recipients = obj.recipients if isinstance(obj.recipients, list) else []
+        return len(recipients)
+
+    def get_last_job_status(self, obj):
+        if not obj.last_job_id:
+            return None
+        return getattr(obj.last_job, "status", None)
+
+    def get_last_job_file_url(self, obj):
+        if not obj.last_job_id or not getattr(obj.last_job, "file", None):
+            return None
+        try:
+            request = self.context.get("request")
+            if request:
+                return request.build_absolute_uri(obj.last_job.file.url)
+            return obj.last_job.file.url
+        except Exception:
+            return None
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+
+        organization = attrs.get("organization", getattr(self.instance, "organization", None))
+        data_center = attrs.get("data_center", getattr(self.instance, "data_center", None))
+        organization_id = organization.id if hasattr(organization, "id") else organization
+        data_center_id = data_center.id if hasattr(data_center, "id") else data_center
+
+        if organization_id and not _user_can_access_organization(user, organization_id):
+            raise serializers.ValidationError({"organization": "You do not have access to this organization."})
+        if data_center_id and not _user_can_access_data_center(user, data_center_id):
+            raise serializers.ValidationError({"data_center": "You do not have access to this data center."})
+
+        report_type = attrs.get("report_type", getattr(self.instance, "report_type", None))
+        normalized_report_type = normalize_report_type(report_type)
+        if not normalized_report_type:
+            raise serializers.ValidationError({"report_type": "Unsupported report type."})
+        attrs["report_type"] = normalized_report_type
+
+        frequency = attrs.get("frequency", getattr(self.instance, "frequency", None))
+        normalized_frequency = normalize_report_frequency(frequency)
+        if not normalized_frequency:
+            raise serializers.ValidationError({"frequency": "Unsupported frequency."})
+        attrs["frequency"] = normalized_frequency
+
+        output_format = attrs.get("output_format", getattr(self.instance, "output_format", None))
+        normalized_format = normalize_report_format(output_format)
+        if not normalized_format:
+            raise serializers.ValidationError({"output_format": "Unsupported report format."})
+        attrs["output_format"] = normalized_format
+
+        recipients = attrs.get("recipients", getattr(self.instance, "recipients", []))
+        if not isinstance(recipients, list):
+            raise serializers.ValidationError({"recipients": "Recipients must be a list of email addresses."})
+        normalized_recipients = []
+        seen = set()
+        for recipient in recipients:
+            candidate = str(recipient).strip().lower()
+            if not candidate:
+                continue
+            if candidate.count("@") != 1:
+                raise serializers.ValidationError({"recipients": f"Invalid recipient email: {candidate}"})
+            local_part, domain_part = candidate.split("@", 1)
+            if not local_part or not domain_part:
+                raise serializers.ValidationError({"recipients": f"Invalid recipient email: {candidate}"})
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            normalized_recipients.append(candidate)
+        if not normalized_recipients:
+            raise serializers.ValidationError({"recipients": "At least one recipient email is required."})
+        attrs["recipients"] = normalized_recipients
+
+        created_by = attrs.get("created_by", getattr(self.instance, "created_by", None))
+        if created_by is None and user and user.is_authenticated:
+            attrs["created_by"] = user
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user and user.is_authenticated and validated_data.get("created_by") is None:
+            validated_data["created_by"] = user
+        return super().create(validated_data)
