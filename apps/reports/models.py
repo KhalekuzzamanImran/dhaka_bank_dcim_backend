@@ -188,7 +188,10 @@ class ReportSchedule(TimeStampedModel):
     frequency = models.CharField(max_length=30, choices=REPORT_SCHEDULE_FREQUENCY_CHOICES, default="DAILY")
     delivery_time = models.TimeField(default=time(6, 0))
     output_format = models.CharField(max_length=30, choices=REPORT_SCHEDULE_FORMAT_CHOICES, default="PDF_CSV")
+    parameters = models.JSONField(default=dict, blank=True)
     recipients = models.JSONField(default=list, blank=True)
+    send_sms = models.BooleanField(default=False)
+    sms_recipients = models.JSONField(default=list, blank=True)
     attach_raw_data = models.BooleanField(default=True)
     is_active = models.BooleanField(default=True)
     next_run_at = models.DateTimeField(blank=True, null=True, db_index=True)
@@ -315,7 +318,9 @@ class ReportSchedule(TimeStampedModel):
             errors.setdefault("recipients", []).append("Recipients must be a list of email addresses.")
         else:
             normalized_recipients = self.normalize_recipients()
-            if not normalized_recipients:
+            sms_recipients = self.sms_recipients if isinstance(self.sms_recipients, list) else []
+            normalized_sms_recipients = list(dict.fromkeys(str(value).strip() for value in sms_recipients if str(value).strip()))
+            if not normalized_recipients and not (self.send_sms and normalized_sms_recipients):
                 errors.setdefault("recipients", []).append("At least one recipient email is required.")
             for recipient in normalized_recipients:
                 if recipient.count("@") != 1:
@@ -325,6 +330,10 @@ class ReportSchedule(TimeStampedModel):
                 if not local_part or not domain_part:
                     errors.setdefault("recipients", []).append(f"Invalid recipient email: {recipient}")
             self.recipients = normalized_recipients
+            self.sms_recipients = normalized_sms_recipients
+
+        if self.send_sms and not self.sms_recipients:
+            errors.setdefault("sms_recipients", []).append("At least one SMS recipient is required when SMS is enabled.")
 
         if self.is_active and not self.next_run_at:
             self.next_run_at = self.calculate_next_run_at()
@@ -336,7 +345,18 @@ class ReportSchedule(TimeStampedModel):
             raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
+        update_fields = kwargs.get("update_fields")
         if self._state.adding and not self.next_run_at:
             self.next_run_at = self.calculate_next_run_at()
+        elif self.pk:
+            previous = type(self).objects.filter(pk=self.pk).values("delivery_time", "frequency", "is_active").first()
+            if previous and (
+                previous["delivery_time"] != self.delivery_time
+                or previous["frequency"] != self.frequency
+                or (self.is_active and not previous["is_active"])
+            ):
+                self.next_run_at = self.calculate_next_run_at()
+                if update_fields is not None:
+                    kwargs["update_fields"] = set(update_fields) | {"next_run_at"}
         self.full_clean()
         return super().save(*args, **kwargs)

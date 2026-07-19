@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 from django.http import FileResponse
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import action
@@ -13,6 +14,7 @@ from apps.common.viewsets import ScopedModelViewSet
 
 from .filters import ReportJobFilter, ReportScheduleFilter
 from .models import ReportJob, ReportJobStatus, ReportSchedule, ReportTemplate
+from .services.schedules import execute_report_schedule
 from .serializers import (
     ReportJobCreateSerializer,
     ReportJobDetailSerializer,
@@ -20,6 +22,7 @@ from .serializers import (
     ReportJobListSerializer,
     ReportJobRetrySerializer,
     ReportScheduleSerializer,
+    ReportScheduleRunNowSerializer,
     ReportTemplateSerializer,
 )
 
@@ -95,15 +98,18 @@ class ReportJobViewSet(ScopedModelViewSet):
         job.save(update_fields=["requested_by", "status", "error_message", "started_at", "completed_at", "file", "updated_at"])
         from .tasks import generate_report_job_task
 
-        generate_report_job_task.delay(str(job.pk))
-        _safe_write_audit(
-            audit_action,
-            "ReportJob",
-            job.pk,
-            organization=job.organization,
-            actor=request.user,
-            message=f"Report generation queued for {job.report_type or 'unknown'}",
-        )
+        def _queue_generation():
+            generate_report_job_task.delay(str(job.pk))
+            _safe_write_audit(
+                audit_action,
+                "ReportJob",
+                job.pk,
+                organization=job.organization,
+                actor=request.user,
+                message=f"Report generation queued for {job.report_type or 'unknown'}",
+            )
+
+        transaction.on_commit(_queue_generation)
         return ReportJobDetailSerializer(self._refresh_job_from_db(job), context=self.get_serializer_context()).data
 
     @action(detail=True, methods=["post"])
@@ -196,3 +202,37 @@ class ReportScheduleViewSet(ScopedModelViewSet):
     search_fields = ["name", "report_type", "organization__name", "organization__code", "created_by__username", "created_by__email", "last_error_message"]
     ordering_fields = ["created_at", "updated_at", "next_run_at", "last_run_at", "last_sent_at", "name", "report_type", "frequency"]
     ordering = ["-created_at"]
+
+    def get_serializer_class(self):
+        if self.action == "run_now":
+            return ReportScheduleRunNowSerializer
+        return super().get_serializer_class()
+
+    @action(detail=True, methods=["post"])
+    def run_now(self, request, pk=None):
+        schedule = self.get_object()
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        detail = None
+        try:
+            executed = execute_report_schedule(str(schedule.pk))
+        except Exception as exc:
+            detail = str(exc)
+            refreshed = (
+                ReportSchedule.objects.select_related("organization", "data_center", "created_by", "last_job")
+                .filter(pk=schedule.pk)
+                .first()
+            )
+            if refreshed is not None:
+                schedule = refreshed
+            executed = schedule
+
+        refreshed = (
+            ReportSchedule.objects.select_related("organization", "data_center", "created_by", "last_job")
+            .filter(pk=executed.pk)
+            .first()
+        )
+        payload = ReportScheduleSerializer(refreshed or executed, context=self.get_serializer_context()).data
+        if detail:
+            payload["detail"] = detail
+        return Response(payload)

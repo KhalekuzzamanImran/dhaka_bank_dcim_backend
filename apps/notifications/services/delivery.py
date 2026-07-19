@@ -179,7 +179,7 @@ def deliver_notification(notification: Notification):
     if notification.channel == NotificationChannel.EMAIL:
         send_email_notification(notification)
     elif notification.channel == NotificationChannel.SMS:
-        send_sms_notification(notification)
+        return send_sms_notification(notification)
     elif notification.channel == NotificationChannel.WEBHOOK:
         webhook_url = None
         metadata = notification.metadata if isinstance(notification.metadata, dict) else {}
@@ -198,6 +198,7 @@ def deliver_notification(notification: Notification):
         response = requests.post(webhook_url, json=payload, timeout=timeout)
         response.raise_for_status()
         logger.info("Webhook notification sent notification=%s status=%s", notification.pk, response.status_code)
+        return {"backend": "webhook", "status_code": response.status_code, "url": webhook_url}
     else:
         notification.status = NotificationStatus.SENT
         notification.sent_at = timezone.now()

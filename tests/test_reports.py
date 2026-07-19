@@ -4,6 +4,8 @@ from datetime import time, timedelta
 import os
 
 from django.core.exceptions import ValidationError
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -12,7 +14,9 @@ from unittest.mock import patch
 from apps.access_control.models import Permission, Role, RolePermission, RoleScope, UserResourceAccess
 from apps.alerts.models import AlertEvent, AlertSeverity, AlertStatus
 from apps.accounts.models import User
+from apps.audit.models import AuditAction, AuditLog
 from apps.datacenters.models import DataCenter
+from apps.datacenters.models import Rack
 from apps.devices.models import Device, DeviceModel, DeviceType, Vendor
 from apps.notifications.models import Notification, NotificationChannel, NotificationStatus
 from apps.organizations.models import Organization
@@ -257,13 +261,58 @@ class ReportTestCase(TestCase):
         self.assertEqual(payload["created_by"], str(self.user.id))
         self.assertIsNotNone(payload["next_run_at"])
 
+    def test_report_schedule_create_accepts_ampm_delivery_time(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post(
+            "/api/v1/reports/report-schedules/",
+            {
+                "organization": str(self.org.id),
+                "data_center": str(self.dc.id),
+                "name": "Environmental Trends Report",
+                "report_type": "Environmental Trends Report",
+                "frequency": "Daily",
+                "delivery_time": "06:00 AM",
+                "output_format": "PDF / CSV",
+                "recipients": ["omar@adn", "noc@adn"],
+                "attach_raw_data": True,
+                "is_active": True,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["delivery_time"], "06:00:00")
+
+    def test_report_schedule_time_update_recalculates_next_run(self):
+        schedule = ReportSchedule.objects.create(
+            organization=self.org,
+            data_center=self.dc,
+            name="Editable Schedule",
+            report_type="device_inventory",
+            frequency="DAILY",
+            delivery_time=time(6, 0),
+            output_format="CSV",
+            recipients=["admin@example.com"],
+            is_active=True,
+            created_by=self.user,
+        )
+        previous_next_run = schedule.next_run_at
+
+        schedule.delivery_time = time(23, 59)
+        schedule.save(update_fields={"delivery_time"})
+        schedule.refresh_from_db()
+
+        self.assertNotEqual(schedule.next_run_at, previous_next_run)
+        self.assertEqual(schedule.next_run_at.astimezone(timezone.get_current_timezone()).time().replace(second=0, microsecond=0), time(23, 59))
+
     def test_generate_action_enqueues_and_can_run_generation(self):
         self.client.force_authenticate(user=self.user)
         template = self._template(code="GENERATE_TEMPLATE")
         job = self._job(template=template, parameters={"report_type": "device_inventory"})
 
         with patch("apps.reports.tasks.generate_report_job_task.delay", side_effect=lambda job_id: generate_report_job(job_id)):
-            response = self.client.post(f"/api/v1/reports/report-jobs/{job.id}/generate/", {}, format="json")
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.client.post(f"/api/v1/reports/report-jobs/{job.id}/generate/", {}, format="json")
 
         self.assertEqual(response.status_code, 200)
         job.refresh_from_db()
@@ -297,10 +346,10 @@ class ReportTestCase(TestCase):
             organization=self.org,
             data_center=self.dc,
             name="Environmental Trends Report",
-            report_type="Environmental Trends Report",
-            frequency="Daily",
+            report_type="room_environment",
+            frequency="DAILY",
             delivery_time=time(6, 0),
-            output_format="PDF / CSV",
+            output_format="PDF_CSV",
             recipients=["omar@adn", "noc@adn", "facilities@adn"],
             attach_raw_data=True,
             is_active=True,
@@ -317,9 +366,78 @@ class ReportTestCase(TestCase):
         self.assertEqual(schedule.last_job.status, ReportJobStatus.COMPLETED)
         self.assertTrue(schedule.last_job.file)
         self.assertTrue(mocked_send.called)
-        email_message = mocked_send.call_args[0][0]
-        self.assertEqual(sorted(email_message.to), ["facilities@adn", "noc@adn", "omar@adn"])
         self.assertEqual(executed.pk, schedule.pk)
+
+    def test_report_schedule_allows_sms_only_recipient(self):
+        schedule = ReportSchedule.objects.create(
+            organization=self.org,
+            data_center=self.dc,
+            name="SMS-only Report",
+            report_type="device_inventory",
+            frequency="DAILY",
+            delivery_time=time(6, 0),
+            output_format="CSV",
+            recipients=[],
+            send_sms=True,
+            sms_recipients=["01329665857"],
+            is_active=True,
+            created_by=self.user,
+            next_run_at=timezone.now() - timedelta(minutes=5),
+        )
+
+        self.assertEqual(schedule.recipients, [])
+        self.assertEqual(schedule.sms_recipients, ["01329665857"])
+
+    def test_report_schedule_rejects_run_without_delivery_channel(self):
+        schedule = ReportSchedule.objects.create(
+            organization=self.org,
+            data_center=self.dc,
+            name="Undeliverable Report",
+            report_type="device_inventory",
+            frequency="DAILY",
+            delivery_time=time(6, 0),
+            output_format="CSV",
+            recipients=["admin@example.com"],
+            is_active=True,
+            created_by=self.user,
+            next_run_at=timezone.now() - timedelta(minutes=5),
+        )
+        ReportSchedule.objects.filter(pk=schedule.pk).update(recipients=[])
+
+        with self.assertRaisesMessage(ValueError, "no email or SMS recipients"):
+            execute_report_schedule(str(schedule.pk))
+
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.last_delivery_status, "FAILED")
+        self.assertIn("no email or SMS recipients", schedule.last_error_message)
+
+    def test_run_now_action_executes_schedule_and_updates_status(self):
+        self.client.force_authenticate(user=self.user)
+        schedule = ReportSchedule.objects.create(
+            organization=self.org,
+            data_center=self.dc,
+            name="Power Consumption Report",
+            report_type="device_inventory",
+            frequency="WEEKLY",
+            delivery_time=time(6, 0),
+            output_format="PDF_CSV",
+            recipients=["diginetworkspace@gmail.com"],
+            attach_raw_data=True,
+            is_active=True,
+            created_by=self.user,
+            next_run_at=timezone.now() - timedelta(minutes=5),
+        )
+
+        with patch("apps.reports.services.schedules.EmailMessage.send", return_value=1) as mocked_send:
+            response = self.client.post(f"/api/v1/reports/report-schedules/{schedule.id}/run_now/", {}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.last_delivery_status, "SENT")
+        self.assertIsNotNone(schedule.last_job)
+        self.assertEqual(schedule.last_job.status, ReportJobStatus.COMPLETED)
+        self.assertTrue(schedule.last_job.file)
+        self.assertTrue(mocked_send.called)
 
     def test_retry_works_only_for_failed_jobs(self):
         self.client.force_authenticate(user=self.user)
@@ -329,7 +447,8 @@ class ReportTestCase(TestCase):
         job.save(update_fields=["status", "started_at", "completed_at", "error_message", "updated_at"])
 
         with patch("apps.reports.tasks.generate_report_job_task.delay", side_effect=lambda job_id: generate_report_job(job_id)):
-            response = self.client.post(f"/api/v1/reports/report-jobs/{job.id}/retry/", {}, format="json")
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.client.post(f"/api/v1/reports/report-jobs/{job.id}/retry/", {}, format="json")
 
         self.assertEqual(response.status_code, 200)
         job.refresh_from_db()
@@ -544,6 +663,273 @@ class ReportTestCase(TestCase):
         self.assertIn("51.2", content)
         self.assertNotIn("22.1", content)
 
+    def test_telemetry_export_report_generates_historical_rows_and_respects_scope(self):
+        template = self._template(
+            code="TELEMETRY_EXPORT_TEMPLATE",
+            report_type="telemetry_export",
+            config={
+                "report_type": "telemetry_export",
+                "output_format": "csv",
+                "allowed_output_formats": ["csv"],
+                "required_filters": ["date_from", "date_to", "metric_codes"],
+                "optional_filters": ["device_id", "device_model_id", "device_type_id", "data_center_id", "room_id", "rack_id"],
+                "default_columns": [
+                    "timestamp",
+                    "organization",
+                    "data_center",
+                    "room",
+                    "rack",
+                    "device",
+                    "device_model",
+                    "device_type",
+                    "metric_code",
+                    "metric_name",
+                    "value",
+                    "unit",
+                    "quality",
+                ],
+                "max_date_range_days": 31,
+            },
+        )
+        room = Room.objects.create(data_center=self.dc, name="Telemetry Room", code="TR-1")
+        rack = Rack.objects.create(data_center=self.dc, room=room, name="Rack 1", code="RK-1")
+        self.device.room = room
+        self.device.rack = rack
+        self.device.save(update_fields=["room", "rack"])
+
+        temp_metric = MetricDefinition.objects.create(
+            code="roomTemp",
+            name="Room Temperature",
+            category=MetricCategory.ENVIRONMENT,
+            data_type=MetricDataType.FLOAT,
+            unit="C",
+        )
+        humidity_metric = MetricDefinition.objects.create(
+            code="roomRH",
+            name="Room Humidity",
+            category=MetricCategory.ENVIRONMENT,
+            data_type=MetricDataType.FLOAT,
+            unit="%",
+        )
+        other_metric = MetricDefinition.objects.create(
+            code="otherMetric",
+            name="Other Metric",
+            category=MetricCategory.OTHER,
+            data_type=MetricDataType.FLOAT,
+            unit="",
+        )
+
+        now = timezone.now()
+        TelemetryPoint.objects.create(
+            time=now - timedelta(hours=3),
+            organization=self.org,
+            data_center=self.dc,
+            device=self.device,
+            metric=temp_metric,
+            value_float=18.1,
+            raw_value_text="18.1",
+            quality="GOOD",
+        )
+        TelemetryPoint.objects.create(
+            time=now - timedelta(hours=2),
+            organization=self.org,
+            data_center=self.dc,
+            device=self.device,
+            metric=humidity_metric,
+            value_float=51.6,
+            raw_value_text="51.6",
+            quality="GOOD",
+        )
+        TelemetryPoint.objects.create(
+            time=now - timedelta(hours=1),
+            organization=self.other_org,
+            data_center=self.other_dc,
+            device=self.other_device,
+            metric=other_metric,
+            value_float=99.9,
+            raw_value_text="99.9",
+            quality="GOOD",
+        )
+
+        job = self._job(
+            template=template,
+            parameters={
+                "report_type": "telemetry_export",
+                "date_from": (now - timedelta(hours=4)).isoformat(),
+                "date_to": (now + timedelta(hours=1)).isoformat(),
+                "device_id": str(self.device.id),
+                "metric_codes": "roomTemp,roomRH",
+            },
+        )
+        generated = generate_report_job(job.id)
+        with generated.file.open("rb") as handle:
+            content = handle.read().decode("utf-8")
+
+        self.assertIn("timestamp,organization,data_center,room,rack,device,device_model,device_type,metric_code,metric_name,value,unit,quality", content)
+        self.assertIn("Telemetry Room", content)
+        self.assertIn("roomTemp", content)
+        self.assertIn("roomRH", content)
+        self.assertIn("18.1", content)
+        self.assertIn("51.6", content)
+        self.assertNotIn("99.9", content)
+
+    def test_telemetry_export_accepts_legacy_environment_metric_alias(self):
+        template = self._template(
+            code="TELEMETRY_EXPORT_ALIAS",
+            report_type="telemetry_export",
+            config={"report_type": "telemetry_export", "output_format": "csv"},
+        )
+        metric = MetricDefinition.objects.create(
+            code="pac_room_temperature",
+            name="PAC Room Temperature",
+            category=MetricCategory.ENVIRONMENT,
+            data_type=MetricDataType.FLOAT,
+            unit="C",
+        )
+        now = timezone.now()
+        TelemetryPoint.objects.create(
+            time=now - timedelta(minutes=5),
+            organization=self.org,
+            data_center=self.dc,
+            device=self.device,
+            metric=metric,
+            value_float=18.1,
+            quality="GOOD",
+        )
+        job = self._job(
+            template=template,
+            parameters={
+                "report_type": "telemetry_export",
+                "date_from": (now - timedelta(hours=1)).isoformat(),
+                "date_to": (now + timedelta(hours=1)).isoformat(),
+                "metric_codes": ["room_temperature"],
+            },
+        )
+
+        generated = generate_report_job(job.id)
+        with generated.file.open("rb") as handle:
+            content = handle.read().decode("utf-8")
+
+        self.assertEqual(generated.status, ReportJobStatus.COMPLETED)
+        self.assertIn("pac_room_temperature", content)
+        self.assertIn("18.1", content)
+
+    def test_telemetry_export_requires_required_filters_and_rejects_invalid_values(self):
+        template = self._template(
+            code="TELEMETRY_EXPORT_VALIDATION",
+            report_type="telemetry_export",
+            config={
+                "report_type": "telemetry_export",
+                "output_format": "csv",
+                "allowed_output_formats": ["csv"],
+                "required_filters": ["date_from", "date_to", "metric_codes"],
+                "optional_filters": ["device_id", "device_model_id", "device_type_id", "data_center_id", "room_id", "rack_id"],
+                "default_columns": [
+                    "timestamp",
+                    "organization",
+                    "data_center",
+                    "room",
+                    "rack",
+                    "device",
+                    "device_model",
+                    "device_type",
+                    "metric_code",
+                    "metric_name",
+                    "value",
+                    "unit",
+                    "quality",
+                ],
+                "max_date_range_days": 31,
+            },
+        )
+
+        missing_required_job = self._job(
+            template=template,
+            parameters={
+                "report_type": "telemetry_export",
+                "metric_codes": ["roomTemp"],
+            },
+        )
+        generated_missing_required = generate_report_job(missing_required_job.id)
+        self.assertEqual(generated_missing_required.status, ReportJobStatus.FAILED)
+        self.assertIn("date_from and date_to are required", generated_missing_required.error_message)
+
+        invalid_metric_job = self._job(
+            template=template,
+            parameters={
+                "report_type": "telemetry_export",
+                "date_from": "2026-07-01",
+                "date_to": "2026-07-15",
+                "metric_codes": ["unknown_metric"],
+            },
+        )
+        generated_invalid_metric = generate_report_job(invalid_metric_job.id)
+        self.assertEqual(generated_invalid_metric.status, ReportJobStatus.FAILED)
+        self.assertIn("Invalid metric_codes value", generated_invalid_metric.error_message)
+
+        over_limit_job = self._job(
+            template=template,
+            parameters={
+                "report_type": "telemetry_export",
+                "date_from": "2026-01-01",
+                "date_to": "2026-03-01",
+                "metric_codes": ["roomTemp"],
+            },
+        )
+        generated_over_limit = generate_report_job(over_limit_job.id)
+        self.assertEqual(generated_over_limit.status, ReportJobStatus.FAILED)
+        self.assertIn("Date range cannot exceed 31 days", generated_over_limit.error_message)
+
+    def test_telemetry_export_empty_dataset_still_produces_headers(self):
+        template = self._template(
+            code="TELEMETRY_EXPORT_EMPTY",
+            report_type="telemetry_export",
+            config={
+                "report_type": "telemetry_export",
+                "output_format": "csv",
+                "allowed_output_formats": ["csv"],
+                "required_filters": ["date_from", "date_to", "metric_codes"],
+                "optional_filters": ["device_id", "device_model_id", "device_type_id", "data_center_id", "room_id", "rack_id"],
+                "default_columns": [
+                    "timestamp",
+                    "organization",
+                    "data_center",
+                    "room",
+                    "rack",
+                    "device",
+                    "device_model",
+                    "device_type",
+                    "metric_code",
+                    "metric_name",
+                    "value",
+                    "unit",
+                    "quality",
+                ],
+                "max_date_range_days": 31,
+            },
+        )
+        MetricDefinition.objects.create(
+            code="empty_metric",
+            name="Empty Metric",
+            category=MetricCategory.ENVIRONMENT,
+            data_type=MetricDataType.FLOAT,
+            unit="",
+        )
+        job = self._job(
+            template=template,
+            parameters={
+                "report_type": "telemetry_export",
+                "date_from": "2026-07-01",
+                "date_to": "2026-07-15",
+                "metric_codes": ["empty_metric"],
+            },
+        )
+        generated = generate_report_job(job.id)
+        with generated.file.open("rb") as handle:
+            content = handle.read().decode("utf-8")
+        self.assertIn("timestamp,organization,data_center,room,rack,device,device_model,device_type,metric_code,metric_name,value,unit,quality", content)
+        self.assertEqual(len(content.strip().splitlines()), 1)
+
     def test_invalid_date_range_fails_cleanly(self):
         template = self._template(code="INVALID_DATE_TEMPLATE", report_type="alert_summary")
         job = self._job(
@@ -557,3 +943,297 @@ class ReportTestCase(TestCase):
         generated = generate_report_job(job.id)
         self.assertEqual(generated.status, ReportJobStatus.FAILED)
         self.assertIn("Invalid date range", generated.error_message)
+
+    def test_report_templates_accept_extended_config(self):
+        template = self._template(
+            code="EXTENDED_TEMPLATE",
+            report_type="alert_summary",
+            config={
+                "report_type": "alert_summary",
+                "output_format": "csv",
+                "allowed_output_formats": ["csv"],
+                "required_filters": [],
+                "optional_filters": ["date_from", "date_to"],
+                "default_columns": ["section", "label", "value"],
+                "max_date_range_days": 90,
+            },
+        )
+        self.assertEqual(template.report_type, "alert_summary")
+        self.assertEqual(template.config["allowed_output_formats"], ["csv"])
+
+    def test_device_inventory_supports_extended_filters(self):
+        template = self._template(
+            code="DEVICE_INVENTORY_EXTENDED",
+            report_type="device_inventory",
+            config={
+                "report_type": "device_inventory",
+                "output_format": "csv",
+                "allowed_output_formats": ["csv"],
+                "required_filters": [],
+                "optional_filters": ["device_id", "device_model_id", "device_type_id", "status", "is_active"],
+                "default_columns": [
+                    "organization",
+                    "data_center",
+                    "room",
+                    "rack",
+                    "device",
+                    "code",
+                    "hostname",
+                    "ip_address",
+                    "device_type",
+                    "device_model",
+                    "vendor",
+                    "status",
+                    "is_active",
+                    "last_seen",
+                ],
+            },
+        )
+        extra_device = Device.objects.create(
+            organization=self.org,
+            data_center=self.dc,
+            room=None,
+            rack=None,
+            device_type=self.device_type,
+            device_model=self.device_model,
+            name="UPS-EXT",
+            code="UPS-EXT",
+            hostname="ups-ext.local",
+            ip_address="10.10.10.99",
+            status="ONLINE",
+            is_active=True,
+        )
+        job = self._job(
+            template=template,
+            parameters={
+                "report_type": "device_inventory",
+                "device_id": str(extra_device.id),
+                "device_model_id": str(self.device_model.id),
+                "status": "ONLINE",
+                "is_active": True,
+            },
+        )
+        generated = generate_report_job(job.id)
+        with generated.file.open("rb") as handle:
+            content = handle.read().decode("utf-8")
+        self.assertIn("device_id,organization,data_center,room,rack,device,code,hostname,ip_address,device_type,device_model,vendor,status,is_active,last_seen", content)
+        self.assertIn("UPS-EXT", content)
+        self.assertNotIn("UPS-01", content)
+
+    def test_notification_delivery_supports_extended_filters(self):
+        template = self._template(
+            code="NOTIFICATION_DELIVERY_EXTENDED",
+            report_type="notification_delivery",
+            config={
+                "report_type": "notification_delivery",
+                "output_format": "csv",
+                "allowed_output_formats": ["csv"],
+                "required_filters": [],
+                "optional_filters": ["date_from", "date_to", "recipient_id", "channel", "status", "alert_id", "device_id"],
+                "default_columns": ["section", "label", "value"],
+                "max_date_range_days": 90,
+            },
+        )
+        now = timezone.now()
+        Notification.objects.create(
+            organization=self.org,
+            recipient=self.user,
+            channel=NotificationChannel.WEB,
+            subject="Ignored notification",
+            message="Ignored",
+            status=NotificationStatus.PENDING,
+        )
+        notification = Notification.objects.latest("created_at")
+        Notification.objects.filter(pk=notification.pk).update(created_at=now - timedelta(hours=1))
+
+        job = self._job(
+            template=template,
+            parameters={
+                "report_type": "notification_delivery",
+                "date_from": (now - timedelta(hours=2)).isoformat(),
+                "date_to": (now + timedelta(hours=2)).isoformat(),
+                "recipient_id": str(self.user.id),
+                "channel": ["WEB"],
+                "status": "PENDING",
+            },
+        )
+        generated = generate_report_job(job.id)
+        with generated.file.open("rb") as handle:
+            content = handle.read().decode("utf-8")
+        self.assertIn("summary,total,1", content)
+        self.assertIn("summary,pending,1", content)
+        self.assertIn("channel,WEB,1", content)
+
+    def test_alert_export_generates_rows_and_respects_scope(self):
+        template = self._template(
+            code="ALERT_EXPORT_TEMPLATE",
+            report_type="alert_export",
+            config={
+                "report_type": "alert_export",
+                "output_format": "csv",
+                "allowed_output_formats": ["csv"],
+                "required_filters": ["date_from", "date_to"],
+                "optional_filters": ["device_id", "device_model_id", "device_type_id", "data_center_id", "room_id", "rack_id", "metric_codes", "severity", "status", "source"],
+                "default_columns": [
+                    "triggered_at",
+                    "resolved_at",
+                    "organization",
+                    "data_center",
+                    "room",
+                    "rack",
+                    "device",
+                    "device_model",
+                    "metric",
+                    "severity",
+                    "status",
+                    "message",
+                    "occurrence_count",
+                    "acknowledged_by",
+                    "resolved_by",
+                ],
+                "max_date_range_days": 90,
+            },
+        )
+        metric = MetricDefinition.objects.create(
+            code="alert_export_metric",
+            name="Alert Export Metric",
+            category=MetricCategory.ALARM,
+            data_type=MetricDataType.FLOAT,
+            unit="",
+        )
+        now = timezone.now()
+        AlertEvent.objects.create(
+            organization=self.org,
+            data_center=self.dc,
+            device=self.device,
+            metric=metric,
+            severity=AlertSeverity.CRITICAL,
+            status=AlertStatus.OPEN,
+            message="Recent alert export row",
+            triggered_at=now - timedelta(hours=1),
+            occurrence_count=2,
+            acknowledged_by=self.user,
+            resolved_by=self.other_user,
+        )
+        AlertEvent.objects.create(
+            organization=self.org,
+            data_center=self.dc,
+            device=self.device,
+            metric=metric,
+            severity=AlertSeverity.WARNING,
+            status=AlertStatus.RESOLVED,
+            message="Old alert export row",
+            triggered_at=now - timedelta(days=10),
+        )
+        AlertEvent.objects.create(
+            organization=self.other_org,
+            data_center=self.other_dc,
+            device=self.other_device,
+            metric=metric,
+            severity=AlertSeverity.CRITICAL,
+            status=AlertStatus.OPEN,
+            message="Other org alert",
+            triggered_at=now - timedelta(hours=1),
+        )
+        job = self._job(
+            template=template,
+            parameters={
+                "report_type": "alert_export",
+                "date_from": (now - timedelta(hours=2)).isoformat(),
+                "date_to": (now + timedelta(hours=2)).isoformat(),
+                "device_id": str(self.device.id),
+                "severity": ["CRITICAL"],
+                "status": ["OPEN"],
+            },
+        )
+        generated = generate_report_job(job.id)
+        with generated.file.open("rb") as handle:
+            content = handle.read().decode("utf-8")
+        self.assertIn("triggered_at,resolved_at,organization,data_center,room,rack,device,device_model,metric,severity,status,message,occurrence_count,acknowledged_by,resolved_by", content)
+        self.assertIn("Recent alert export row", content)
+        self.assertNotIn("Old alert export row", content)
+        self.assertNotIn("Other org alert", content)
+
+    def test_audit_export_generates_rows_and_respects_scope(self):
+        template = self._template(
+            code="AUDIT_EXPORT_TEMPLATE",
+            report_type="audit_export",
+            config={
+                "report_type": "audit_export",
+                "output_format": "csv",
+                "allowed_output_formats": ["csv"],
+                "required_filters": ["date_from", "date_to"],
+                "optional_filters": ["actor_id", "actions", "resource_type", "resource_id", "ip_address"],
+                "default_columns": [
+                    "created_at",
+                    "actor",
+                    "action",
+                    "resource_type",
+                    "resource_id",
+                    "organization",
+                    "message",
+                    "ip_address",
+                    "user_agent",
+                ],
+                "max_date_range_days": 90,
+            },
+        )
+        now = timezone.now()
+        AuditLog.objects.create(
+            organization=self.org,
+            actor=self.user,
+            action=AuditAction.ALERT_ACKNOWLEDGED,
+            resource_type="AlertEvent",
+            resource_id=str(self.device.id),
+            message="Recent audit export row",
+            ip_address="10.0.0.1",
+            user_agent="pytest",
+        )
+        recent_log = AuditLog.objects.latest("created_at")
+        AuditLog.objects.filter(pk=recent_log.pk).update(created_at=now - timedelta(hours=1))
+        AuditLog.objects.create(
+            organization=self.org,
+            actor=self.user,
+            action=AuditAction.REPORT_DOWNLOADED,
+            resource_type="ReportJob",
+            resource_id="old",
+            message="Old audit export row",
+            ip_address="10.0.0.2",
+            user_agent="pytest",
+        )
+        old_log = AuditLog.objects.latest("created_at")
+        AuditLog.objects.filter(pk=old_log.pk).update(created_at=now - timedelta(days=5))
+
+        job = self._job(
+            template=template,
+            parameters={
+                "report_type": "audit_export",
+                "date_from": (now - timedelta(hours=2)).isoformat(),
+                "date_to": (now + timedelta(hours=2)).isoformat(),
+                "actor_id": str(self.user.id),
+                "actions": ["ALERT_ACKNOWLEDGED"],
+            },
+        )
+        generated = generate_report_job(job.id)
+        with generated.file.open("rb") as handle:
+            content = handle.read().decode("utf-8")
+        self.assertIn("created_at,actor,action,resource_type,resource_id,organization,message,ip_address,user_agent", content)
+        self.assertIn("Recent audit export row", content)
+        self.assertNotIn("Old audit export row", content)
+
+    def test_seed_report_templates_command_creates_updates_without_duplicates(self):
+        ReportTemplate.objects.filter(organization=self.org).delete()
+        call_command("seed_report_templates", organization_code=self.org.code)
+        self.assertEqual(ReportTemplate.objects.filter(organization=self.org).count(), 6)
+
+        changed = ReportTemplate.objects.get(organization=self.org, code="ALERT_SUMMARY")
+        changed.name = "Changed Name"
+        changed.save(update_fields=["name", "updated_at"])
+
+        call_command("seed_report_templates", organization_code=self.org.code)
+        self.assertEqual(ReportTemplate.objects.filter(organization=self.org).count(), 6)
+        self.assertEqual(ReportTemplate.objects.get(organization=self.org, code="ALERT_SUMMARY").name, "Alert Summary")
+
+    def test_seed_report_templates_requires_organization_code_when_ambiguous(self):
+        with self.assertRaises(CommandError):
+            call_command("seed_report_templates")

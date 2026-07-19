@@ -28,13 +28,19 @@ def send_notification_task(self, notification_id):
         return {"status": current.lower(), "notification_id": str(notification_id)}
 
     try:
-        deliver_notification(notification)
+        delivery_result = deliver_notification(notification)
         from django.utils import timezone
+
+        if isinstance(delivery_result, dict):
+            metadata = notification.metadata if isinstance(notification.metadata, dict) else {}
+            metadata = dict(metadata)
+            metadata["delivery_result"] = delivery_result
+            notification.metadata = metadata
 
         notification.status = NotificationStatus.SENT
         notification.sent_at = timezone.now()
         notification.error_message = ""
-        notification.save(update_fields=["status", "sent_at", "error_message", "updated_at"])
+        notification.save(update_fields=["status", "sent_at", "error_message", "metadata", "updated_at"])
         logger.info("Notification delivered notification=%s channel=%s", notification.pk, notification.channel)
         return {"status": "sent", "notification_id": str(notification.pk)}
     except Exception as exc:

@@ -12,6 +12,7 @@ from django.utils.dateparse import parse_datetime
 
 from apps.common.audit import write_audit
 from apps.accounts.models import User
+from apps.notifications.services.sms import send_sms_message
 
 from ..models import ReportJob, ReportJobStatus, ReportSchedule
 from .generator import generate_report_job
@@ -92,6 +93,21 @@ def _send_report_email(schedule: ReportSchedule, report_job: ReportJob):
     message.send(fail_silently=False)
 
 
+def _send_report_sms(schedule: ReportSchedule, report_job: ReportJob):
+    recipients = schedule.sms_recipients if isinstance(schedule.sms_recipients, list) else []
+    if not schedule.send_sms:
+        return []
+    if not recipients:
+        raise ValueError("SMS delivery is enabled but no SMS recipients were configured.")
+
+    message = (
+        f"Scheduled report ready: {schedule.name}. "
+        f"Type: {schedule.report_type_label}. "
+        f"Window: {report_job.parameters.get('date_from', '--')} to {report_job.parameters.get('date_to', '--')}."
+    )
+    return [send_sms_message(str(phone), message) for phone in recipients]
+
+
 def claim_due_report_schedules(limit: int = 100) -> list[ClaimedSchedule]:
     now = timezone.now()
     claimed: list[ClaimedSchedule] = []
@@ -127,6 +143,19 @@ def execute_report_schedule(schedule_id: str, *, window_start: str | None = None
         logger.info("Skipping inactive report schedule schedule=%s", schedule.pk)
         return schedule
 
+    email_recipients = schedule.normalize_recipients()
+    sms_recipients = schedule.sms_recipients if isinstance(schedule.sms_recipients, list) else []
+    if not email_recipients and not (schedule.send_sms and sms_recipients):
+        message = "Report schedule has no email or SMS recipients configured."
+        ReportSchedule.objects.filter(pk=schedule.pk).update(
+            last_delivery_status="FAILED",
+            last_error_message=message,
+            updated_at=timezone.now(),
+        )
+        schedule.last_delivery_status = "FAILED"
+        schedule.last_error_message = message
+        raise ValueError(message)
+
     requested_by = _fallback_requested_by(schedule)
     if not requested_by:
         raise ValueError("Unable to resolve a requesting user for report schedule execution.")
@@ -138,8 +167,10 @@ def execute_report_schedule(schedule_id: str, *, window_start: str | None = None
     if window_start_dt is None:
         window_start_dt, _ = schedule.calculate_execution_window(reference_time=window_end_dt)
     schedule.last_run_at = window_end_dt
+    schedule.next_run_at = schedule.calculate_next_run_at(reference_time=window_end_dt)
 
     parameters = {
+        **(schedule.parameters if isinstance(schedule.parameters, dict) else {}),
         "report_type": schedule.report_type,
         "output_format": schedule.output_format,
         "date_from": window_start_dt.isoformat(),
@@ -165,7 +196,7 @@ def execute_report_schedule(schedule_id: str, *, window_start: str | None = None
     if generated_job.status != ReportJobStatus.COMPLETED or not generated_job.file:
         schedule.last_delivery_status = "FAILED"
         schedule.last_error_message = generated_job.error_message or "Scheduled report generation failed."
-        schedule.save(update_fields=["last_job", "last_run_at", "last_delivery_status", "last_error_message", "updated_at"])
+        schedule.save(update_fields=["last_job", "last_run_at", "next_run_at", "last_delivery_status", "last_error_message", "updated_at"])
         _safe_write_audit(
             "REPORT_GENERATION_FAILED",
             "ReportSchedule",
@@ -177,11 +208,13 @@ def execute_report_schedule(schedule_id: str, *, window_start: str | None = None
         return schedule
 
     try:
-        _send_report_email(schedule, generated_job)
+        if email_recipients:
+            _send_report_email(schedule, generated_job)
+        _send_report_sms(schedule, generated_job)
     except Exception as exc:
         schedule.last_delivery_status = "FAILED"
         schedule.last_error_message = str(exc)
-        schedule.save(update_fields=["last_job", "last_run_at", "last_delivery_status", "last_error_message", "updated_at"])
+        schedule.save(update_fields=["last_job", "last_run_at", "next_run_at", "last_delivery_status", "last_error_message", "updated_at"])
         _safe_write_audit(
             "REPORT_GENERATION_FAILED",
             "ReportSchedule",
@@ -195,7 +228,7 @@ def execute_report_schedule(schedule_id: str, *, window_start: str | None = None
     schedule.last_sent_at = timezone.now()
     schedule.last_delivery_status = "SENT"
     schedule.last_error_message = ""
-    schedule.save(update_fields=["last_job", "last_run_at", "last_sent_at", "last_delivery_status", "last_error_message", "updated_at"])
+    schedule.save(update_fields=["last_job", "last_run_at", "next_run_at", "last_sent_at", "last_delivery_status", "last_error_message", "updated_at"])
     _safe_write_audit(
         "REPORT_GENERATED",
         "ReportSchedule",

@@ -11,6 +11,9 @@ REPORT_TYPE_LABELS = {
     "alert_summary": "Alert Summary",
     "notification_delivery": "Notification Delivery",
     "device_inventory": "Device Inventory",
+    "alert_export": "Alert Export",
+    "audit_export": "Audit Export",
+    "telemetry_export": "Telemetry Export",
     "room_environment": "Environmental Trends Report",
 }
 
@@ -28,6 +31,12 @@ REPORT_TYPE_ALIASES = {
     normalize_key("alert_summary"): "alert_summary",
     normalize_key("notification_delivery"): "notification_delivery",
     normalize_key("device_inventory"): "device_inventory",
+    normalize_key("alert_export"): "alert_export",
+    normalize_key("audit_export"): "audit_export",
+    normalize_key("alert export"): "alert_export",
+    normalize_key("audit export"): "audit_export",
+    normalize_key("telemetry export"): "telemetry_export",
+    normalize_key("telemetry_export"): "telemetry_export",
 }
 
 SUPPORTED_REPORT_TYPES = tuple(REPORT_TYPE_LABELS.keys())
@@ -98,4 +107,3 @@ def normalize_report_format(value: object) -> str | None:
     if key.upper() in REPORT_SCHEDULE_FORMAT_LABELS:
         return key.upper()
     return None
-

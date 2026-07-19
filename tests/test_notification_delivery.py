@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 from celery.exceptions import Retry
 from django.core.management import call_command
+from django.test import override_settings
 from django.utils import timezone
 
 from apps.accounts.models import User
@@ -114,6 +115,7 @@ def test_email_notification_missing_email_fails():
 
 
 @pytest.mark.django_db
+@override_settings(SMS_BACKEND="console")
 def test_sms_notification_console_backend_marks_sent():
     org = _notification_org()
     user = _user(phone="01711111111")
@@ -152,6 +154,119 @@ def test_sms_notification_missing_phone_fails():
     notification.refresh_from_db()
     assert notification.status == NotificationStatus.FAILED
     assert "phone" in (notification.error_message or "").lower()
+
+
+@pytest.mark.django_db
+@override_settings(
+    SMS_BACKEND="soap",
+    SMS_SOAP_SERVICE_URL="https://uatapi.dhakabank.com.bd/DBLSmsServices/SmsServices.asmx",
+    SMS_SOAP_USER_ID="TESTUSMS",
+    SMS_SOAP_PASSWORD="BASE64PASSWORD",
+    SMS_SOAP_SMS_TYPE="E",
+)
+def test_sms_notification_soap_backend_marks_sent(monkeypatch):
+    org = _notification_org()
+    user = _user(phone="+8801711111111")
+    notification = Notification.objects.create(
+        organization=org,
+        recipient=user,
+        channel=NotificationChannel.SMS,
+        subject="SMS Test",
+        message="Your OTP is 123456.",
+        status=NotificationStatus.PENDING,
+    )
+
+    captured = {}
+
+    def fake_post(url, data=None, headers=None, timeout=None):
+        captured["url"] = url
+        captured["data"] = data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else data
+        captured["headers"] = headers or {}
+        captured["timeout"] = timeout
+
+        class FakeResponse:
+            status_code = 200
+            content = b"""<?xml version=\"1.0\" encoding=\"utf-8\"?>
+<SmsResponse xmlns=\"http://dhakabank.com.bd/\">
+  <StatusId>1</StatusId>
+  <Status>SUCCESSFULL</Status>
+  <SmsCsmsId>DBL80064397</SmsCsmsId>
+  <SmsRefNo>2021121411135756584498636</SmsRefNo>
+</SmsResponse>"""
+
+            def raise_for_status(self):
+                return None
+
+        return FakeResponse()
+
+    monkeypatch.setattr("apps.notifications.services.sms.requests.post", fake_post)
+
+    result = send_notification_task.apply(args=[str(notification.id)]).get()
+
+    notification.refresh_from_db()
+    assert result["status"] == "sent"
+    assert notification.status == NotificationStatus.SENT
+    assert notification.metadata["delivery_result"]["backend"] == "soap"
+    assert notification.metadata["delivery_result"]["status_id"] == "1"
+    assert notification.metadata["delivery_result"]["sms_csms_id"] == "DBL80064397"
+    assert notification.metadata["delivery_result"]["sms_ref_no"] == "2021121411135756584498636"
+    assert captured["url"] == "https://uatapi.dhakabank.com.bd/DBLSmsServices/SmsServices.asmx"
+    assert "DoSendSms" in captured["data"]
+    assert "<mobileNumber>01711111111</mobileNumber>" in captured["data"]
+    assert captured["headers"]["Content-Type"] == "text/xml; charset=utf-8"
+    assert "SOAPAction" in captured["headers"]
+
+
+@pytest.mark.django_db
+@override_settings(
+    SMS_BACKEND="soap",
+    SMS_SOAP_SERVICE_URL="https://uatapi.dhakabank.com.bd/DBLSmsServices/SmsServices.asmx",
+    SMS_SOAP_USER_ID="TESTUSMS",
+    SMS_SOAP_PASSWORD="BASE64PASSWORD",
+    SMS_SOAP_SMS_TYPE="E",
+)
+def test_sms_notification_soap_backend_failure_sets_failed(monkeypatch):
+    org = _notification_org()
+    user = _user(phone="01711111111")
+    notification = Notification.objects.create(
+        organization=org,
+        recipient=user,
+        channel=NotificationChannel.SMS,
+        subject="SMS Test",
+        message="Your OTP is 123456.",
+        status=NotificationStatus.PENDING,
+    )
+
+    def fake_post(url, data=None, headers=None, timeout=None):
+        class FakeResponse:
+            status_code = 200
+            content = b"""<?xml version=\"1.0\" encoding=\"utf-8\"?>
+<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">
+  <soap:Body>
+    <DoSendSmsResponse xmlns=\"http://dhakabank.com.bd/\">
+      <DoSendSmsResult>
+        <StatusId>0</StatusId>
+        <Status>FAILED</Status>
+        <SmsCsmsId>0</SmsCsmsId>
+        <SmsRefNo>0</SmsRefNo>
+      </DoSendSmsResult>
+    </DoSendSmsResponse>
+  </soap:Body>
+</soap:Envelope>"""
+
+            def raise_for_status(self):
+                return None
+
+        return FakeResponse()
+
+    monkeypatch.setattr("apps.notifications.services.sms.requests.post", fake_post)
+
+    with pytest.raises(Retry):
+        send_notification_task.apply(args=[str(notification.id)]).get()
+
+    notification.refresh_from_db()
+    assert notification.status == NotificationStatus.FAILED
+    assert "failed" in (notification.error_message or "").lower()
 
 
 @pytest.mark.django_db

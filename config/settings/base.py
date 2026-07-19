@@ -87,6 +87,13 @@ SMS_API_URL = config("SMS_API_URL", default="")
 SMS_API_KEY = config("SMS_API_KEY", default="")
 SMS_DEFAULT_SENDER = config("SMS_DEFAULT_SENDER", default="DCIM")
 SMS_TIMEOUT_SECONDS = config("SMS_TIMEOUT_SECONDS", default=15, cast=int)
+SMS_SOAP_SERVICE_URL = config(
+    "SMS_SOAP_SERVICE_URL",
+    default="https://uatapi.dhakabank.com.bd/DBLSmsServices/SmsServices.asmx",
+)
+SMS_SOAP_USER_ID = config("SMS_SOAP_USER_ID", default="")
+SMS_SOAP_PASSWORD = config("SMS_SOAP_PASSWORD", default="")
+SMS_SOAP_SMS_TYPE = config("SMS_SOAP_SMS_TYPE", default="E")
 SPECTACULAR_SETTINGS = {
     'TITLE': 'Bank DCIM Backend API',
     'DESCRIPTION': 'Production-grade DCIM backend API for bank data center infrastructure management.',

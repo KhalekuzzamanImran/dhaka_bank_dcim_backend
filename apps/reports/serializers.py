@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, time as time_cls
+
 from rest_framework import serializers
 
 from apps.common.access import get_access_scope
@@ -34,6 +36,24 @@ def _user_can_access_data_center(user, data_center_id):
     if scope["global_access"]:
         return True
     return data_center_id in scope["data_center_ids"]
+
+
+def _normalize_delivery_time(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, time_cls):
+        return value
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate:
+            return None
+
+        for fmt in ("%H:%M:%S", "%H:%M", "%I:%M:%S %p", "%I:%M %p"):
+            try:
+                return datetime.strptime(candidate, fmt).time()
+            except ValueError:
+                continue
+    return None
 
 
 class ReportTemplateSerializer(serializers.ModelSerializer):
@@ -176,6 +196,34 @@ class _ReportJobBaseSerializer(serializers.ModelSerializer):
     def get_report_type(self, obj):
         return obj.report_type
 
+    def update(self, instance, validated_data):
+        parameters_changed = (
+            "parameters" in validated_data
+            and validated_data["parameters"] != instance.parameters
+        )
+
+        if parameters_changed:
+            if instance.status == ReportJobStatus.PROCESSING:
+                raise serializers.ValidationError(
+                    {"parameters": "Processing report jobs cannot be edited."}
+                )
+
+            if instance.file:
+                instance.file.delete(save=False)
+                instance.file = None
+
+            if instance.status in {
+                ReportJobStatus.COMPLETED,
+                ReportJobStatus.FAILED,
+                ReportJobStatus.CANCELLED,
+            }:
+                instance.status = ReportJobStatus.PENDING
+                instance.started_at = None
+                instance.completed_at = None
+                instance.error_message = ""
+
+        return super().update(instance, validated_data)
+
 
 class ReportJobListSerializer(_ReportJobBaseSerializer):
     class Meta(_ReportJobBaseSerializer.Meta):
@@ -262,7 +310,16 @@ class ReportJobRetrySerializer(serializers.Serializer):
         fields = ()
 
 
+class ReportScheduleRunNowSerializer(serializers.Serializer):
+    class Meta:
+        fields = ()
+
+
 class ReportScheduleSerializer(serializers.ModelSerializer):
+    report_type = serializers.CharField()
+    frequency = serializers.CharField()
+    output_format = serializers.CharField()
+    delivery_time = serializers.CharField()
     organization_name = serializers.SerializerMethodField(read_only=True)
     data_center_name = serializers.SerializerMethodField(read_only=True)
     created_by_name = serializers.SerializerMethodField(read_only=True)
@@ -289,7 +346,10 @@ class ReportScheduleSerializer(serializers.ModelSerializer):
             "delivery_time",
             "output_format",
             "output_format_label",
+            "parameters",
             "recipients",
+            "send_sms",
+            "sms_recipients",
             "recipient_count",
             "attach_raw_data",
             "is_active",
@@ -344,7 +404,8 @@ class ReportScheduleSerializer(serializers.ModelSerializer):
 
     def get_recipient_count(self, obj):
         recipients = obj.recipients if isinstance(obj.recipients, list) else []
-        return len(recipients)
+        sms_recipients = obj.sms_recipients if obj.send_sms and isinstance(obj.sms_recipients, list) else []
+        return len({str(value).strip() for value in [*recipients, *sms_recipients] if str(value).strip()})
 
     def get_last_job_status(self, obj):
         if not obj.last_job_id:
@@ -395,6 +456,29 @@ class ReportScheduleSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"output_format": "Unsupported report format."})
         attrs["output_format"] = normalized_format
 
+        delivery_time = attrs.get("delivery_time", getattr(self.instance, "delivery_time", None))
+        normalized_delivery_time = _normalize_delivery_time(delivery_time)
+        if normalized_delivery_time is None:
+            raise serializers.ValidationError({
+                "delivery_time": "Unsupported delivery time. Use HH:MM, HH:MM:SS, or a 12-hour time like 06:00 AM."
+            })
+        attrs["delivery_time"] = normalized_delivery_time
+
+        parameters = attrs.get("parameters", getattr(self.instance, "parameters", {}))
+        if not isinstance(parameters, dict):
+            raise serializers.ValidationError({"parameters": "Parameters must be a JSON object."})
+        attrs["parameters"] = parameters
+
+        send_sms = attrs.get("send_sms", getattr(self.instance, "send_sms", False))
+        sms_recipients = attrs.get("sms_recipients", getattr(self.instance, "sms_recipients", []))
+        if not isinstance(sms_recipients, list):
+            raise serializers.ValidationError({"sms_recipients": "SMS recipients must be a list."})
+        normalized_sms_recipients = list(dict.fromkeys(str(value).strip() for value in sms_recipients if str(value).strip()))
+        if send_sms and not normalized_sms_recipients:
+            raise serializers.ValidationError({"sms_recipients": "At least one SMS recipient is required when SMS is enabled."})
+        attrs["send_sms"] = bool(send_sms)
+        attrs["sms_recipients"] = normalized_sms_recipients
+
         recipients = attrs.get("recipients", getattr(self.instance, "recipients", []))
         if not isinstance(recipients, list):
             raise serializers.ValidationError({"recipients": "Recipients must be a list of email addresses."})
@@ -413,7 +497,7 @@ class ReportScheduleSerializer(serializers.ModelSerializer):
                 continue
             seen.add(candidate)
             normalized_recipients.append(candidate)
-        if not normalized_recipients:
+        if not normalized_recipients and not (send_sms and normalized_sms_recipients):
             raise serializers.ValidationError({"recipients": "At least one recipient email is required."})
         attrs["recipients"] = normalized_recipients
 
