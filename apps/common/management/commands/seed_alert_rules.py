@@ -16,7 +16,9 @@ PAC_RULES = [
     ("pac_airflow_alarm", "PAC Airflow Alarm", "pac_airflow_alarm", AlertSeverity.CRITICAL),
     ("pac_water_leak_alarm", "PAC Water Leak Alarm", "pac_water_leak_alarm", AlertSeverity.CRITICAL),
     ("pac_filter_alarm", "PAC Filter Alarm", "pac_filter_alarm", AlertSeverity.WARNING),
+    ("pac_phase_sequence_alarm", "PAC Phase Sequence Alarm", "pac_phase_sequence_alarm", AlertSeverity.CRITICAL),
     ("pac_smoke_fire_alarm", "PAC Smoke Fire Alarm", "pac_smoke_fire_alarm", AlertSeverity.CRITICAL),
+    ("pac_lan_alarm", "PAC LAN Alarm", "pac_lan_alarm", AlertSeverity.CRITICAL),
     ("pac_emergency_power_alarm", "PAC Emergency Power Alarm", "pac_emergency_power_alarm", AlertSeverity.CRITICAL),
 ]
 

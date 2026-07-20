@@ -302,7 +302,28 @@ def process_pac_trap_alarm_confirmation(*, device_id: str, trap_event_id: str, e
             )
             from apps.alerts.services import evaluate_latest
 
-            evaluate_latest(latest)
+            # Prefer the central rule engine. During rollout, a PAC metric may
+            # be mapped and polled before its organization rule is seeded; in
+            # that case retain the exact per-metric confirmation behavior
+            # rather than silently dropping the alarm.
+            evaluated_alerts = evaluate_latest(latest)
+            if not evaluated_alerts:
+                with transaction.atomic():
+                    if state == 1:
+                        _open_or_update_exact_alert(
+                            device=device,
+                            metric=mapping.metric,
+                            state=state,
+                            confirmation_at=confirmation_at,
+                            payload=_telemetry_payload(mapping.metric, state),
+                        )
+                    else:
+                        _resolve_exact_alert(
+                            device=device,
+                            metric=mapping.metric,
+                            confirmation_at=confirmation_at,
+                            payload=_telemetry_payload(mapping.metric, state),
+                        )
 
             _create_device_event(
                 device=device,
