@@ -10,7 +10,20 @@ class DeviceModelSerializer(serializers.ModelSerializer):
 class DeviceSerializer(serializers.ModelSerializer):
     data_center_name = serializers.CharField(source='data_center.name', read_only=True)
     device_type_name = serializers.CharField(source='device_type.name', read_only=True)
-    class Meta: model = Device; fields = '__all__'
+    stale_after_seconds = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Device
+        fields = [field.name for field in Device._meta.fields] + [
+            'data_center_name',
+            'device_type_name',
+            'stale_after_seconds',
+        ]
+
+    def get_stale_after_seconds(self, obj):
+        polling_config = getattr(obj, 'polling_config', None)
+        profile = getattr(polling_config, 'polling_profile', None)
+        return int(getattr(profile, 'stale_after_seconds', 180) or 180)
 class DeviceProtocolConfigSerializer(serializers.ModelSerializer):
     class Meta: model = DeviceProtocolConfig; fields = '__all__'
 class DeviceCredentialSerializer(serializers.ModelSerializer):

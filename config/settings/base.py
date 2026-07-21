@@ -152,6 +152,7 @@ NOTIFICATION_DELIVERING_TIMEOUT_MINUTES = config('NOTIFICATION_DELIVERING_TIMEOU
 
 CELERY_TASK_ROUTES = {
     'collectors.scheduler.tasks.enqueue_due_polls': {'queue': 'scheduler'},
+    'collectors.scheduler.tasks.reconcile_stale_devices': {'queue': 'scheduler'},
     'collectors.snmp_collector.tasks.poll_snmp_device_task': {'queue': SNMP_CELERY_QUEUE},
     'collectors.snmp_collector.tasks.enqueue_due_snmp_polls': {'queue': 'scheduler'},
     'collectors.modbus_collector.tasks.poll_modbus_device_task': {'queue': MODBUS_CELERY_QUEUE},
@@ -167,6 +168,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'collectors.scheduler.tasks.enqueue_due_polls',
         'schedule': POLLING_SCHEDULER_INTERVAL_SECONDS,
         'kwargs': {'limit': POLLING_SCHEDULER_LIMIT},
+    },
+    'reconcile-stale-devices-every-15-seconds': {
+        'task': 'collectors.scheduler.tasks.reconcile_stale_devices',
+        'schedule': 15,
     },
     'requeue-stale-delivering-notifications-every-10-minutes': {
         'task': 'apps.notifications.tasks.requeue_stale_delivering_notifications_task',

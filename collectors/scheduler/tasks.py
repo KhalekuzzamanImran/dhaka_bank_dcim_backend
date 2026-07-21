@@ -5,7 +5,7 @@ from celery import shared_task
 from django.db import OperationalError, ProgrammingError
 from django.utils import timezone
 
-from apps.devices.models import DevicePollingConfig, ProtocolType
+from apps.devices.models import Device, DevicePollingConfig, DeviceStatus, ProtocolType
 from collectors.modbus_collector.tasks import poll_modbus_device_task
 from collectors.snmp_collector.tasks import poll_snmp_device_task
 
@@ -25,6 +25,42 @@ def get_queue(protocol, priority):
     if protocol == ProtocolType.MODBUS_TCP:
         return {"high": "modbus_high", "normal": "modbus_normal", "low": "modbus_low"}.get(priority, "modbus_normal")
     return "default"
+
+
+@shared_task(queue="scheduler", soft_time_limit=30, time_limit=45)
+def reconcile_stale_devices():
+    """Mark polled devices offline when their heartbeat has expired.
+
+    This covers worker outages and devices that stop responding without a
+    poll-failure callback reaching the device row.
+    """
+    now = timezone.now()
+    marked_offline = 0
+    try:
+        configs = DevicePollingConfig.objects.select_related("device", "polling_profile").filter(
+            is_enabled=True,
+            device__is_active=True,
+            polling_profile__is_active=True,
+        ).iterator(chunk_size=500)
+        for config in configs:
+            last_seen = config.device.last_seen_at
+            if not last_seen:
+                continue
+            stale_after = max(1, int(config.polling_profile.stale_after_seconds or 180))
+            if (now - last_seen).total_seconds() < stale_after:
+                continue
+            updated = Device.objects.filter(
+                pk=config.device_id,
+                status__in=[DeviceStatus.ONLINE, DeviceStatus.DEGRADED],
+            ).update(status=DeviceStatus.OFFLINE, updated_at=now)
+            marked_offline += updated
+    except (ProgrammingError, OperationalError) as exc:
+        logger.warning("Stale-device reconciliation skipped because database schema is not ready: %s", exc)
+        return {"marked_offline": 0, "skipped": True, "reason": "database_schema_not_ready"}
+
+    if marked_offline:
+        logger.warning("Marked %s stale devices offline", marked_offline)
+    return {"marked_offline": marked_offline, "time": now.isoformat()}
 
 
 @shared_task(queue="scheduler", soft_time_limit=30, time_limit=45)

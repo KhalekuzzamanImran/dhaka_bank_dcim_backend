@@ -169,18 +169,25 @@ def execute_report_schedule(schedule_id: str, *, window_start: str | None = None
     schedule.last_run_at = window_end_dt
     schedule.next_run_at = schedule.calculate_next_run_at(reference_time=window_end_dt)
 
+    configured_parameters = schedule.parameters if isinstance(schedule.parameters, dict) else {}
     parameters = {
-        **(schedule.parameters if isinstance(schedule.parameters, dict) else {}),
+        **configured_parameters,
         "report_type": schedule.report_type,
         "output_format": schedule.output_format,
-        "date_from": window_start_dt.isoformat(),
-        "date_to": window_end_dt.isoformat(),
         "schedule_id": str(schedule.pk),
         "schedule_name": schedule.name,
         "delivery_time": schedule.delivery_time.strftime("%H:%M:%S"),
         "requested_format": schedule.output_format,
         "attach_raw_data": schedule.attach_raw_data,
     }
+
+    # Preserve explicit report filters, especially a historical telemetry range.
+    # Schedules without dates continue to use their rolling frequency window.
+    has_date_from = parameters.get("date_from") not in (None, "") or parameters.get("start_date") not in (None, "")
+    has_date_to = parameters.get("date_to") not in (None, "") or parameters.get("end_date") not in (None, "")
+    if not has_date_from and not has_date_to:
+        parameters["date_from"] = window_start_dt.isoformat()
+        parameters["date_to"] = window_end_dt.isoformat()
 
     job = ReportJob.objects.create(
         organization=schedule.organization,

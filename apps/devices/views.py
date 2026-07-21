@@ -63,7 +63,10 @@ class DeviceModelViewSet(AuditModelViewSet):
 class DeviceViewSet(ScopedModelViewSet):
     access_scope = "device"
     device_field = "id"
-    queryset = Device.objects.select_related("organization", "data_center", "room", "rack", "device_type", "device_model").all()
+    queryset = Device.objects.select_related(
+        "organization", "data_center", "room", "rack", "device_type", "device_model",
+        "polling_config", "polling_config__polling_profile",
+    ).all()
     serializer_class = DeviceSerializer
     permission_module = "device"
     audit_resource_type = "Device"
