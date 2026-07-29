@@ -13,13 +13,13 @@ DJANGO_APPS = [
     'django.contrib.sessions', 'django.contrib.messages', 'django.contrib.staticfiles',
 ]
 THIRD_PARTY_APPS = [
-    'rest_framework', 'rest_framework_simplejwt', 'django_filters', 'corsheaders', 'drf_spectacular',
+    'channels', 'rest_framework', 'rest_framework_simplejwt', 'django_filters', 'corsheaders', 'drf_spectacular',
     'drf_spectacular_sidecar',
 ]
 LOCAL_APPS = [
     'apps.common', 'apps.accounts', 'apps.organizations', 'apps.access_control', 'apps.datacenters',
     'apps.devices', 'apps.telemetry', 'apps.alerts', 'apps.maintenance', 'apps.dashboards',
-    'apps.reports', 'apps.notifications', 'apps.audit', 'collectors.snmp_collector',
+    'apps.reports', 'apps.notifications', 'apps.audit', 'apps.live_updates.apps.LiveUpdatesConfig', 'collectors.snmp_collector',
     'collectors.modbus_collector', 'collectors.snmp_trap_receiver', 'apps.traps', 'collectors.scheduler',
 ]
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -64,8 +64,6 @@ REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 50,
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
-    'DEFAULT_THROTTLE_CLASSES': ['rest_framework.throttling.UserRateThrottle', 'rest_framework.throttling.AnonRateThrottle'],
-    'DEFAULT_THROTTLE_RATES': {'user': config('API_USER_THROTTLE', default='2000/hour'), 'anon': config('API_ANON_THROTTLE', default='100/hour')},
 }
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=config('JWT_ACCESS_MINUTES', default=15, cast=int)),
@@ -115,17 +113,31 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 def _csv_setting(name, default=''):
     return [item.strip() for item in config(name, default=default).split(',') if item.strip()]
 
-CORS_ALLOWED_ORIGINS = _csv_setting('CORS_ALLOWED_ORIGINS', default='http://localhost:3000,http://localhost:5173')
+CORS_ALLOWED_ORIGINS = _csv_setting(
+    'CORS_ALLOWED_ORIGINS',
+    default='http://localhost:3000,http://localhost:4173,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:4173,http://127.0.0.1:5173',
+)
 FRONTEND_ORIGIN = config('FRONTEND_ORIGIN', default='').strip()
 if FRONTEND_ORIGIN and FRONTEND_ORIGIN not in CORS_ALLOWED_ORIGINS:
     CORS_ALLOWED_ORIGINS.append(FRONTEND_ORIGIN)
 
-CSRF_TRUSTED_ORIGINS = _csv_setting('CSRF_TRUSTED_ORIGINS', default='http://localhost:3000,http://localhost:5173')
+CSRF_TRUSTED_ORIGINS = _csv_setting(
+    'CSRF_TRUSTED_ORIGINS',
+    default='http://localhost:3000,http://localhost:4173,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:4173,http://127.0.0.1:5173',
+)
 if FRONTEND_ORIGIN and FRONTEND_ORIGIN not in CSRF_TRUSTED_ORIGINS:
     CSRF_TRUSTED_ORIGINS.append(FRONTEND_ORIGIN)
-CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')
-CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default='redis://localhost:6379/1')
-CACHES = {'default': {'BACKEND': 'django_redis.cache.RedisCache', 'LOCATION': config('REDIS_CACHE_URL', default='redis://localhost:6379/2'), 'OPTIONS': {'CLIENT_CLASS': 'django_redis.client.DefaultClient'}}}
+CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://redis:6379/0')
+CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default='redis://redis:6379/1')
+CACHES = {'default': {'BACKEND': 'django_redis.cache.RedisCache', 'LOCATION': config('REDIS_CACHE_URL', default='redis://redis:6379/2'), 'OPTIONS': {'CLIENT_CLASS': 'django_redis.client.DefaultClient'}}}
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            'hosts': [config('REDIS_CHANNEL_LAYER_URL', default='redis://redis:6379/3')],
+        },
+    },
+}
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 SESSION_COOKIE_HTTPONLY = True
@@ -148,6 +160,13 @@ POLLING_SCHEDULER_INTERVAL_SECONDS = config('POLLING_SCHEDULER_INTERVAL_SECONDS'
 POLLING_SCHEDULER_LIMIT = config('POLLING_SCHEDULER_LIMIT', default=200, cast=int)
 SNMP_TRAP_LISTEN_HOST = config('SNMP_TRAP_LISTEN_HOST', default='0.0.0.0')
 SNMP_TRAP_LISTEN_PORT = config('SNMP_TRAP_LISTEN_PORT', default=1162, cast=int)
+SNMP_MIB_FALLBACK_ENABLED = config('SNMP_MIB_FALLBACK_ENABLED', default=True, cast=bool)
+SNMP_MIB_DIRECTORIES = _csv_setting('SNMP_MIB_DIRECTORIES', default='/app/mibs,/home/appsadm/mibs')
+SNMP_MIB_CACHE_TTL_SECONDS = config('SNMP_MIB_CACHE_TTL_SECONDS', default=3600, cast=int)
+SNMP_MIB_MAX_IMPORT_FILE_SIZE_BYTES = config('SNMP_MIB_MAX_IMPORT_FILE_SIZE_BYTES', default=5 * 1024 * 1024, cast=int)
+SNMP_MIB_MAX_DESCRIPTION_LENGTH = config('SNMP_MIB_MAX_DESCRIPTION_LENGTH', default=8000, cast=int)
+SNMP_UNMAPPED_TRAP_SEVERITY = config('SNMP_UNMAPPED_TRAP_SEVERITY', default='WARNING')
+SNMP_UNMAPPED_TRAP_CREATE_REVIEW_ALERT = config('SNMP_UNMAPPED_TRAP_CREATE_REVIEW_ALERT', default=True, cast=bool)
 NOTIFICATION_DELIVERING_TIMEOUT_MINUTES = config('NOTIFICATION_DELIVERING_TIMEOUT_MINUTES', default=10, cast=int)
 
 CELERY_TASK_ROUTES = {

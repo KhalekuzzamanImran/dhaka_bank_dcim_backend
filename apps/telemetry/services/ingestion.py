@@ -1,7 +1,17 @@
+from django.db import transaction
 from decimal import Decimal
 
 from django.utils import timezone
 from apps.telemetry.models import TelemetryPoint, LatestTelemetry
+from apps.live_updates.services import publish_live_update
+
+
+def _refresh_scopes(device):
+    device_type_code = str(getattr(getattr(device, "device_type", None), "code", "") or "").strip().upper()
+    scopes = ["overview", f"device:{device.pk}"]
+    if device_type_code:
+        scopes.append(f"device_type:{device_type_code}")
+    return scopes
 
 
 def store_telemetry_point(*, device, metric, value, source=None, quality="GOOD", ingest_id=None, ts=None):
@@ -47,5 +57,19 @@ def store_telemetry_point(*, device, metric, value, source=None, quality="GOOD",
             "raw_value_text": raw_value_text,
             **value_kwargs,
         },
+    )
+    transaction.on_commit(
+        lambda: publish_live_update(
+            event_type="telemetry_batch",
+            resource_type="Device",
+            resource_id=device.pk,
+            scopes=_refresh_scopes(device),
+            metadata={
+                "device_id": str(device.pk),
+                "metric_code": str(getattr(metric, "code", "") or ""),
+                "source": source,
+                "ingest_id": str(ingest_id) if ingest_id else None,
+            },
+        )
     )
     return point

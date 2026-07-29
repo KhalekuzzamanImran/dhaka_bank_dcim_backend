@@ -29,5 +29,19 @@ class SNMPTrapEventViewSet(ScopedModelViewSet):
     permission_module = "traps"
     audit_resource_type = "SNMPTrapEvent"
     http_method_names = ["get", "head", "options"]
-    filterset_fields = ["organization", "data_center", "device", "source_ip", "trap_oid", "severity", "is_mapped", "is_processed"]
-    search_fields = ["trap_oid", "event_code", "event_name", "message"]
+    filterset_fields = [
+        "organization",
+        "data_center",
+        "device",
+        "source_ip",
+        "trap_oid",
+        "severity",
+        "is_mapped",
+        "is_processed",
+        "resolution_source",
+        "mib_module",
+        "mib_symbol",
+        "mib_status",
+        "requires_mapping_review",
+    ]
+    search_fields = ["trap_oid", "event_code", "event_name", "message", "mib_module", "mib_symbol"]

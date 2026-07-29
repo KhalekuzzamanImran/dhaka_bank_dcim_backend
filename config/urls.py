@@ -27,6 +27,7 @@ urlpatterns = [
     path('api/v1/notifications/', include('apps.notifications.urls')),
     path('api/v1/audit/', include('apps.audit.urls')),
     path('api/v1/traps/', include('apps.traps.urls')),
+    path('api/v1/live-updates/', include('apps.live_updates.urls')),
 ]
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

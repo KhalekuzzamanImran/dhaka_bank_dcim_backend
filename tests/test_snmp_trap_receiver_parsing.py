@@ -151,6 +151,34 @@ def test_extract_snmpv1_trap_oid_includes_metadata():
     assert metadata["_transport_source_port"] == 162
 
 
+def test_extract_varbinds_for_snmpv1_does_not_inject_v2_notification_oid():
+    p_mod = _fake_p_mod()
+    pdu = _FakePdu(
+        enterprise=".1.3.6.1.4.1.318",
+        agent_addr="172.25.210.121",
+        generic_trap=6,
+        specific_trap=636,
+        timestamp=84770500,
+        varbinds=[("1.3.6.1.2.1.1.3.0", 123)],
+    )
+
+    raw_varbinds = extract_varbinds(p_mod, pdu, msg_ver=0)
+    trap_oid, metadata = extract_snmpv1_trap_oid(
+        p_mod,
+        pdu,
+        transport_source_ip="172.25.210.121",
+        transport_source_port=62579,
+    )
+
+    raw_varbinds.update(metadata)
+
+    assert trap_oid == "1.3.6.1.4.1.318.0.636"
+    assert raw_varbinds["_canonical_trap_oid"] == "1.3.6.1.4.1.318.0.636"
+    assert raw_varbinds["_snmp_version"] == "SNMPv1"
+    assert "1.3.6.1.6.3.1.1.4.1.0" not in raw_varbinds
+    assert raw_varbinds["1.3.6.1.2.1.1.3.0"] == "123"
+
+
 def test_extract_snmpv2c_trap_oid():
     trap_oid, metadata = extract_snmpv2c_trap_oid({SNMP_TRAP_OID_V2: ".1.3.6.1.4.1.318.0.77"})
 

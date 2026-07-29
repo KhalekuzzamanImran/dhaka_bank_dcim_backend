@@ -10,6 +10,7 @@ import uuid
 from django.db import transaction
 from django.utils import timezone
 
+from apps.live_updates.services import publish_live_update
 from apps.devices.models import Device, DeviceStatus
 from apps.telemetry.models import (
     LatestTelemetry,
@@ -18,6 +19,14 @@ from apps.telemetry.models import (
     TelemetryPoint,
 )
 from .ingestion import store_telemetry_point
+
+
+def _refresh_scopes(device):
+    device_type_code = str(getattr(getattr(device, "device_type", None), "code", "") or "").strip().upper()
+    scopes = ["overview", f"device:{device.pk}"]
+    if device_type_code:
+        scopes.append(f"device_type:{device_type_code}")
+    return scopes
 
 
 @transaction.atomic
@@ -83,6 +92,22 @@ def ingest_points(points, source="api"):
         finished_at=finished_at,
         duration_ms=int((finished_at - now).total_seconds() * 1000),
     )
+    if first_device:
+        transaction.on_commit(
+            lambda: publish_live_update(
+                event_type="telemetry_batch",
+                resource_type="Device",
+                resource_id=first_device.pk,
+                scopes=_refresh_scopes(first_device),
+                metadata={
+                    "device_id": str(first_device.pk),
+                    "device_type": str(getattr(getattr(first_device, "device_type", None), "code", "") or ""),
+                    "source": source,
+                    "ingest_id": str(ingest_id),
+                    "point_count": len(created),
+                },
+            )
+        )
     return ingest_id, created
 
 

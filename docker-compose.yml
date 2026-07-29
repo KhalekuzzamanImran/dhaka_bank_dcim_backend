@@ -30,7 +30,7 @@ services:
 
   api:
     build: .
-    command: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 4 --timeout 120
+    command: daphne -b 0.0.0.0 -p 8000 config.asgi:application
     env_file: .env
     # Keep the TLS hostname while routing the UAT SMS gateway over the private network.
     extra_hosts:

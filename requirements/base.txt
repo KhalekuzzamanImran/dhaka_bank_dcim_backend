@@ -5,6 +5,9 @@ django-filter==24.2
 django-cors-headers==4.4.0
 drf-spectacular==0.27.2
 drf-spectacular-sidecar==2024.6.1
+channels==4.1.0
+channels-redis==4.2.1
+daphne==4.1.2
 psycopg[binary]==3.2.1
 python-decouple==3.8
 dj-database-url==2.2.0

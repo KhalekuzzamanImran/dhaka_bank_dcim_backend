@@ -17,6 +17,7 @@ from apps.devices.models import (
     ProtocolType,
     SNMPOIDMapping,
 )
+from apps.live_updates.services import publish_live_update
 from apps.telemetry.models import LatestTelemetry, TelemetryIngestLog, TelemetryPoint, TelemetryQuality
 from .client import SNMPClient, SNMPResult
 from .exceptions import SNMPConfigurationError, SNMPCredentialError, SNMPResponseError, SNMPTimeoutError, SNMPWorkerError
@@ -33,6 +34,14 @@ class PollOutcome:
     success_count: int
     failure_count: int
     error_message: Optional[str] = None
+
+
+def _refresh_scopes(device: Device) -> List[str]:
+    device_type_code = str(getattr(getattr(device, "device_type", None), "code", "") or "").strip().upper()
+    scopes = ["overview", f"device:{device.pk}"]
+    if device_type_code:
+        scopes.append(f"device_type:{device_type_code}")
+    return scopes
 
 
 def get_enabled_snmp_devices_due(limit: int = 100) -> List[str]:
@@ -223,5 +232,21 @@ def poll_snmp_device(device_id: str, evaluate_alerts: bool = True) -> PollOutcom
         started_at=started_at,
         finished_at=finished_at,
         duration_ms=int((finished_at - started_at).total_seconds() * 1000),
+    )
+    transaction.on_commit(
+        lambda: publish_live_update(
+            event_type="telemetry_batch",
+            resource_type="Device",
+            resource_id=device.pk,
+            scopes=_refresh_scopes(device),
+            metadata={
+                "device_id": str(device.pk),
+                "device_type": str(getattr(getattr(device, "device_type", None), "code", "") or ""),
+                "ingest_id": str(ingest_id),
+                "status": status,
+                "success_count": success_count,
+                "failure_count": failure_count,
+            },
+        )
     )
     return PollOutcome(str(device.pk), str(ingest_id), status, success_count, failure_count, error_message)

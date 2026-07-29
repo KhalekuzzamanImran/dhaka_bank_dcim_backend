@@ -113,6 +113,38 @@ class LatestTelemetryViewSet(ScopedModelViewSet):
     def summary(self, request):
         qs = self.filter_queryset(self.get_queryset())
         return Response({'total_latest_points': qs.count(), 'good': qs.filter(quality='GOOD').count(), 'bad': qs.filter(quality='BAD').count(), 'stale': qs.filter(quality='STALE').count()})
+
+    @action(detail=False, methods=['get'])
+    def overview(self, request):
+        rows = (
+            self.filter_queryset(self.get_queryset())
+            .values(
+                'device_id',
+                'metric__code',
+                'value_float',
+                'value_integer',
+                'value_boolean',
+                'value_text',
+                'quality',
+                'last_seen_at',
+            )
+            .order_by('device_id', 'metric__code')
+        )
+
+        payload = [
+            {
+                'device_id': str(row['device_id']),
+                'metric_code': row['metric__code'],
+                'value_float': row['value_float'],
+                'value_integer': row['value_integer'],
+                'value_boolean': row['value_boolean'],
+                'value_text': row['value_text'],
+                'quality': row['quality'],
+                'last_seen_at': row['last_seen_at'].isoformat() if row['last_seen_at'] else None,
+            }
+            for row in rows
+        ]
+        return Response({'count': len(payload), 'results': payload})
 class TelemetryIngestLogViewSet(ScopedModelViewSet):
     access_scope = 'device'
     http_method_names = ['get','head','options']

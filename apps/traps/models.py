@@ -8,6 +8,19 @@ class TrapSeverity(models.TextChoices):
     CRITICAL = "CRITICAL", "Critical"
 
 
+class TrapResolutionSource(models.TextChoices):
+    DATABASE = "DATABASE", "Database Mapping"
+    MIB = "MIB", "MIB Fallback"
+    UNKNOWN = "UNKNOWN", "Unknown"
+
+
+class MIBDefinitionStatus(models.TextChoices):
+    CURRENT = "CURRENT", "Current"
+    DEPRECATED = "DEPRECATED", "Deprecated"
+    OBSOLETE = "OBSOLETE", "Obsolete"
+    UNKNOWN = "UNKNOWN", "Unknown"
+
+
 class SNMPTrapSource(TimeStampedModel):
     organization = models.ForeignKey("organizations.Organization", on_delete=models.CASCADE, related_name="snmp_trap_sources")
     data_center = models.ForeignKey("datacenters.DataCenter", on_delete=models.CASCADE, related_name="snmp_trap_sources")
@@ -45,6 +58,28 @@ class SNMPTrapOIDMapping(TimeStampedModel):
         return f"{self.event_code} - {self.trap_oid}"
 
 
+class SNMPMIBDefinition(TimeStampedModel):
+    module_name = models.CharField(max_length=255, db_index=True)
+    symbol = models.CharField(max_length=255, db_index=True)
+    oid = models.CharField(max_length=255, db_index=True)
+    description = models.TextField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=MIBDefinitionStatus.choices, default=MIBDefinitionStatus.UNKNOWN, db_index=True)
+    object_names = models.JSONField(default=list, blank=True)
+    source_file = models.CharField(max_length=500, blank=True, null=True)
+    content_hash = models.CharField(max_length=64, blank=True, null=True, db_index=True)
+    imported_at = models.DateTimeField(blank=True, null=True, db_index=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+
+    class Meta:
+        db_table = "snmp_mib_definitions"
+        constraints = [
+            models.UniqueConstraint(fields=["module_name", "symbol", "oid"], name="uq_snmp_mib_definition"),
+        ]
+
+    def __str__(self):
+        return f"{self.module_name}::{self.symbol} -> {self.oid}"
+
+
 class SNMPTrapEvent(TimeStampedModel):
     organization = models.ForeignKey("organizations.Organization", on_delete=models.SET_NULL, related_name="snmp_trap_events", blank=True, null=True)
     data_center = models.ForeignKey("datacenters.DataCenter", on_delete=models.SET_NULL, related_name="snmp_trap_events", blank=True, null=True)
@@ -54,6 +89,12 @@ class SNMPTrapEvent(TimeStampedModel):
     event_code = models.CharField(max_length=150, blank=True, null=True)
     event_name = models.CharField(max_length=255, blank=True, null=True)
     severity = models.CharField(max_length=20, default=TrapSeverity.INFO)
+    resolution_source = models.CharField(max_length=20, choices=TrapResolutionSource.choices, default=TrapResolutionSource.UNKNOWN, db_index=True)
+    mib_module = models.CharField(max_length=255, blank=True, null=True, db_index=True)
+    mib_symbol = models.CharField(max_length=255, blank=True, null=True, db_index=True)
+    mib_description = models.TextField(blank=True, null=True)
+    mib_status = models.CharField(max_length=20, choices=MIBDefinitionStatus.choices, default=MIBDefinitionStatus.UNKNOWN, db_index=True)
+    requires_mapping_review = models.BooleanField(default=True, db_index=True)
     raw_varbinds = models.JSONField(default=dict, blank=True)
     message = models.TextField(blank=True, null=True)
     received_at = models.DateTimeField(db_index=True)
@@ -62,7 +103,14 @@ class SNMPTrapEvent(TimeStampedModel):
 
     class Meta:
         db_table = "snmp_trap_events"
-        indexes = [models.Index(fields=["source_ip"]), models.Index(fields=["trap_oid"]), models.Index(fields=["device"]), models.Index(fields=["received_at"]), models.Index(fields=["is_mapped"]), models.Index(fields=["is_processed"])]
+        indexes = [
+            models.Index(fields=["source_ip"]),
+            models.Index(fields=["trap_oid"]),
+            models.Index(fields=["device"]),
+            models.Index(fields=["received_at"]),
+            models.Index(fields=["is_mapped"]),
+            models.Index(fields=["is_processed"]),
+        ]
 
     def __str__(self):
         return f"{self.source_ip} {self.trap_oid}"

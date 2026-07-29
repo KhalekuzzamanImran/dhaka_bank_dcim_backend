@@ -1,5 +1,7 @@
 from rest_framework import serializers
+
 from .models import DeviceType, Vendor, DeviceModel, Device, DeviceProtocolConfig, DeviceCredential, PollingProfile, DevicePollingConfig, SNMPOIDMapping, ModbusRegisterMapping
+from .services import build_device_activity_feed
 
 class DeviceTypeSerializer(serializers.ModelSerializer):
     class Meta: model = DeviceType; fields = '__all__'
@@ -24,6 +26,42 @@ class DeviceSerializer(serializers.ModelSerializer):
         polling_config = getattr(obj, 'polling_config', None)
         profile = getattr(polling_config, 'polling_profile', None)
         return int(getattr(profile, 'stale_after_seconds', 180) or 180)
+
+
+class DeviceDetailSerializer(DeviceSerializer):
+    active_alarms_count = serializers.SerializerMethodField()
+    active_alarms = serializers.SerializerMethodField()
+    recent_events_count = serializers.SerializerMethodField()
+    recent_events = serializers.SerializerMethodField()
+
+    class Meta(DeviceSerializer.Meta):
+        fields = DeviceSerializer.Meta.fields + [
+            "active_alarms_count",
+            "active_alarms",
+            "recent_events_count",
+            "recent_events",
+        ]
+
+    def _activity_feed(self, obj):
+        cache_key = "_device_activity_feed"
+        cached = getattr(self, cache_key, None)
+        if cached and cached.get("device_id") == str(obj.pk):
+            return cached
+        feed = build_device_activity_feed(obj)
+        setattr(self, cache_key, feed)
+        return feed
+
+    def get_active_alarms_count(self, obj):
+        return self._activity_feed(obj)["active_alarms_count"]
+
+    def get_active_alarms(self, obj):
+        return self._activity_feed(obj)["active_alarms"]
+
+    def get_recent_events_count(self, obj):
+        return self._activity_feed(obj)["recent_events_count"]
+
+    def get_recent_events(self, obj):
+        return self._activity_feed(obj)["recent_events"]
 class DeviceProtocolConfigSerializer(serializers.ModelSerializer):
     class Meta: model = DeviceProtocolConfig; fields = '__all__'
 class DeviceCredentialSerializer(serializers.ModelSerializer):

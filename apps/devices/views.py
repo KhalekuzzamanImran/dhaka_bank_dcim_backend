@@ -6,7 +6,9 @@ from rest_framework.response import Response
 from apps.common.access import get_accessible_devices_for_user
 from apps.common.viewsets import AuditModelViewSet, ScopedModelViewSet
 from .models import DeviceType, Vendor, DeviceModel, Device, DeviceProtocolConfig, DeviceCredential, PollingProfile, DevicePollingConfig, SNMPOIDMapping, ModbusRegisterMapping
-from .serializers import DeviceTypeSerializer, VendorSerializer, DeviceModelSerializer, DeviceSerializer, DeviceProtocolConfigSerializer, DeviceCredentialSerializer, PollingProfileSerializer, DevicePollingConfigSerializer, SNMPOIDMappingSerializer, ModbusRegisterMappingSerializer
+from .serializers import DeviceTypeSerializer, VendorSerializer, DeviceModelSerializer, DeviceSerializer, DeviceDetailSerializer, DeviceProtocolConfigSerializer, DeviceCredentialSerializer, PollingProfileSerializer, DevicePollingConfigSerializer, SNMPOIDMappingSerializer, ModbusRegisterMappingSerializer
+from .services import build_device_activity_feed
+from .services.overview_summary import build_data_center_overview_summary
 
 
 class DeviceTypeViewSet(AuditModelViewSet):
@@ -73,6 +75,41 @@ class DeviceViewSet(ScopedModelViewSet):
     filterset_fields = ["organization", "data_center", "room", "rack", "device_type", "status", "is_active"]
     search_fields = ["name", "code", "hostname", "ip_address", "serial_number", "asset_tag"]
     ordering_fields = ["name", "code", "status", "last_seen_at", "created_at"]
+
+    def get_serializer_class(self):
+        if self.action == "retrieve":
+            return DeviceDetailSerializer
+        return super().get_serializer_class()
+
+    @action(detail=True, methods=["get"])
+    def activity(self, request, pk=None):
+        device = self.get_object()
+        active_limit = request.query_params.get("active_limit", 10)
+        recent_limit = request.query_params.get("recent_limit", 25)
+        try:
+            active_limit = int(active_limit)
+        except (TypeError, ValueError):
+            active_limit = 10
+        try:
+            recent_limit = int(recent_limit)
+        except (TypeError, ValueError):
+            recent_limit = 25
+        return Response(build_device_activity_feed(device, active_limit=active_limit, recent_limit=recent_limit))
+
+    @action(detail=False, methods=["get"], url_path="overview-summary")
+    def overview_summary(self, request):
+        active_alert_limit = request.query_params.get("active_alert_limit", 50)
+        try:
+            active_alert_limit = int(active_alert_limit)
+        except (TypeError, ValueError):
+            active_alert_limit = 50
+        return Response(
+            build_data_center_overview_summary(
+                self.get_queryset(),
+                active_alert_limit=max(0, active_alert_limit),
+                cache_scope=str(getattr(request.user, "pk", "anonymous")),
+            )
+        )
 
 
 class DeviceProtocolConfigViewSet(ScopedModelViewSet):
