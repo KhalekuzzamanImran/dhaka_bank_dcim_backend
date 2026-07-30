@@ -12,7 +12,8 @@ from django.utils.dateparse import parse_datetime
 
 from apps.common.audit import write_audit
 from apps.accounts.models import User
-from apps.notifications.services.sms import send_sms_message
+from apps.notifications.models import Notification, NotificationChannel, NotificationStatus
+from apps.notifications.services import queue_notification_delivery
 
 from ..models import ReportJob, ReportJobStatus, ReportSchedule
 from .generator import generate_report_job
@@ -93,19 +94,70 @@ def _send_report_email(schedule: ReportSchedule, report_job: ReportJob):
     message.send(fail_silently=False)
 
 
-def _send_report_sms(schedule: ReportSchedule, report_job: ReportJob):
-    recipients = schedule.sms_recipients if isinstance(schedule.sms_recipients, list) else []
-    if not schedule.send_sms:
-        return []
-    if not recipients:
-        raise ValueError("SMS delivery is enabled but no SMS recipients were configured.")
-
-    message = (
+def _build_report_sms_message(schedule: ReportSchedule, report_job: ReportJob):
+    return (
         f"Scheduled report ready: {schedule.name}. "
         f"Type: {schedule.report_type_label}. "
         f"Window: {report_job.parameters.get('date_from', '--')} to {report_job.parameters.get('date_to', '--')}."
     )
-    return [send_sms_message(str(phone), message) for phone in recipients]
+
+
+def _queue_report_sms_notifications(schedule: ReportSchedule, report_job: ReportJob):
+    if not schedule.send_sms:
+        return []
+    recipients = schedule.sms_recipients if isinstance(schedule.sms_recipients, list) else []
+    if not recipients:
+        raise ValueError("SMS delivery is enabled but no SMS recipients were configured.")
+
+    queued_notifications = []
+    message = _build_report_sms_message(schedule, report_job)
+    report_schedule_id = str(schedule.pk)
+    report_job_id = str(report_job.pk)
+
+    for phone in recipients:
+        normalized_phone = str(phone).strip()
+        if not normalized_phone:
+            continue
+        notification, created = Notification.objects.get_or_create(
+            organization=schedule.organization,
+            channel=NotificationChannel.SMS,
+            dedupe_key=f"report_schedule:{schedule.pk}:{report_job_id}:sms:{normalized_phone}",
+            defaults={
+                "recipient": None,
+                "subject": f"{schedule.name} - SMS delivery",
+                "message": message,
+                "status": NotificationStatus.PENDING,
+                "metadata": {
+                    "report_schedule_id": report_schedule_id,
+                    "report_job_id": report_job_id,
+                    "report_schedule_name": schedule.name,
+                    "report_type": schedule.report_type,
+                    "phone": normalized_phone,
+                },
+            },
+        )
+        if not created:
+            metadata = notification.metadata if isinstance(notification.metadata, dict) else {}
+            metadata = dict(metadata)
+            metadata.update(
+                {
+                    "report_schedule_id": report_schedule_id,
+                    "report_job_id": report_job_id,
+                    "report_schedule_name": schedule.name,
+                    "report_type": schedule.report_type,
+                    "phone": normalized_phone,
+                }
+            )
+            notification.message = message
+            notification.metadata = metadata
+            notification.status = NotificationStatus.PENDING
+            notification.error_message = ""
+            notification.sent_at = None
+            notification.save(update_fields=["message", "metadata", "status", "error_message", "sent_at", "updated_at"])
+        queue_notification_delivery(notification)
+        queued_notifications.append(notification)
+
+    return queued_notifications
 
 
 def claim_due_report_schedules(limit: int = 100) -> list[ClaimedSchedule]:
@@ -217,7 +269,7 @@ def execute_report_schedule(schedule_id: str, *, window_start: str | None = None
     try:
         if email_recipients:
             _send_report_email(schedule, generated_job)
-        _send_report_sms(schedule, generated_job)
+        _queue_report_sms_notifications(schedule, generated_job)
     except Exception as exc:
         schedule.last_delivery_status = "FAILED"
         schedule.last_error_message = str(exc)

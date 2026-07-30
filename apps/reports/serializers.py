@@ -56,6 +56,18 @@ def _normalize_delivery_time(value):
     return None
 
 
+def _user_phone(user):
+    if not user:
+        return None
+    for field in ("phone", "mobile", "phone_number", "msisdn"):
+        value = getattr(user, field, None)
+        if value:
+            phone = str(value).strip()
+            if phone:
+                return phone
+    return None
+
+
 class ReportTemplateSerializer(serializers.ModelSerializer):
     organization_name = serializers.CharField(source="organization.name", read_only=True)
     report_type = serializers.SerializerMethodField(read_only=True)

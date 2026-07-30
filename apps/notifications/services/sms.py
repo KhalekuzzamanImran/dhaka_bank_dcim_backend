@@ -176,6 +176,11 @@ def send_sms_notification(notification):
     recipient = getattr(notification, "recipient", None)
     phone = _recipient_phone(recipient)
     if not phone:
+        metadata = notification.metadata if isinstance(getattr(notification, "metadata", None), dict) else {}
+        phone = metadata.get("phone") or metadata.get("mobile") or metadata.get("msisdn")
+        if phone:
+            phone = str(phone).strip()
+    if not phone:
         raise ValueError("Recipient phone/mobile is missing for SMS notification")
 
     return send_sms_message(phone, notification.message)

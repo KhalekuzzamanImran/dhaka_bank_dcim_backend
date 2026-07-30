@@ -286,6 +286,8 @@ def _resolve_metric_codes(parameters: dict, *, required: bool = False) -> list[s
 # were device-specific. Keep those jobs runnable without accepting unknown
 # metric names or changing the canonical codes stored in the database.
 TELEMETRY_METRIC_CODE_ALIASES = {
+    "pac_temperature": "pac_room_temperature",
+    "pac_humidity": "pac_room_humidity",
     "room_temperature": "pac_room_temperature",
     "room_humidity": "pac_room_humidity",
     "roomTemp": "pac_room_temperature",

@@ -136,6 +136,27 @@ def test_sms_notification_console_backend_marks_sent():
 
 
 @pytest.mark.django_db
+@override_settings(SMS_BACKEND="console")
+def test_sms_notification_can_use_metadata_phone_without_recipient():
+    org = _notification_org()
+    notification = Notification.objects.create(
+        organization=org,
+        recipient=None,
+        channel=NotificationChannel.SMS,
+        subject="SMS Test",
+        message="Hello via sms",
+        status=NotificationStatus.PENDING,
+        metadata={"phone": "01722222222"},
+    )
+
+    result = send_notification_task.apply(args=[str(notification.id)]).get()
+
+    notification.refresh_from_db()
+    assert result["status"] == "sent"
+    assert notification.status == NotificationStatus.SENT
+
+
+@pytest.mark.django_db
 def test_sms_notification_missing_phone_fails():
     org = _notification_org()
     user = _user(phone="")

@@ -388,6 +388,52 @@ class ReportTestCase(TestCase):
         self.assertEqual(schedule.recipients, [])
         self.assertEqual(schedule.sms_recipients, ["01329665857"])
 
+    def test_report_schedule_execution_queues_sms_notifications(self):
+        schedule = ReportSchedule.objects.create(
+            organization=self.org,
+            data_center=self.dc,
+            name="SMS Delivery Report",
+            report_type="device_inventory",
+            frequency="DAILY",
+            delivery_time=time(6, 0),
+            output_format="CSV",
+            recipients=["report@example.com"],
+            send_sms=True,
+            sms_recipients=["01677757054", "01329665857"],
+            is_active=True,
+            created_by=self.user,
+            next_run_at=timezone.now() - timedelta(minutes=5),
+        )
+
+        queued_notifications = []
+
+        def _capture_queue(notification):
+            queued_notifications.append(notification)
+            return notification
+
+        with patch("apps.reports.services.schedules.EmailMessage.send", return_value=1), patch(
+            "apps.reports.services.schedules.queue_notification_delivery",
+            side_effect=_capture_queue,
+        ):
+            executed = execute_report_schedule(str(schedule.id))
+
+        schedule.refresh_from_db()
+        self.assertEqual(executed.pk, schedule.pk)
+        self.assertEqual(schedule.last_delivery_status, "SENT")
+        self.assertEqual(len(queued_notifications), 2)
+
+        sms_notifications = Notification.objects.filter(
+            organization=self.org,
+            channel=NotificationChannel.SMS,
+            metadata__report_schedule_id=str(schedule.id),
+        ).order_by("created_at")
+        self.assertEqual(sms_notifications.count(), 2)
+        self.assertCountEqual(
+            list(sms_notifications.values_list("metadata__phone", flat=True)),
+            ["01677757054", "01329665857"],
+        )
+        self.assertTrue(all(notification.recipient_id is None for notification in sms_notifications))
+
     def test_report_schedule_rejects_run_without_delivery_channel(self):
         schedule = ReportSchedule.objects.create(
             organization=self.org,
@@ -411,7 +457,7 @@ class ReportTestCase(TestCase):
         self.assertEqual(schedule.last_delivery_status, "FAILED")
         self.assertIn("no email or SMS recipients", schedule.last_error_message)
 
-    def test_run_now_action_executes_schedule_and_updates_status(self):
+    def test_run_now_action_queues_schedule_delivery(self):
         self.client.force_authenticate(user=self.user)
         schedule = ReportSchedule.objects.create(
             organization=self.org,
@@ -428,16 +474,17 @@ class ReportTestCase(TestCase):
             next_run_at=timezone.now() - timedelta(minutes=5),
         )
 
-        with patch("apps.reports.services.schedules.EmailMessage.send", return_value=1) as mocked_send:
-            response = self.client.post(f"/api/v1/reports/report-schedules/{schedule.id}/run_now/", {}, format="json")
+        with patch("apps.reports.tasks.deliver_report_schedule_task.delay") as mocked_delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.client.post(f"/api/v1/reports/report-schedules/{schedule.id}/run_now/", {}, format="json")
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 202)
+        mocked_delay.assert_called_once_with(str(schedule.id))
         schedule.refresh_from_db()
-        self.assertEqual(schedule.last_delivery_status, "SENT")
-        self.assertIsNotNone(schedule.last_job)
-        self.assertEqual(schedule.last_job.status, ReportJobStatus.COMPLETED)
-        self.assertTrue(schedule.last_job.file)
-        self.assertTrue(mocked_send.called)
+        self.assertEqual(schedule.last_delivery_status, "PENDING")
+        self.assertEqual(schedule.last_error_message, "")
+        self.assertIsNone(schedule.last_job)
+        self.assertEqual(response.data["detail"], "Report delivery queued.")
 
     def test_retry_works_only_for_failed_jobs(self):
         self.client.force_authenticate(user=self.user)
@@ -813,6 +860,67 @@ class ReportTestCase(TestCase):
         self.assertEqual(generated.status, ReportJobStatus.COMPLETED)
         self.assertIn("pac_room_temperature", content)
         self.assertIn("18.1", content)
+
+    def test_telemetry_export_accepts_pac_metric_aliases_for_room_readings(self):
+        template = self._template(
+            code="TELEMETRY_EXPORT_PAC_ALIAS",
+            report_type="telemetry_export",
+            config={"report_type": "telemetry_export", "output_format": "csv"},
+        )
+        temp_metric = MetricDefinition.objects.create(
+            code="pac_room_temperature",
+            name="PAC Room Temperature",
+            category=MetricCategory.ENVIRONMENT,
+            data_type=MetricDataType.FLOAT,
+            unit="°C",
+        )
+        humidity_metric = MetricDefinition.objects.create(
+            code="pac_room_humidity",
+            name="PAC Room Humidity",
+            category=MetricCategory.ENVIRONMENT,
+            data_type=MetricDataType.FLOAT,
+            unit="%",
+        )
+        now = timezone.now()
+        TelemetryPoint.objects.create(
+            time=now - timedelta(minutes=10),
+            organization=self.org,
+            data_center=self.dc,
+            device=self.device,
+            metric=temp_metric,
+            value_float=23.4,
+            raw_value_text="23.4",
+            quality="GOOD",
+        )
+        TelemetryPoint.objects.create(
+            time=now - timedelta(minutes=5),
+            organization=self.org,
+            data_center=self.dc,
+            device=self.device,
+            metric=humidity_metric,
+            value_float=55.1,
+            raw_value_text="55.1",
+            quality="GOOD",
+        )
+
+        job = self._job(
+            template=template,
+            parameters={
+                "report_type": "telemetry_export",
+                "date_from": (now - timedelta(hours=1)).isoformat(),
+                "date_to": (now + timedelta(hours=1)).isoformat(),
+                "metric_codes": ["pac_temperature", "pac_humidity"],
+            },
+        )
+        generated = generate_report_job(job.id)
+        with generated.file.open("rb") as handle:
+            content = handle.read().decode("utf-8")
+
+        self.assertEqual(generated.status, ReportJobStatus.COMPLETED)
+        self.assertIn("pac_room_temperature", content)
+        self.assertIn("pac_room_humidity", content)
+        self.assertIn("23.4", content)
+        self.assertIn("55.1", content)
 
     def test_telemetry_export_requires_required_filters_and_rejects_invalid_values(self):
         template = self._template(

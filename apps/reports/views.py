@@ -14,7 +14,6 @@ from apps.common.viewsets import ScopedModelViewSet
 
 from .filters import ReportJobFilter, ReportScheduleFilter
 from .models import ReportJob, ReportJobStatus, ReportSchedule, ReportTemplate
-from .services.schedules import execute_report_schedule
 from .serializers import (
     ReportJobCreateSerializer,
     ReportJobDetailSerializer,
@@ -213,26 +212,29 @@ class ReportScheduleViewSet(ScopedModelViewSet):
         schedule = self.get_object()
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        detail = None
-        try:
-            executed = execute_report_schedule(str(schedule.pk))
-        except Exception as exc:
-            detail = str(exc)
-            refreshed = (
-                ReportSchedule.objects.select_related("organization", "data_center", "created_by", "last_job")
-                .filter(pk=schedule.pk)
-                .first()
-            )
-            if refreshed is not None:
-                schedule = refreshed
-            executed = schedule
+        schedule.last_delivery_status = "PENDING"
+        schedule.last_error_message = ""
+        schedule.save(update_fields=["last_delivery_status", "last_error_message", "updated_at"])
 
+        from .tasks import deliver_report_schedule_task
+
+        def _queue_delivery():
+            deliver_report_schedule_task.delay(str(schedule.pk))
+            _safe_write_audit(
+                "REPORT_SCHEDULE_RUN_NOW_QUEUED",
+                "ReportSchedule",
+                schedule.pk,
+                organization=schedule.organization,
+                actor=request.user,
+                message=f"Manual report delivery queued for {schedule.report_type_label}",
+            )
+
+        transaction.on_commit(_queue_delivery)
         refreshed = (
             ReportSchedule.objects.select_related("organization", "data_center", "created_by", "last_job")
-            .filter(pk=executed.pk)
+            .filter(pk=schedule.pk)
             .first()
         )
-        payload = ReportScheduleSerializer(refreshed or executed, context=self.get_serializer_context()).data
-        if detail:
-            payload["detail"] = detail
-        return Response(payload)
+        payload = ReportScheduleSerializer(refreshed or schedule, context=self.get_serializer_context()).data
+        payload["detail"] = "Report delivery queued."
+        return Response(payload, status=status.HTTP_202_ACCEPTED)
