@@ -24,6 +24,7 @@ from .serializers import (
     ReportScheduleRunNowSerializer,
     ReportTemplateSerializer,
 )
+from .services.configuration import build_report_template_options
 
 
 def _safe_write_audit(*args, **kwargs):
@@ -44,6 +45,12 @@ class ReportTemplateViewSet(ScopedModelViewSet):
     search_fields = ["name", "code"]
     ordering_fields = ["created_at", "updated_at", "name", "code"]
     ordering = ["-created_at"]
+
+    @action(detail=True, methods=["get"])
+    def options(self, request, pk=None):
+        template = self.get_object()
+        payload = build_report_template_options(template)
+        return Response(payload)
 
 
 class ReportJobViewSet(ScopedModelViewSet):

@@ -16,6 +16,7 @@ from .constants import (
     normalize_report_frequency,
     normalize_report_type,
 )
+from .services.configuration import validate_report_template_config
 
 class ReportTemplate(TimeStampedModel):
     organization = models.ForeignKey("organizations.Organization", on_delete=models.CASCADE, related_name="report_templates")
@@ -47,12 +48,17 @@ class ReportTemplate(TimeStampedModel):
             errors.setdefault("code", []).append("Code is required.")
         if self.organization_id is None:
             errors.setdefault("organization", []).append("Organization is required.")
-        if not isinstance(self.config, dict):
-            errors.setdefault("config", []).append("Config must be a dictionary/object.")
+        if isinstance(self.config, dict):
+            try:
+                self.config = validate_report_template_config(self.config, existing_config={})
+            except ValidationError as exc:
+                if hasattr(exc, "message_dict"):
+                    for field_name, messages in exc.message_dict.items():
+                        errors.setdefault(field_name, []).extend(messages)
+                else:
+                    errors.setdefault("config", []).extend(exc.messages)
         else:
-            report_type = self.config.get("report_type")
-            if not report_type:
-                errors.setdefault("config", []).append("Config must include report_type.")
+            errors.setdefault("config", []).append("Config must be a dictionary/object.")
 
         if self.is_active and self.organization_id and self.code:
             duplicate_qs = ReportTemplate.objects.filter(
@@ -88,10 +94,18 @@ class ReportJob(TimeStampedModel):
     requested_by = models.ForeignKey("accounts.User", on_delete=models.SET_NULL, related_name="report_jobs", blank=True, null=True)
     status = models.CharField(max_length=30, choices=ReportJobStatus.choices, default=ReportJobStatus.PENDING)
     parameters = models.JSONField(default=dict, blank=True)
+    output_config_snapshot = models.JSONField(default=dict, blank=True)
+    parameters_snapshot = models.JSONField(default=dict, blank=True)
     file = models.FileField(upload_to="reports/", blank=True, null=True)
     started_at = models.DateTimeField(blank=True, null=True)
     completed_at = models.DateTimeField(blank=True, null=True)
     error_message = models.TextField(blank=True, null=True)
+    queued_at = models.DateTimeField(default=timezone.now)
+    retry_count = models.PositiveIntegerField(default=0)
+    recipient_snapshot = models.JSONField(default=dict, blank=True)
+    scope_snapshot = models.JSONField(default=dict, blank=True)
+    template_config_snapshot = models.JSONField(default=dict, blank=True)
+    trigger_source = models.CharField(max_length=32, default="MANUAL")
     class Meta:
         db_table = "report_jobs"
         indexes = [models.Index(fields=["organization", "data_center"]), models.Index(fields=["requested_by"]), models.Index(fields=["status"]), models.Index(fields=["created_at"])]
