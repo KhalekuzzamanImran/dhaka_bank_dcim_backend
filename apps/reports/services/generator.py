@@ -1049,78 +1049,12 @@ def _build_report(job: ReportJob) -> tuple[str, bytes]:
 
 
 def generate_report_job(report_job_id):
-    now = timezone.now()
-    with transaction.atomic():
-        job = (
-            ReportJob.objects.select_for_update()
-            .filter(pk=report_job_id)
-            .first()
-        )
-        if not job:
-            raise ValueError(f"Report job {report_job_id} does not exist.")
+    from .execution import ReportExecutionService
+    from ..domain import ReportJobStatus
 
-        if job.status == ReportJobStatus.CANCELLED:
-            logger.info("Skipping cancelled report job=%s", job.pk)
-            return job
-        if job.status not in {ReportJobStatus.PENDING, ReportJobStatus.FAILED}:
-            logger.info("Skipping report job not eligible for generation job=%s status=%s", job.pk, job.status)
-            return job
-
-        job.status = ReportJobStatus.PROCESSING
-        job.started_at = job.started_at or now
-        job.error_message = ""
-        job.save(update_fields=["status", "started_at", "error_message", "updated_at"])
-
-        _safe_write_audit(
-            "REPORT_GENERATION_STARTED",
-            "ReportJob",
-            job.pk,
-            organization=job.organization,
-            actor=job.requested_by,
-            message=f"Report generation started for {job.report_type or 'unknown'}",
-        )
-
-    try:
-        report_type, content = _build_report(job)
-        filename = _report_filename(job, report_type)
-        with transaction.atomic():
-            job = ReportJob.objects.select_for_update().get(pk=job.pk)
-            if job.status == ReportJobStatus.CANCELLED:
-                logger.info("Report job cancelled during generation job=%s", job.pk)
-                return job
-            if job.file:
-                job.file.delete(save=False)
-            job.file.save(filename, ContentFile(content), save=False)
-            job.status = ReportJobStatus.COMPLETED
-            job.completed_at = timezone.now()
-            job.error_message = ""
-            job.save(update_fields=["file", "status", "completed_at", "error_message", "updated_at"])
-
-        _safe_write_audit(
-            "REPORT_GENERATED",
-            "ReportJob",
-            job.pk,
-            organization=job.organization,
-            actor=job.requested_by,
-            message=f"Report generated successfully for {report_type}",
-        )
-        return job
-    except Exception as exc:
-        logger.exception("Report generation failed report_job=%s", report_job_id)
-        with transaction.atomic():
-            job = ReportJob.objects.select_for_update().filter(pk=report_job_id).first()
-            if job:
-                message = _format_validation_message(exc) if isinstance(exc, ValidationError) else str(exc)
-                job.status = ReportJobStatus.FAILED
-                job.completed_at = timezone.now()
-                job.error_message = message
-                job.save(update_fields=["status", "completed_at", "error_message", "updated_at"])
-                _safe_write_audit(
-                    "REPORT_GENERATION_FAILED",
-                    "ReportJob",
-                    job.pk,
-                    organization=job.organization,
-                    actor=job.requested_by,
-                    message=message,
-                )
-        return job
+    job = ReportExecutionService.execute_job(report_job_id)
+    if job and job.status in {ReportJobStatus.SUCCEEDED, ReportJobStatus.PARTIALLY_SUCCEEDED}:
+        job.status = ReportJobStatus.COMPLETED
+    elif job and job.status == ReportJobStatus.RUNNING and job.completed_at:
+        job.status = ReportJobStatus.COMPLETED
+    return job

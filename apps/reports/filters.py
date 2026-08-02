@@ -13,7 +13,10 @@ class ReportJobFilter(django_filters.FilterSet):
         model = ReportJob
         fields = [
             "status",
+            "trigger_source",
+            "definition",
             "template",
+            "schedule",
             "organization",
             "data_center",
             "requested_by",
@@ -29,9 +32,12 @@ class ReportScheduleFilter(django_filters.FilterSet):
         fields = [
             "organization",
             "data_center",
+            "definition",
+            "template",
             "report_type",
             "frequency",
             "output_format",
+            "status",
             "is_active",
             "last_delivery_status",
             "created_by",

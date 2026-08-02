@@ -14,6 +14,7 @@ from apps.common.viewsets import ScopedModelViewSet
 
 from .filters import ReportJobFilter, ReportScheduleFilter
 from .models import ReportJob, ReportJobStatus, ReportSchedule, ReportTemplate
+from .services.jobs import ReportJobService
 from .serializers import (
     ReportJobCreateSerializer,
     ReportJobDetailSerializer,
@@ -36,7 +37,7 @@ def _safe_write_audit(*args, **kwargs):
 class ReportTemplateViewSet(ScopedModelViewSet):
     access_scope = "organization"
     organization_field = "organization"
-    queryset = ReportTemplate.objects.select_related("organization").all().order_by("-created_at")
+    queryset = ReportTemplate.objects.select_related("organization", "definition", "created_by").all().order_by("-created_at")
     serializer_class = ReportTemplateSerializer
     permission_module = "report"
     audit_resource_type = "ReportTemplate"
@@ -49,7 +50,16 @@ class ReportTemplateViewSet(ScopedModelViewSet):
 class ReportJobViewSet(ScopedModelViewSet):
     access_scope = "mixed"
     queryset = (
-        ReportJob.objects.select_related("organization", "data_center", "template", "requested_by")
+        ReportJob.objects.select_related(
+            "organization",
+            "data_center",
+            "definition",
+            "template",
+            "schedule",
+            "requested_by",
+            "parent_job",
+        )
+        .prefetch_related("artifacts", "deliveries")
         .all()
         .order_by("-created_at")
     )
@@ -78,7 +88,16 @@ class ReportJobViewSet(ScopedModelViewSet):
 
     def _refresh_job_from_db(self, job):
         return (
-            ReportJob.objects.select_related("organization", "data_center", "template", "requested_by")
+            ReportJob.objects.select_related(
+                "organization",
+                "data_center",
+                "definition",
+                "template",
+                "schedule",
+                "requested_by",
+                "parent_job",
+            )
+            .prefetch_related("artifacts", "deliveries")
             .filter(pk=job.pk)
             .first()
         )
@@ -86,30 +105,9 @@ class ReportJobViewSet(ScopedModelViewSet):
     def _enqueue_generation(self, job, request, *, audit_action: str):
         if not job.requested_by_id and request.user.is_authenticated:
             job.requested_by = request.user
-        if job.status == ReportJobStatus.FAILED:
-            job.status = ReportJobStatus.PENDING
-            job.error_message = ""
-            job.started_at = None
-            job.completed_at = None
-        if job.file:
-            job.file.delete(save=False)
-            job.file = None
-        job.save(update_fields=["requested_by", "status", "error_message", "started_at", "completed_at", "file", "updated_at"])
-        from .tasks import generate_report_job_task
-
-        def _queue_generation():
-            generate_report_job_task.delay(str(job.pk))
-            _safe_write_audit(
-                audit_action,
-                "ReportJob",
-                job.pk,
-                organization=job.organization,
-                actor=request.user,
-                message=f"Report generation queued for {job.report_type or 'unknown'}",
-            )
-
-        transaction.on_commit(_queue_generation)
-        return ReportJobDetailSerializer(self._refresh_job_from_db(job), context=self.get_serializer_context()).data
+            job.save(update_fields=["requested_by", "updated_at"])
+        queued = ReportJobService.enqueue_job(job, requested_by=request.user)
+        return ReportJobDetailSerializer(self._refresh_job_from_db(queued), context=self.get_serializer_context()).data
 
     @action(detail=True, methods=["post"])
     def generate(self, request, pk=None):
@@ -134,7 +132,14 @@ class ReportJobViewSet(ScopedModelViewSet):
                 {"detail": "Only failed jobs can be retried."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        data = self._enqueue_generation(job, request, audit_action="REPORT_RETRY_REQUESTED")
+        retry_job = ReportJobService.create_retry_job(failed_job=job, requested_by=request.user)
+        job.status = ReportJobStatus.COMPLETED
+        job.error_message = ""
+        job.error_code = ""
+        if not job.completed_at:
+            job.completed_at = timezone.now()
+        job.save(update_fields=["status", "error_message", "error_code", "completed_at", "updated_at"])
+        data = ReportJobDetailSerializer(self._refresh_job_from_db(retry_job), context=self.get_serializer_context()).data
         return Response(data)
 
     @action(detail=True, methods=["post"])
@@ -147,22 +152,7 @@ class ReportJobViewSet(ScopedModelViewSet):
                 {"detail": "Only pending jobs can be cancelled."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if job.file:
-            job.file.delete(save=False)
-            job.file = None
-        job.status = ReportJobStatus.CANCELLED
-        job.started_at = job.started_at or timezone.now()
-        job.completed_at = timezone.now()
-        job.error_message = "Cancelled by user"
-        job.save(update_fields=["status", "started_at", "completed_at", "error_message", "file", "updated_at"])
-        _safe_write_audit(
-            "REPORT_CANCELLED",
-            "ReportJob",
-            job.pk,
-            organization=job.organization,
-            actor=request.user,
-            message="Report job cancelled by user",
-        )
+        ReportJobService.cancel_job(job, requested_by=request.user)
         return Response(ReportJobDetailSerializer(self._refresh_job_from_db(job), context=self.get_serializer_context()).data)
 
     @action(detail=True, methods=["get"])
@@ -181,11 +171,17 @@ class ReportJobViewSet(ScopedModelViewSet):
             actor=request.user,
             message="Report downloaded",
         )
-        file_handle = job.file.open("rb")
+        artifact = getattr(job, "primary_artifact", None)
+        if artifact and getattr(artifact, "file", None):
+            file_handle = artifact.file.open("rb")
+            filename = os.path.basename(artifact.file.name)
+        else:
+            file_handle = job.file.open("rb")
+            filename = os.path.basename(job.file.name)
         return FileResponse(
             file_handle,
             as_attachment=True,
-            filename=os.path.basename(job.file.name),
+            filename=filename,
         )
 
 
@@ -193,13 +189,45 @@ class ReportScheduleViewSet(ScopedModelViewSet):
     access_scope = "mixed"
     organization_field = "organization"
     data_center_field = "data_center"
-    queryset = ReportSchedule.objects.select_related("organization", "data_center", "created_by", "last_job").all().order_by("-created_at")
+    queryset = ReportSchedule.objects.select_related(
+        "organization",
+        "data_center",
+        "definition",
+        "template",
+        "created_by",
+        "last_job",
+        "last_job__definition",
+        "last_job__template",
+        "last_job__requested_by",
+    ).prefetch_related("recipient_entries").all().order_by("-created_at")
     serializer_class = ReportScheduleSerializer
     permission_module = "report"
     audit_resource_type = "ReportSchedule"
     filterset_class = ReportScheduleFilter
-    search_fields = ["name", "report_type", "organization__name", "organization__code", "created_by__username", "created_by__email", "last_error_message"]
-    ordering_fields = ["created_at", "updated_at", "next_run_at", "last_run_at", "last_sent_at", "name", "report_type", "frequency"]
+    search_fields = [
+        "name",
+        "report_type",
+        "organization__name",
+        "organization__code",
+        "definition__code",
+        "definition__name",
+        "template__name",
+        "template__code",
+        "created_by__username",
+        "created_by__email",
+        "last_error_message",
+    ]
+    ordering_fields = [
+        "created_at",
+        "updated_at",
+        "next_run_at",
+        "last_run_at",
+        "last_success_at",
+        "name",
+        "report_type",
+        "frequency",
+        "status",
+    ]
     ordering = ["-created_at"]
 
     def get_serializer_class(self):
@@ -212,29 +240,42 @@ class ReportScheduleViewSet(ScopedModelViewSet):
         schedule = self.get_object()
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        run_now_job = ReportJobService.create_run_now_job(
+            organization=schedule.organization,
+            data_center=schedule.data_center,
+            definition=schedule.definition,
+            template=schedule.template,
+            parameters=schedule.parameters,
+            primary_format=schedule.primary_format,
+            attachment_formats=schedule.attachment_formats,
+            requested_by=request.user,
+            schedule=schedule,
+            scheduled_for=timezone.now(),
+            recipients=list(schedule.recipient_entries.filter(is_active=True).values("channel", "recipient_type", "destination", "display_name")),
+            enqueue=True,
+        )
         schedule.last_delivery_status = "PENDING"
         schedule.last_error_message = ""
         schedule.save(update_fields=["last_delivery_status", "last_error_message", "updated_at"])
+        from apps.reports.tasks import deliver_report_schedule_task
 
-        from .tasks import deliver_report_schedule_task
-
-        def _queue_delivery():
-            deliver_report_schedule_task.delay(str(schedule.pk))
-            _safe_write_audit(
-                "REPORT_SCHEDULE_RUN_NOW_QUEUED",
-                "ReportSchedule",
-                schedule.pk,
-                organization=schedule.organization,
-                actor=request.user,
-                message=f"Manual report delivery queued for {schedule.report_type_label}",
-            )
-
-        transaction.on_commit(_queue_delivery)
+        transaction.on_commit(lambda: deliver_report_schedule_task.delay(str(schedule.pk)))
         refreshed = (
-            ReportSchedule.objects.select_related("organization", "data_center", "created_by", "last_job")
+            ReportSchedule.objects.select_related(
+                "organization",
+                "data_center",
+                "definition",
+                "template",
+                "created_by",
+                "last_job",
+                "last_job__definition",
+                "last_job__template",
+                "last_job__requested_by",
+            ).prefetch_related("recipient_entries")
             .filter(pk=schedule.pk)
             .first()
         )
         payload = ReportScheduleSerializer(refreshed or schedule, context=self.get_serializer_context()).data
         payload["detail"] = "Report delivery queued."
+        payload["job_id"] = str(run_now_job.pk)
         return Response(payload, status=status.HTTP_202_ACCEPTED)

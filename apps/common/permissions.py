@@ -10,6 +10,7 @@ ACTION_PERMISSION_MAP = {
     "partial_update": "update",
     "destroy": "delete",
     "generate": "generate",
+    "run_now": "generate",
     "retry": "generate",
     "download": "download",
     "cancel": "update",
