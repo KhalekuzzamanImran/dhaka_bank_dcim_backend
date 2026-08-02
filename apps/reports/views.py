@@ -4,6 +4,7 @@ import os
 
 from django.http import FileResponse
 from django.db import transaction
+from django.db.models import Prefetch
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import action
@@ -13,15 +14,17 @@ from apps.common.audit import write_audit
 from apps.common.viewsets import ScopedModelViewSet
 
 from .filters import ReportJobFilter, ReportScheduleFilter
-from .models import ReportJob, ReportJobStatus, ReportSchedule, ReportTemplate
+from .models import ReportJob, ReportJobStatus, ReportSchedule, ReportScheduleRun, ReportTemplate
 from .serializers import (
     ReportJobCreateSerializer,
     ReportJobDetailSerializer,
     ReportJobGenerateSerializer,
     ReportJobListSerializer,
     ReportJobRetrySerializer,
+    ReportScheduleDeliverySerializer,
     ReportScheduleSerializer,
     ReportScheduleRunNowSerializer,
+    ReportScheduleRunSerializer,
     ReportTemplateSerializer,
 )
 from .services.configuration import build_report_template_options
@@ -214,6 +217,11 @@ class ReportScheduleViewSet(ScopedModelViewSet):
             return ReportScheduleRunNowSerializer
         return super().get_serializer_class()
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        recent_runs = ReportScheduleRun.objects.select_related("generated_job", "requested_by").prefetch_related("deliveries").order_by("-created_at")
+        return qs.prefetch_related(Prefetch("runs", queryset=recent_runs, to_attr="_prefetched_recent_runs"))
+
     @action(detail=True, methods=["post"])
     def run_now(self, request, pk=None):
         schedule = self.get_object()
@@ -226,7 +234,7 @@ class ReportScheduleViewSet(ScopedModelViewSet):
         from .tasks import deliver_report_schedule_task
 
         def _queue_delivery():
-            deliver_report_schedule_task.delay(str(schedule.pk))
+            deliver_report_schedule_task.delay(str(schedule.pk), None, None, "MANUAL")
             _safe_write_audit(
                 "REPORT_SCHEDULE_RUN_NOW_QUEUED",
                 "ReportSchedule",
@@ -245,3 +253,34 @@ class ReportScheduleViewSet(ScopedModelViewSet):
         payload = ReportScheduleSerializer(refreshed or schedule, context=self.get_serializer_context()).data
         payload["detail"] = "Report delivery queued."
         return Response(payload, status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=True, methods=["get"])
+    def runs(self, request, pk=None):
+        schedule = self.get_object()
+        runs = schedule.runs.select_related("generated_job", "requested_by").prefetch_related("deliveries").order_by("-created_at")[:10]
+        serializer = ReportScheduleRunSerializer(runs, many=True, context=self.get_serializer_context())
+        return Response(serializer.data)
+
+
+class ReportScheduleRunViewSet(ScopedModelViewSet):
+    access_scope = "mixed"
+    organization_field = "organization"
+    queryset = ReportScheduleRun.objects.select_related(
+        "schedule",
+        "organization",
+        "requested_by",
+        "generated_job",
+    ).all().order_by("-created_at")
+    serializer_class = ReportScheduleRunSerializer
+    permission_module = "report"
+    audit_resource_type = "ReportScheduleRun"
+    search_fields = ["schedule__name", "schedule__report_type", "error_message", "trigger_source"]
+    ordering_fields = ["created_at", "updated_at", "queued_at", "started_at", "completed_at", "status", "window_start", "window_end"]
+    ordering = ["-created_at"]
+
+    @action(detail=True, methods=["get"])
+    def deliveries(self, request, pk=None):
+        run = self.get_object()
+        deliveries = run.deliveries.all().order_by("created_at")
+        serializer = ReportScheduleDeliverySerializer(deliveries, many=True, context=self.get_serializer_context())
+        return Response(serializer.data)

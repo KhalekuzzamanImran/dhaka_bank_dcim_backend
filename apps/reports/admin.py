@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import ReportJob, ReportSchedule, ReportTemplate
+from .models import ReportJob, ReportSchedule, ReportScheduleDelivery, ReportScheduleRun, ReportTemplate
 
 
 @admin.register(ReportTemplate)
@@ -44,4 +44,32 @@ class ReportScheduleAdmin(admin.ModelAdmin):
     list_filter = ("organization", "data_center", "report_type", "frequency", "output_format", "is_active", "last_delivery_status", "created_at")
     search_fields = ("name", "report_type", "organization__name", "organization__code", "last_error_message", "recipients")
     readonly_fields = ("next_run_at", "last_run_at", "last_sent_at", "last_delivery_status", "last_error_message", "last_job", "created_at", "updated_at")
+    ordering = ("-created_at",)
+
+
+class ReportScheduleDeliveryInline(admin.TabularInline):
+    model = ReportScheduleDelivery
+    extra = 0
+    fields = (
+        "channel",
+        "status",
+        "recipient_address",
+        "attempt_count",
+        "queued_at",
+        "delivering_at",
+        "sent_at",
+        "failed_at",
+        "next_retry_at",
+        "error_message",
+    )
+    readonly_fields = fields
+
+
+@admin.register(ReportScheduleRun)
+class ReportScheduleRunAdmin(admin.ModelAdmin):
+    list_display = ("schedule", "organization", "status", "trigger_source", "window_start", "window_end", "generated_job", "created_at")
+    list_filter = ("organization", "schedule", "status", "trigger_source", "created_at")
+    search_fields = ("schedule__name", "schedule__report_type", "error_message")
+    readonly_fields = ("queued_at", "started_at", "completed_at", "generated_job", "error_message", "trigger_source", "snapshot", "created_at", "updated_at")
+    inlines = [ReportScheduleDeliveryInline]
     ordering = ("-created_at",)

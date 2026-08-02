@@ -623,7 +623,54 @@ class ReportTestCase(TestCase):
         self.assertEqual(schedule.last_job.status, ReportJobStatus.COMPLETED)
         self.assertTrue(schedule.last_job.file)
         self.assertTrue(mocked_send.called)
+        self.assertEqual(schedule.runs.count(), 1)
+        run = schedule.runs.first()
+        self.assertIsNotNone(run)
+        self.assertEqual(run.status, "COMPLETED")
+        self.assertEqual(run.deliveries.count(), 4)
+        self.assertCountEqual(run.deliveries.values_list("channel", flat=True), [NotificationChannel.WEB, NotificationChannel.EMAIL, NotificationChannel.EMAIL, NotificationChannel.EMAIL])
         self.assertEqual(executed.pk, schedule.pk)
+
+    def test_report_schedule_history_endpoints_return_runs_and_deliveries(self):
+        self.client.force_authenticate(user=self.user)
+        schedule = ReportSchedule.objects.create(
+            organization=self.org,
+            data_center=self.dc,
+            name="History Report",
+            report_type="room_environment",
+            frequency="DAILY",
+            delivery_time=time(6, 0),
+            output_format="PDF_CSV",
+            recipients=["report@example.com"],
+            send_sms=True,
+            sms_recipients=["01329665857"],
+            attach_raw_data=True,
+            is_active=True,
+            created_by=self.user,
+            next_run_at=timezone.now() - timedelta(minutes=5),
+        )
+
+        with patch("apps.reports.services.schedules.EmailMessage.send", return_value=1), patch(
+            "apps.reports.services.schedules.queue_notification_delivery",
+            return_value=None,
+        ):
+            execute_report_schedule(str(schedule.id))
+
+        runs_response = self.client.get(f"/api/v1/reports/report-schedules/{schedule.id}/runs/")
+        self.assertEqual(runs_response.status_code, 200)
+        runs_payload = runs_response.json()
+        self.assertEqual(len(runs_payload), 1)
+        self.assertEqual(runs_payload[0]["status"], "COMPLETED")
+        self.assertIn("deliveries", runs_payload[0])
+
+        run_id = runs_payload[0]["id"]
+        deliveries_response = self.client.get(f"/api/v1/reports/report-schedule-runs/{run_id}/deliveries/")
+        self.assertEqual(deliveries_response.status_code, 200)
+        deliveries_payload = deliveries_response.json()
+        self.assertGreaterEqual(len(deliveries_payload), 3)
+        self.assertTrue(any(item["channel"] == NotificationChannel.WEB for item in deliveries_payload))
+        self.assertTrue(any(item["channel"] == NotificationChannel.EMAIL for item in deliveries_payload))
+        self.assertTrue(any(item["channel"] == NotificationChannel.SMS for item in deliveries_payload))
 
     def test_report_schedule_allows_sms_only_recipient(self):
         schedule = ReportSchedule.objects.create(
@@ -678,6 +725,10 @@ class ReportTestCase(TestCase):
         self.assertEqual(executed.pk, schedule.pk)
         self.assertEqual(schedule.last_delivery_status, "SENT")
         self.assertEqual(len(queued_notifications), 2)
+        self.assertEqual(schedule.runs.count(), 1)
+        run = schedule.runs.first()
+        self.assertIsNotNone(run)
+        self.assertEqual(run.deliveries.count(), 4)
 
         sms_deliveries = NotificationDelivery.objects.filter(
             notification__organization=self.org,
@@ -736,7 +787,7 @@ class ReportTestCase(TestCase):
                 response = self.client.post(f"/api/v1/reports/report-schedules/{schedule.id}/run_now/", {}, format="json")
 
         self.assertEqual(response.status_code, 202)
-        mocked_delay.assert_called_once_with(str(schedule.id))
+        mocked_delay.assert_called_once_with(str(schedule.id), None, None, "MANUAL")
         schedule.refresh_from_db()
         self.assertEqual(schedule.last_delivery_status, "PENDING")
         self.assertEqual(schedule.last_error_message, "")

@@ -15,7 +15,16 @@ from .constants import (
     normalize_report_frequency,
     normalize_report_type,
 )
-from .models import ReportJob, ReportJobStatus, ReportSchedule, ReportTemplate
+from .models import (
+    ReportJob,
+    ReportJobStatus,
+    ReportSchedule,
+    ReportScheduleDelivery,
+    ReportScheduleDeliveryStatus,
+    ReportScheduleRun,
+    ReportScheduleRunStatus,
+    ReportTemplate,
+)
 from .services.configuration import build_report_template_options, validate_report_template_config
 
 
@@ -348,6 +357,89 @@ class ReportScheduleRunNowSerializer(serializers.Serializer):
         fields = ()
 
 
+class ReportScheduleDeliverySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ReportScheduleDelivery
+        fields = (
+            "id",
+            "run",
+            "channel",
+            "status",
+            "recipient_address",
+            "attempt_count",
+            "max_attempts",
+            "queued_at",
+            "delivering_at",
+            "sent_at",
+            "failed_at",
+            "next_retry_at",
+            "provider_message_id",
+            "error_message",
+            "metadata",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = fields
+
+
+class ReportScheduleRunSerializer(serializers.ModelSerializer):
+    generated_job_status = serializers.SerializerMethodField(read_only=True)
+    generated_job_file_url = serializers.SerializerMethodField(read_only=True)
+    delivery_summary = serializers.SerializerMethodField(read_only=True)
+    deliveries = ReportScheduleDeliverySerializer(many=True, read_only=True)
+    schedule_name = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = ReportScheduleRun
+        fields = (
+            "id",
+            "schedule",
+            "schedule_name",
+            "organization",
+            "requested_by",
+            "window_start",
+            "window_end",
+            "status",
+            "queued_at",
+            "started_at",
+            "completed_at",
+            "generated_job",
+            "generated_job_status",
+            "generated_job_file_url",
+            "error_message",
+            "trigger_source",
+            "snapshot",
+            "delivery_summary",
+            "deliveries",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = fields
+
+    def get_schedule_name(self, obj):
+        return getattr(obj.schedule, "name", None)
+
+    def get_generated_job_status(self, obj):
+        return getattr(obj.generated_job, "status", None)
+
+    def get_generated_job_file_url(self, obj):
+        if not obj.generated_job_id or not getattr(obj.generated_job, "file", None):
+            return None
+        try:
+            request = self.context.get("request")
+            if request:
+                return request.build_absolute_uri(obj.generated_job.file.url)
+            return obj.generated_job.file.url
+        except Exception:
+            return None
+
+    def get_delivery_summary(self, obj):
+        summary = {}
+        for delivery in getattr(obj, "deliveries", []).all():
+            summary[delivery.channel] = delivery.status
+        return summary
+
+
 class ReportScheduleSerializer(serializers.ModelSerializer):
     report_type = serializers.CharField()
     frequency = serializers.CharField()
@@ -362,6 +454,8 @@ class ReportScheduleSerializer(serializers.ModelSerializer):
     recipient_count = serializers.SerializerMethodField(read_only=True)
     last_job_status = serializers.SerializerMethodField(read_only=True)
     last_job_file_url = serializers.SerializerMethodField(read_only=True)
+    delivery_summary = serializers.SerializerMethodField(read_only=True)
+    recent_runs = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = ReportSchedule
@@ -394,6 +488,8 @@ class ReportScheduleSerializer(serializers.ModelSerializer):
             "last_job",
             "last_job_status",
             "last_job_file_url",
+            "delivery_summary",
+            "recent_runs",
             "created_by",
             "created_by_name",
             "created_at",
@@ -415,6 +511,8 @@ class ReportScheduleSerializer(serializers.ModelSerializer):
             "last_job",
             "last_job_status",
             "last_job_file_url",
+            "delivery_summary",
+            "recent_runs",
             "created_by",
             "created_by_name",
             "created_at",
@@ -455,6 +553,31 @@ class ReportScheduleSerializer(serializers.ModelSerializer):
             return obj.last_job.file.url
         except Exception:
             return None
+
+    def get_delivery_summary(self, obj):
+        summary = {}
+        recent_runs = getattr(obj, "_prefetched_recent_runs", None)
+        latest_run = None
+        if recent_runs:
+            latest_run = recent_runs[0] if recent_runs else None
+        else:
+            latest_run = obj.runs.order_by("-created_at").first()
+        if latest_run:
+            deliveries = getattr(latest_run, "deliveries", None)
+            if deliveries is not None:
+                for delivery in deliveries.all():
+                    summary[delivery.channel] = delivery.status
+        if summary:
+            return summary
+        if obj.last_delivery_status:
+            summary["WEB"] = obj.last_delivery_status
+        return summary
+
+    def get_recent_runs(self, obj):
+        recent_runs = getattr(obj, "_prefetched_recent_runs", None)
+        if recent_runs is None:
+            recent_runs = list(obj.runs.select_related("generated_job").prefetch_related("deliveries").order_by("-created_at")[:3])
+        return ReportScheduleRunSerializer(recent_runs, many=True, context=self.context).data
 
     def validate(self, attrs):
         attrs = super().validate(attrs)

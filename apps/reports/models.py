@@ -8,6 +8,7 @@ from django.db import models
 from django.utils import timezone
 
 from apps.common.models import TimeStampedModel
+from apps.notifications.models import NotificationChannel, NotificationStatus
 from .constants import (
     REPORT_SCHEDULE_FORMAT_CHOICES,
     REPORT_SCHEDULE_FREQUENCY_CHOICES,
@@ -206,6 +207,14 @@ class ReportSchedule(TimeStampedModel):
     recipients = models.JSONField(default=list, blank=True)
     send_sms = models.BooleanField(default=False)
     sms_recipients = models.JSONField(default=list, blank=True)
+    attachment_formats = models.JSONField(default=list, blank=True)
+    consecutive_failure_count = models.PositiveIntegerField(default=0)
+    end_at = models.DateTimeField(blank=True, null=True)
+    last_success_at = models.DateTimeField(blank=True, null=True)
+    primary_format = models.CharField(max_length=30, blank=True, null=True)
+    recurrence_rule = models.JSONField(default=dict, blank=True)
+    start_at = models.DateTimeField(blank=True, null=True)
+    status = models.CharField(max_length=30, default="ACTIVE")
     attach_raw_data = models.BooleanField(default=True)
     is_active = models.BooleanField(default=True)
     next_run_at = models.DateTimeField(blank=True, null=True, db_index=True)
@@ -374,3 +383,102 @@ class ReportSchedule(TimeStampedModel):
                     kwargs["update_fields"] = set(update_fields) | {"next_run_at"}
         self.full_clean()
         return super().save(*args, **kwargs)
+
+
+class ReportScheduleRunStatus(models.TextChoices):
+    PENDING = "PENDING", "Pending"
+    PROCESSING = "PROCESSING", "Processing"
+    COMPLETED = "COMPLETED", "Completed"
+    FAILED = "FAILED", "Failed"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
+class ReportScheduleDeliveryStatus(models.TextChoices):
+    PENDING = "PENDING", "Pending"
+    DELIVERING = "DELIVERING", "Delivering"
+    SENT = "SENT", "Sent"
+    FAILED = "FAILED", "Failed"
+
+
+class ReportScheduleRun(TimeStampedModel):
+    schedule = models.ForeignKey(ReportSchedule, on_delete=models.CASCADE, related_name="runs")
+    organization = models.ForeignKey("organizations.Organization", on_delete=models.CASCADE, related_name="report_schedule_runs")
+    requested_by = models.ForeignKey("accounts.User", on_delete=models.SET_NULL, blank=True, null=True, related_name="requested_report_schedule_runs")
+    window_start = models.DateTimeField()
+    window_end = models.DateTimeField()
+    status = models.CharField(max_length=30, choices=ReportScheduleRunStatus.choices, default=ReportScheduleRunStatus.PENDING)
+    queued_at = models.DateTimeField(default=timezone.now)
+    started_at = models.DateTimeField(blank=True, null=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+    generated_job = models.ForeignKey("ReportJob", on_delete=models.SET_NULL, blank=True, null=True, related_name="+")
+    error_message = models.TextField(blank=True, default="")
+    trigger_source = models.CharField(max_length=32, default="SCHEDULED")
+    snapshot = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = "report_schedule_runs"
+        indexes = [
+            models.Index(fields=["schedule"]),
+            models.Index(fields=["status"]),
+            models.Index(fields=["queued_at"]),
+            models.Index(fields=["started_at"]),
+            models.Index(fields=["completed_at"]),
+            models.Index(fields=["created_at"]),
+        ]
+
+    def __str__(self):
+        return f"ReportScheduleRun {self.id}"
+
+    def clean(self):
+        super().clean()
+
+        errors = {}
+        if self.schedule_id and self.organization_id and self.schedule.organization_id != self.organization_id:
+            errors.setdefault("organization", []).append("Organization must match the schedule organization.")
+        if self.window_start and self.window_end and self.window_start > self.window_end:
+            errors.setdefault("window_start", []).append("Window start cannot be after window end.")
+            errors.setdefault("window_end", []).append("Window end cannot be before window start.")
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+
+class ReportScheduleDelivery(TimeStampedModel):
+    run = models.ForeignKey(ReportScheduleRun, on_delete=models.CASCADE, related_name="deliveries")
+    channel = models.CharField(max_length=30, choices=NotificationChannel.choices)
+    status = models.CharField(max_length=30, choices=ReportScheduleDeliveryStatus.choices, default=ReportScheduleDeliveryStatus.PENDING, db_index=True)
+    recipient_address = models.CharField(max_length=255, blank=True, default="")
+    attempt_count = models.PositiveIntegerField(default=0)
+    max_attempts = models.PositiveIntegerField(default=3)
+    queued_at = models.DateTimeField(blank=True, null=True)
+    delivering_at = models.DateTimeField(blank=True, null=True)
+    sent_at = models.DateTimeField(blank=True, null=True)
+    failed_at = models.DateTimeField(blank=True, null=True)
+    next_retry_at = models.DateTimeField(blank=True, null=True)
+    provider_message_id = models.CharField(max_length=255, blank=True, default="")
+    provider_response = models.JSONField(default=dict, blank=True)
+    error_message = models.TextField(blank=True, default="")
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = "report_schedule_deliveries"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["run", "channel", "recipient_address"],
+                name="unique_report_schedule_delivery_target",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["run"]),
+            models.Index(fields=["channel"]),
+            models.Index(fields=["status"]),
+            models.Index(fields=["next_retry_at"]),
+            models.Index(fields=["created_at"]),
+            models.Index(fields=["sent_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.run_id}:{self.channel}:{self.recipient_address or 'default'}"
