@@ -10,7 +10,7 @@ from django.test import override_settings
 from django.utils import timezone
 
 from apps.accounts.models import User
-from apps.notifications.models import Notification, NotificationChannel, NotificationStatus
+from apps.notifications.models import Notification, NotificationChannel, NotificationDelivery, NotificationStatus
 from apps.notifications.tasks import send_notification_task
 from apps.notifications.tasks import deliver_pending_notifications_task
 from apps.organizations.models import Organization
@@ -52,6 +52,16 @@ def _alert(severity="CRITICAL"):
     )
 
 
+def _delivery(notification, channel, *, recipient_address=None, status=NotificationStatus.PENDING, metadata=None):
+    return NotificationDelivery.objects.create(
+        notification=notification,
+        channel=channel,
+        status=status,
+        recipient_address=recipient_address,
+        metadata=metadata or {},
+    )
+
+
 @pytest.mark.django_db
 def test_web_notification_task_marks_sent():
     org = _notification_org()
@@ -59,18 +69,17 @@ def test_web_notification_task_marks_sent():
     notification = Notification.objects.create(
         organization=org,
         recipient=user,
-        channel=NotificationChannel.WEB,
         subject="Test",
         message="Hello",
-        status=NotificationStatus.PENDING,
     )
+    delivery = _delivery(notification, NotificationChannel.WEB)
 
-    result = send_notification_task.apply(args=[str(notification.id)]).get()
+    result = send_notification_task.apply(args=[str(delivery.id)]).get()
 
-    notification.refresh_from_db()
+    delivery.refresh_from_db()
     assert result["status"] == "sent"
-    assert notification.status == NotificationStatus.SENT
-    assert notification.sent_at is not None
+    assert delivery.status == NotificationStatus.SENT
+    assert delivery.sent_at is not None
 
 
 @pytest.mark.django_db
@@ -80,17 +89,16 @@ def test_email_notification_console_backend_marks_sent():
     notification = Notification.objects.create(
         organization=org,
         recipient=user,
-        channel=NotificationChannel.EMAIL,
         subject="Email Test",
         message="Hello via email",
-        status=NotificationStatus.PENDING,
     )
+    delivery = _delivery(notification, NotificationChannel.EMAIL, recipient_address=user.email)
 
-    result = send_notification_task.apply(args=[str(notification.id)]).get()
+    result = send_notification_task.apply(args=[str(delivery.id)]).get()
 
-    notification.refresh_from_db()
+    delivery.refresh_from_db()
     assert result["status"] == "sent"
-    assert notification.status == NotificationStatus.SENT
+    assert delivery.status == NotificationStatus.SENT
 
 
 @pytest.mark.django_db
@@ -100,18 +108,17 @@ def test_email_notification_missing_email_fails():
     notification = Notification.objects.create(
         organization=org,
         recipient=user,
-        channel=NotificationChannel.EMAIL,
         subject="Email Test",
         message="Hello via email",
-        status=NotificationStatus.PENDING,
     )
+    delivery = _delivery(notification, NotificationChannel.EMAIL)
 
     with pytest.raises(Retry):
-        send_notification_task.apply(args=[str(notification.id)]).get()
+        send_notification_task.apply(args=[str(delivery.id)]).get()
 
-    notification.refresh_from_db()
-    assert notification.status == NotificationStatus.FAILED
-    assert "email" in (notification.error_message or "").lower()
+    delivery.refresh_from_db()
+    assert delivery.status == NotificationStatus.FAILED
+    assert "email" in (delivery.error_message or "").lower()
 
 
 @pytest.mark.django_db
@@ -122,17 +129,16 @@ def test_sms_notification_console_backend_marks_sent():
     notification = Notification.objects.create(
         organization=org,
         recipient=user,
-        channel=NotificationChannel.SMS,
         subject="SMS Test",
         message="Hello via sms",
-        status=NotificationStatus.PENDING,
     )
+    delivery = _delivery(notification, NotificationChannel.SMS, recipient_address=user.phone)
 
-    result = send_notification_task.apply(args=[str(notification.id)]).get()
+    result = send_notification_task.apply(args=[str(delivery.id)]).get()
 
-    notification.refresh_from_db()
+    delivery.refresh_from_db()
     assert result["status"] == "sent"
-    assert notification.status == NotificationStatus.SENT
+    assert delivery.status == NotificationStatus.SENT
 
 
 @pytest.mark.django_db
@@ -142,18 +148,17 @@ def test_sms_notification_can_use_metadata_phone_without_recipient():
     notification = Notification.objects.create(
         organization=org,
         recipient=None,
-        channel=NotificationChannel.SMS,
         subject="SMS Test",
         message="Hello via sms",
-        status=NotificationStatus.PENDING,
         metadata={"phone": "01722222222"},
     )
+    delivery = _delivery(notification, NotificationChannel.SMS)
 
-    result = send_notification_task.apply(args=[str(notification.id)]).get()
+    result = send_notification_task.apply(args=[str(delivery.id)]).get()
 
-    notification.refresh_from_db()
+    delivery.refresh_from_db()
     assert result["status"] == "sent"
-    assert notification.status == NotificationStatus.SENT
+    assert delivery.status == NotificationStatus.SENT
 
 
 @pytest.mark.django_db
@@ -163,18 +168,17 @@ def test_sms_notification_missing_phone_fails():
     notification = Notification.objects.create(
         organization=org,
         recipient=user,
-        channel=NotificationChannel.SMS,
         subject="SMS Test",
         message="Hello via sms",
-        status=NotificationStatus.PENDING,
     )
+    delivery = _delivery(notification, NotificationChannel.SMS)
 
     with pytest.raises(Retry):
-        send_notification_task.apply(args=[str(notification.id)]).get()
+        send_notification_task.apply(args=[str(delivery.id)]).get()
 
-    notification.refresh_from_db()
-    assert notification.status == NotificationStatus.FAILED
-    assert "phone" in (notification.error_message or "").lower()
+    delivery.refresh_from_db()
+    assert delivery.status == NotificationStatus.FAILED
+    assert "phone" in (delivery.error_message or "").lower()
 
 
 @pytest.mark.django_db
@@ -191,11 +195,10 @@ def test_sms_notification_soap_backend_marks_sent(monkeypatch):
     notification = Notification.objects.create(
         organization=org,
         recipient=user,
-        channel=NotificationChannel.SMS,
         subject="SMS Test",
         message="Your OTP is 123456.",
-        status=NotificationStatus.PENDING,
     )
+    delivery = _delivery(notification, NotificationChannel.SMS, recipient_address=user.phone)
 
     captured = {}
 
@@ -222,15 +225,11 @@ def test_sms_notification_soap_backend_marks_sent(monkeypatch):
 
     monkeypatch.setattr("apps.notifications.services.sms.requests.post", fake_post)
 
-    result = send_notification_task.apply(args=[str(notification.id)]).get()
+    result = send_notification_task.apply(args=[str(delivery.id)]).get()
 
-    notification.refresh_from_db()
+    delivery.refresh_from_db()
     assert result["status"] == "sent"
-    assert notification.status == NotificationStatus.SENT
-    assert notification.metadata["delivery_result"]["backend"] == "soap"
-    assert notification.metadata["delivery_result"]["status_id"] == "1"
-    assert notification.metadata["delivery_result"]["sms_csms_id"] == "DBL80064397"
-    assert notification.metadata["delivery_result"]["sms_ref_no"] == "2021121411135756584498636"
+    assert delivery.status == NotificationStatus.SENT
     assert captured["url"] == "https://uatapi.dhakabank.com.bd/DBLSmsServices/SmsServices.asmx"
     assert "DoSendSms" in captured["data"]
     assert "<mobileNumber>01711111111</mobileNumber>" in captured["data"]
@@ -252,11 +251,10 @@ def test_sms_notification_soap_backend_failure_sets_failed(monkeypatch):
     notification = Notification.objects.create(
         organization=org,
         recipient=user,
-        channel=NotificationChannel.SMS,
         subject="SMS Test",
         message="Your OTP is 123456.",
-        status=NotificationStatus.PENDING,
     )
+    delivery = _delivery(notification, NotificationChannel.SMS, recipient_address=user.phone)
 
     def fake_post(url, data=None, headers=None, timeout=None):
         class FakeResponse:
@@ -283,11 +281,11 @@ def test_sms_notification_soap_backend_failure_sets_failed(monkeypatch):
     monkeypatch.setattr("apps.notifications.services.sms.requests.post", fake_post)
 
     with pytest.raises(Retry):
-        send_notification_task.apply(args=[str(notification.id)]).get()
+        send_notification_task.apply(args=[str(delivery.id)]).get()
 
-    notification.refresh_from_db()
-    assert notification.status == NotificationStatus.FAILED
-    assert "failed" in (notification.error_message or "").lower()
+    delivery.refresh_from_db()
+    assert delivery.status == NotificationStatus.FAILED
+    assert "failed" in (delivery.error_message or "").lower()
 
 
 @pytest.mark.django_db
@@ -306,11 +304,17 @@ def test_alert_open_creates_expected_channels_and_dedupes(monkeypatch):
     created_first = create_notifications_for_alert_opened(alert)
     created_second = create_notifications_for_alert_opened(alert)
 
-    channels = sorted(n.channel for n in created_first)
-    assert channels == [NotificationChannel.EMAIL, NotificationChannel.SMS, NotificationChannel.WEB]
+    assert len(created_first) == 1
+    payload = created_first[0]
+    assert sorted(d.channel for d in payload["deliveries"]) == [
+        NotificationChannel.EMAIL,
+        NotificationChannel.SMS,
+        NotificationChannel.WEB,
+    ]
     assert created_second == []
-    assert Notification.objects.filter(metadata__alert_event_id=str(alert.pk)).count() == 3
-    assert Notification.objects.filter(dedupe_key__isnull=False).count() == 3
+    assert Notification.objects.filter(metadata__alert_event_id=str(alert.pk)).count() == 1
+    assert NotificationDelivery.objects.filter(notification__metadata__alert_event_id=str(alert.pk)).count() == 3
+    assert Notification.objects.filter(dedupe_key__isnull=False).count() == 1
 
 
 @pytest.mark.django_db
@@ -330,10 +334,12 @@ def test_alert_resolved_creates_expected_channels_and_dedupes(monkeypatch):
     created_first = create_notifications_for_alert_resolved(alert)
     created_second = create_notifications_for_alert_resolved(alert)
 
-    channels = sorted(n.channel for n in created_first)
-    assert channels == [NotificationChannel.EMAIL, NotificationChannel.WEB]
+    assert len(created_first) == 1
+    payload = created_first[0]
+    assert sorted(d.channel for d in payload["deliveries"]) == [NotificationChannel.EMAIL, NotificationChannel.WEB]
     assert created_second == []
-    assert Notification.objects.filter(metadata__alert_event_id=str(alert.pk), metadata__action="RESOLVED").count() == 2
+    assert Notification.objects.filter(metadata__alert_event_id=str(alert.pk), metadata__action="RESOLVED").count() == 1
+    assert NotificationDelivery.objects.filter(notification__metadata__alert_event_id=str(alert.pk), notification__metadata__action="RESOLVED").count() == 2
 
 
 @pytest.mark.django_db

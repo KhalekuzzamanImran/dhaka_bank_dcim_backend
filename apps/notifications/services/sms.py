@@ -172,9 +172,17 @@ def _send_soap_sms(phone: str, message: str):
     }
 
 
-def send_sms_notification(notification):
-    recipient = getattr(notification, "recipient", None)
-    phone = _recipient_phone(recipient)
+def _notification_from_target(target):
+    return getattr(target, "notification", None) or target
+
+
+def send_sms_notification(target):
+    notification = _notification_from_target(target)
+    recipient_address = getattr(target, "recipient_address", None)
+    phone = str(recipient_address).strip() if recipient_address else None
+    if not phone:
+        recipient = getattr(notification, "recipient", None)
+        phone = _recipient_phone(recipient)
     if not phone:
         metadata = notification.metadata if isinstance(getattr(notification, "metadata", None), dict) else {}
         phone = metadata.get("phone") or metadata.get("mobile") or metadata.get("msisdn")

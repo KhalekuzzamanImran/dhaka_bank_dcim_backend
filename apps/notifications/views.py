@@ -13,7 +13,7 @@ class NotificationViewSet(ScopedModelViewSet):
     http_method_names = ["get", "head", "options", "post"]
     access_scope = "organization"
     organization_field = "organization"
-    queryset = Notification.objects.select_related("organization", "recipient").all().order_by("-created_at")
+    queryset = Notification.objects.select_related("organization", "recipient").prefetch_related("deliveries").all().order_by("-created_at")
     serializer_class = NotificationSerializer
     permission_module = "notification"
     audit_resource_type = "Notification"

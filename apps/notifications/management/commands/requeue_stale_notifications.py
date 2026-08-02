@@ -42,14 +42,10 @@ class Command(BaseCommand):
 
         if dry_run:
             for notification in matched:
-                self.stdout.write(
-                    f"WOULD_REQUEUE id={notification.id} channel={notification.channel} updated_at={notification.updated_at}"
-                )
+                self.stdout.write(f"WOULD_REQUEUE id={notification.id} channel={getattr(notification, 'channel', None)} updated_at={notification.updated_at}")
         else:
             for notification in requeued:
-                self.stdout.write(
-                    f"REQUEUED id={notification.id} channel={notification.channel} updated_at={notification.updated_at}"
-                )
+                self.stdout.write(f"REQUEUED id={notification.id} channel={getattr(notification, 'channel', None)} updated_at={notification.updated_at}")
 
         self.stdout.write(
             self.style.SUCCESS(

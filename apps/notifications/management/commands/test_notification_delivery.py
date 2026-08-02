@@ -6,7 +6,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from apps.accounts.models import User
-from apps.notifications.models import Notification, NotificationChannel, NotificationStatus
+from apps.notifications.models import Notification, NotificationChannel, NotificationDelivery, NotificationStatus
 from apps.notifications.tasks import send_notification_task
 from apps.organizations.models import Organization
 
@@ -81,46 +81,58 @@ class Command(BaseCommand):
             )
         )
 
-        notifications = [
-            Notification.objects.create(
+        notifications = []
+        for channel, subject, message in (
+            (
+                NotificationChannel.EMAIL,
+                "DCIM Test Email Notification",
+                "This is a test email notification from DCIM.",
+            ),
+            (
+                NotificationChannel.SMS,
+                "DCIM Test SMS Notification",
+                "This is a test SMS notification from DCIM.",
+            ),
+        ):
+            notification = Notification.objects.create(
                 organization=organization,
                 recipient=user,
-                channel=NotificationChannel.EMAIL,
-                subject="DCIM Test Email Notification",
-                message="This is a test email notification from DCIM.",
-                status=NotificationStatus.PENDING,
+                subject=subject,
+                message=message,
                 metadata={
                     "test": True,
-                    "channel": "EMAIL",
+                    "channel": channel,
                     "created_at": timezone.now().isoformat(),
                     "created_by": "test_notification_delivery",
                 },
-            ),
-            Notification.objects.create(
-                organization=organization,
-                recipient=user,
-                channel=NotificationChannel.SMS,
-                subject="DCIM Test SMS Notification",
-                message="This is a test SMS notification from DCIM.",
+            )
+            if channel == NotificationChannel.EMAIL:
+                recipient_address = getattr(user, "email", None)
+            else:
+                recipient_address = getattr(user, phone_field, None) if phone_field else None
+            delivery = NotificationDelivery.objects.create(
+                notification=notification,
+                channel=channel,
                 status=NotificationStatus.PENDING,
+                recipient_address=recipient_address,
                 metadata={
                     "test": True,
-                    "channel": "SMS",
+                    "channel": channel,
                     "created_at": timezone.now().isoformat(),
                     "created_by": "test_notification_delivery",
                 },
-            ),
-        ]
+            )
+            notifications.append((notification, delivery))
 
-        for notification in notifications:
-            send_notification_task.delay(str(notification.id))
-            self.stdout.write(f"Queued notification={notification.id} channel={notification.channel}")
+        for notification, delivery in notifications:
+            send_notification_task.delay(str(delivery.id))
+            self.stdout.write(f"Queued notification={notification.id} delivery={delivery.id} channel={delivery.channel}")
 
         if wait_seconds > 0:
             deadline = time.time() + wait_seconds
             while time.time() < deadline:
                 statuses = list(
-                    Notification.objects.filter(id__in=[n.id for n in notifications]).values_list(
+                    NotificationDelivery.objects.filter(id__in=[d.id for _, d in notifications]).values_list(
                         "id", "channel", "status", "error_message"
                     )
                 )
@@ -128,9 +140,9 @@ class Command(BaseCommand):
                     break
                 time.sleep(1)
 
-        self.stdout.write(self.style.SUCCESS("Latest notification rows:"))
-        for notification in Notification.objects.order_by("-created_at")[:10]:
+        self.stdout.write(self.style.SUCCESS("Latest delivery rows:"))
+        for delivery in NotificationDelivery.objects.order_by("-created_at")[:10]:
             self.stdout.write(
-                f"{notification.id} {notification.channel} {notification.status} "
-                f"{notification.sent_at} {notification.error_message or ''}"
+                f"{delivery.id} {delivery.channel} {delivery.status} "
+                f"{delivery.sent_at} {delivery.error_message or ''}"
             )

@@ -10,7 +10,7 @@ from django.utils import timezone
 from apps.accounts.models import User
 from apps.access_control.models import Permission, Role, RolePermission, RoleScope, UserResourceAccess
 from apps.alerts.services.notifications import create_notifications_for_alert_opened
-from apps.notifications.models import Notification, NotificationChannel, NotificationStatus
+from apps.notifications.models import Notification, NotificationChannel, NotificationDelivery, NotificationStatus
 from apps.notifications.services import requeue_stale_delivering_notifications
 from apps.notifications.tasks import deliver_pending_notifications_task, requeue_stale_delivering_notifications_task, send_notification_task
 from apps.organizations.models import Organization
@@ -81,10 +81,11 @@ class NotificationHardeningTests(TestCase):
             created_first = create_notifications_for_alert_opened(alert)
             created_second = create_notifications_for_alert_opened(alert)
 
-        self.assertEqual(len(created_first), 3)
+        self.assertEqual(len(created_first), 1)
         self.assertEqual(created_second, [])
-        self.assertEqual(Notification.objects.filter(metadata__alert_event_id=str(alert.pk)).count(), 3)
-        self.assertEqual(Notification.objects.filter(dedupe_key__isnull=False).count(), 3)
+        self.assertEqual(Notification.objects.filter(metadata__alert_event_id=str(alert.pk)).count(), 1)
+        self.assertEqual(NotificationDelivery.objects.filter(notification__metadata__alert_event_id=str(alert.pk)).count(), 3)
+        self.assertEqual(Notification.objects.filter(dedupe_key__isnull=False).count(), 1)
 
     def test_send_notification_task_noops_for_sent_rows(self):
         org = self._org()
@@ -360,6 +361,35 @@ class NotificationHardeningTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["unread_count"], 1)
 
+    def test_notification_list_returns_one_logical_row_per_alert(self):
+        org = self._org()
+        role = self._role()
+        user = self._user(email="user1@example.com")
+        self._grant_access(user, org, role)
+
+        notification = Notification.objects.create(
+            organization=org,
+            recipient=user,
+            subject="Alert Opened: UPS 01",
+            message="UPS 01 OPEN: UPS battery has been added.",
+            metadata={"alert_event_id": "alert-1", "severity": "CRITICAL", "action": "OPENED"},
+        )
+        NotificationDelivery.objects.create(notification=notification, channel=NotificationChannel.WEB, status=NotificationStatus.SENT)
+        NotificationDelivery.objects.create(notification=notification, channel=NotificationChannel.EMAIL, status=NotificationStatus.SENT)
+        NotificationDelivery.objects.create(notification=notification, channel=NotificationChannel.SMS, status=NotificationStatus.FAILED)
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get("/api/v1/notifications/")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["subject"], "Alert Opened: UPS 01")
+        self.assertEqual(payload[0]["delivery_summary"]["WEB"], NotificationStatus.SENT)
+        self.assertEqual(payload[0]["delivery_summary"]["EMAIL"], NotificationStatus.SENT)
+        self.assertEqual(payload[0]["delivery_summary"]["SMS"], NotificationStatus.FAILED)
+
     def test_mark_read_marks_only_own_notification(self):
         org = self._org()
         role = self._role()
@@ -475,9 +505,17 @@ class NotificationHardeningTests(TestCase):
         notification = Notification.objects.create(
             organization=org,
             recipient=user,
-            channel=NotificationChannel.WEB,
             subject="Sent Notification",
             message="Message",
+        )
+        NotificationDelivery.objects.create(
+            notification=notification,
+            channel=NotificationChannel.WEB,
+            status=NotificationStatus.SENT,
+        )
+        NotificationDelivery.objects.create(
+            notification=notification,
+            channel=NotificationChannel.EMAIL,
             status=NotificationStatus.SENT,
         )
 
@@ -487,8 +525,9 @@ class NotificationHardeningTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         notification.refresh_from_db()
-        self.assertEqual(notification.status, NotificationStatus.SENT)
         self.assertIsNotNone(notification.read_at)
+        self.assertEqual(notification.deliveries.filter(channel=NotificationChannel.WEB).first().status, NotificationStatus.SENT)
+        self.assertEqual(notification.deliveries.filter(channel=NotificationChannel.EMAIL).first().status, NotificationStatus.SENT)
 
     def test_normal_user_cannot_create_notifications_via_api(self):
         org = self._org()

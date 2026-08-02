@@ -20,7 +20,7 @@ from apps.common.audit import write_audit
 from apps.accounts.models import User
 from apps.datacenters.models import DataCenter, Rack, Room
 from apps.devices.models import Device, DeviceModel, DeviceStatus, DeviceType
-from apps.notifications.models import Notification, NotificationChannel, NotificationStatus
+from apps.notifications.models import Notification, NotificationChannel, NotificationDelivery, NotificationStatus
 from apps.telemetry.models import MetricDefinition, TelemetryPoint
 
 from ..constants import SUPPORTED_REPORT_TYPES, normalize_key, normalize_report_format
@@ -478,7 +478,9 @@ def _notification_delivery_rows(job: ReportJob) -> tuple[list[str], list[dict]]:
     date_from, date_to = parse_report_date_range(parameters)
     validate_max_date_range(date_from, date_to, _get_report_config(job))
 
-    qs = Notification.objects.select_related("organization", "recipient").filter(organization_id=job.organization_id)
+    qs = NotificationDelivery.objects.select_related("notification", "notification__recipient", "notification__organization").filter(
+        notification__organization_id=job.organization_id
+    )
     if job.data_center_id:
         alert_event_ids = list(
             AlertEvent.objects.filter(
@@ -495,9 +497,9 @@ def _notification_delivery_rows(job: ReportJob) -> tuple[list[str], list[dict]]:
             qs = qs.none()
 
     if date_from:
-        qs = qs.filter(created_at__gte=date_from)
+        qs = qs.filter(notification__created_at__gte=date_from)
     if date_to:
-        qs = qs.filter(created_at__lte=date_to)
+        qs = qs.filter(notification__created_at__lte=date_to)
 
     recipient_id = parameters.get("recipient_id")
     if recipient_id not in (None, ""):
@@ -505,7 +507,7 @@ def _notification_delivery_rows(job: ReportJob) -> tuple[list[str], list[dict]]:
             recipient = User.objects.get(pk=recipient_id)
         except (User.DoesNotExist, ValueError, TypeError):
             raise ValueError("Invalid recipient_id.")
-        qs = qs.filter(recipient_id=recipient.pk)
+        qs = qs.filter(notification__recipient_id=recipient.pk)
 
     channels = _normalize_choice_values(parameters.get("channel"), list(NotificationChannel.values), field_name="channel")
     if channels:
@@ -531,17 +533,41 @@ def _notification_delivery_rows(job: ReportJob) -> tuple[list[str], list[dict]]:
         {"section": "summary", "label": "delivering", "value": qs.filter(status=NotificationStatus.DELIVERING).count()},
         {"section": "summary", "label": "sent", "value": qs.filter(status=NotificationStatus.SENT).count()},
         {"section": "summary", "label": "failed", "value": qs.filter(status=NotificationStatus.FAILED).count()},
-        {"section": "summary", "label": "read_count", "value": qs.filter(read_at__isnull=False).count()},
+        {"section": "summary", "label": "read_count", "value": qs.filter(notification__read_at__isnull=False).count()},
     ]
     rows = summary_rows + [
-        {"section": "status", "label": status, "value": qs.filter(status=status).count()}
-        for status in list(NotificationStatus.values)
+        {
+            "section": "delivery",
+            "label": str(delivery.pk),
+            "value": delivery.status,
+            "notification_id": str(delivery.notification_id),
+            "subject": delivery.notification.subject,
+            "recipient": getattr(delivery.notification.recipient, "username", None) or getattr(delivery.notification.recipient, "email", None),
+            "recipient_address": delivery.recipient_address,
+            "channel": delivery.channel,
+            "status": delivery.status,
+            "queued_at": delivery.queued_at,
+            "sent_at": delivery.sent_at,
+            "failed_at": delivery.failed_at,
+            "error_message": delivery.error_message,
+        }
+        for delivery in qs.select_related("notification__recipient").order_by("-created_at", "-id")
     ]
-    rows.extend(
-        {"section": "channel", "label": channel, "value": qs.filter(channel=channel).count()}
-        for channel in list(NotificationChannel.values)
-    )
-    return ["section", "label", "value"], rows
+    return [
+        "section",
+        "label",
+        "value",
+        "notification_id",
+        "subject",
+        "recipient",
+        "recipient_address",
+        "channel",
+        "status",
+        "queued_at",
+        "sent_at",
+        "failed_at",
+        "error_message",
+    ], rows
 
 
 def _device_inventory_rows(job: ReportJob) -> tuple[list[str], list[dict]]:

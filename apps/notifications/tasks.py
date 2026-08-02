@@ -1,72 +1,117 @@
+from __future__ import annotations
+
 import logging
+from datetime import timedelta
 
 from celery import shared_task
 from celery.exceptions import Retry
+from django.utils import timezone
 
-from apps.notifications.models import Notification, NotificationStatus
+from apps.notifications.models import Notification, NotificationDelivery, NotificationStatus
+
 from .services import (
+    claim_delivery_for_processing,
     claim_notification_for_delivery,
     deliver_notification,
+    deliver_notification_delivery,
+    deliver_pending_notification_deliveries,
+    queue_pending_notification_deliveries,
     queue_pending_notifications,
+    requeue_stale_delivering_notification_deliveries,
     requeue_stale_delivering_notifications,
 )
 
 logger = logging.getLogger(__name__)
 
 
+def _retry_delivery_failure(delivery_id, exc, *, self_task=None):
+    delivery = NotificationDelivery.objects.filter(pk=delivery_id).first()
+    if delivery:
+        delivery.status = NotificationStatus.FAILED
+        delivery.failed_at = timezone.now()
+        delivery.error_message = str(exc)
+        delivery.next_retry_at = timezone.now() + timedelta(minutes=10 * max(1, int(delivery.attempt_count or 1)))
+        delivery.save(update_fields=["status", "failed_at", "error_message", "next_retry_at", "updated_at"])
+    if self_task is None:
+        return
+    if self_task.request.retries >= self_task.max_retries:
+        raise exc
+    countdown = 10 * (self_task.request.retries + 1)
+    logger.info(
+        "Notification delivery retry scheduled delivery=%s retry=%s countdown=%s",
+        delivery_id,
+        self_task.request.retries + 1,
+        countdown,
+    )
+    if getattr(self_task.request, "is_eager", False):
+        raise Retry(exc=exc, when=countdown)
+    raise self_task.retry(exc=exc, countdown=countdown)
+
+
 @shared_task(bind=True, queue="notifications", max_retries=3)
-def send_notification_task(self, notification_id):
-    notification = claim_notification_for_delivery(notification_id)
-    if not notification:
-        current = Notification.objects.filter(pk=notification_id).values_list("status", flat=True).first()
-        if not current:
-            return {"status": "missing", "notification_id": str(notification_id)}
+def send_notification_delivery_task(self, delivery_id):
+    delivery = claim_delivery_for_processing(delivery_id)
+    if delivery:
+        try:
+            deliver_notification_delivery(delivery)
+            logger.info(
+                "Notification delivery sent delivery=%s channel=%s",
+                delivery.pk,
+                delivery.channel,
+            )
+            return {
+                "status": "sent",
+                "delivery_id": str(delivery.pk),
+                "notification_id": str(delivery.notification_id),
+                "channel": delivery.channel,
+            }
+        except Exception as exc:
+            logger.exception("Notification delivery failed delivery=%s", delivery_id)
+            _retry_delivery_failure(delivery_id, exc, self_task=self)
+
+    current = NotificationDelivery.objects.filter(pk=delivery_id).values_list("status", flat=True).first()
+    if current:
         if current == NotificationStatus.SENT:
-            return {"status": "sent", "notification_id": str(notification_id)}
+            return {"status": "sent", "delivery_id": str(delivery_id)}
         if current == NotificationStatus.DELIVERING:
-            return {"status": "delivering", "notification_id": str(notification_id)}
-        return {"status": current.lower(), "notification_id": str(notification_id)}
+            return {"status": "delivering", "delivery_id": str(delivery_id)}
+        if current == NotificationStatus.FAILED:
+            return {"status": "failed", "delivery_id": str(delivery_id)}
+        return {"status": current.lower(), "delivery_id": str(delivery_id)}
 
-    try:
-        delivery_result = deliver_notification(notification)
-        from django.utils import timezone
+    legacy = claim_notification_for_delivery(delivery_id)
+    if legacy:
+        try:
+            deliver_notification(legacy)
+            logger.info("Legacy notification delivered notification=%s channel=%s", legacy.pk, getattr(legacy, "channel", None))
+            return {"status": "sent", "notification_id": str(legacy.pk), "channel": getattr(legacy, "channel", None)}
+        except Exception as exc:
+            logger.exception("Legacy notification delivery failed notification=%s", delivery_id)
+            notification = Notification.objects.filter(pk=delivery_id).first()
+            if notification:
+                notification.status = NotificationStatus.FAILED
+                notification.error_message = str(exc)
+                notification.save(update_fields=["status", "error_message", "updated_at"])
+            if self.request.retries >= self.max_retries:
+                raise exc
+            countdown = 10 * (self.request.retries + 1)
+            if getattr(self.request, "is_eager", False):
+                raise Retry(exc=exc, when=countdown)
+            raise self.retry(exc=exc, countdown=countdown)
 
-        if isinstance(delivery_result, dict):
-            metadata = notification.metadata if isinstance(notification.metadata, dict) else {}
-            metadata = dict(metadata)
-            metadata["delivery_result"] = delivery_result
-            notification.metadata = metadata
-
-        notification.status = NotificationStatus.SENT
-        notification.sent_at = timezone.now()
-        notification.error_message = ""
-        notification.save(update_fields=["status", "sent_at", "error_message", "metadata", "updated_at"])
-        logger.info("Notification delivered notification=%s channel=%s", notification.pk, notification.channel)
-        return {"status": "sent", "notification_id": str(notification.pk)}
-    except Exception as exc:
-        logger.exception("Notification delivery failed notification=%s", notification_id)
-        notification = Notification.objects.filter(pk=notification_id).first()
-        if notification:
-            notification.status = NotificationStatus.FAILED
-            notification.error_message = str(exc)
-            notification.save(update_fields=["status", "error_message", "updated_at"])
-        if self.request.retries >= self.max_retries:
-            raise
-        countdown = 10 * (self.request.retries + 1)
-        logger.info(
-            "Notification retry scheduled notification=%s retry=%s countdown=%s",
-            notification_id,
-            self.request.retries + 1,
-            countdown,
-        )
-        if getattr(self.request, "is_eager", False):
-            raise Retry(exc=exc, when=countdown)
-        raise self.retry(exc=exc, countdown=countdown)
+    current_legacy = Notification.objects.filter(pk=delivery_id).values_list("status", flat=True).first()
+    if not current_legacy:
+        return {"status": "missing", "delivery_id": str(delivery_id)}
+    if current_legacy == NotificationStatus.SENT:
+        return {"status": "sent", "notification_id": str(delivery_id)}
+    if current_legacy == NotificationStatus.DELIVERING:
+        return {"status": "delivering", "notification_id": str(delivery_id)}
+    return {"status": current_legacy.lower(), "notification_id": str(delivery_id)}
 
 
 @shared_task(queue="notifications", max_retries=3)
-def deliver_pending_notifications_task(limit=200, older_than_minutes=5, channel=None, ids=None, include_failed=False):
-    matched, queued = queue_pending_notifications(
+def queue_pending_notification_deliveries_task(limit=200, older_than_minutes=5, channel=None, ids=None, include_failed=False):
+    matched, queued = queue_pending_notification_deliveries(
         limit=limit,
         older_than_minutes=older_than_minutes,
         channel=channel,
@@ -83,8 +128,17 @@ def deliver_pending_notifications_task(limit=200, older_than_minutes=5, channel=
 
 
 @shared_task(queue="notifications", max_retries=3)
-def requeue_stale_delivering_notifications_task(limit=100, older_than_minutes=10, channel=None, dry_run=False):
-    matched, requeued = requeue_stale_delivering_notifications(
+def deliver_pending_notification_deliveries_task(limit=200, older_than_minutes=5, channel=None, ids=None, include_failed=False):
+    delivered = deliver_pending_notification_deliveries(limit=limit)
+    return {
+        "delivered_count": len(delivered),
+        "limit": limit,
+    }
+
+
+@shared_task(queue="notifications", max_retries=3)
+def requeue_stale_delivering_notification_deliveries_task(limit=100, older_than_minutes=10, channel=None, dry_run=False):
+    matched, requeued = requeue_stale_delivering_notification_deliveries(
         older_than_minutes=older_than_minutes,
         limit=limit,
         channel=channel,
@@ -97,3 +151,19 @@ def requeue_stale_delivering_notifications_task(limit=100, older_than_minutes=10
         "channel": channel,
         "dry_run": dry_run,
     }
+
+
+@shared_task(queue="notifications", max_retries=3)
+def requeue_stale_delivering_notifications_task(limit=100, older_than_minutes=10, channel=None, dry_run=False):
+    return requeue_stale_delivering_notification_deliveries_task(
+        limit=limit,
+        older_than_minutes=older_than_minutes,
+        channel=channel,
+        dry_run=dry_run,
+    )
+
+
+# Backward-compatible aliases retained for existing imports.
+send_notification_task = send_notification_delivery_task
+deliver_pending_notifications_task = deliver_pending_notification_deliveries_task
+requeue_stale_delivering_notifications_task = requeue_stale_delivering_notification_deliveries_task

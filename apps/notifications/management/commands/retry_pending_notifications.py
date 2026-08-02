@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from django.core.management.base import BaseCommand
 
-from apps.notifications.models import Notification, NotificationStatus
-from apps.notifications.services import queue_pending_notifications
+from apps.notifications.services import _legacy_pending_queryset, _pending_delivery_queryset, queue_pending_notifications
 
 
 class Command(BaseCommand):
@@ -24,49 +23,51 @@ class Command(BaseCommand):
         dry_run = options["dry_run"]
         include_failed = options["include_failed"]
         id_values = [value.strip() for value in options["ids"].split(",") if value.strip()]
-        qs = Notification.objects.filter(status=NotificationStatus.PENDING)
-        if include_failed:
-            qs = Notification.objects.filter(status__in=[NotificationStatus.PENDING, NotificationStatus.FAILED])
-        if older_than_minutes is not None:
-            from django.utils import timezone
-            from datetime import timedelta
-
-            cutoff = timezone.now() - timedelta(minutes=older_than_minutes)
-            qs = qs.filter(created_at__lte=cutoff)
-        if channels:
-            qs = qs.filter(channel__in=channels)
-        if id_values:
-            qs = qs.filter(id__in=id_values)
-
-        qs = qs.order_by("created_at", "id")
-        total_matched = qs.count()
-        to_process = list(qs[:limit])
+        if dry_run:
+            matched = list(
+                _pending_delivery_queryset(
+                    limit=limit,
+                    older_than_minutes=older_than_minutes,
+                    channel=channels or None,
+                    ids=id_values or None,
+                    include_failed=include_failed,
+                )
+            )
+            if not matched:
+                matched = list(
+                    _legacy_pending_queryset(
+                        limit=limit,
+                        older_than_minutes=older_than_minutes,
+                        channel=channels or None,
+                        ids=id_values or None,
+                        include_failed=include_failed,
+                    )
+                )
+            queued_notifications = []
+        else:
+            matched, queued_notifications = queue_pending_notifications(
+                limit=limit,
+                older_than_minutes=older_than_minutes,
+                channel=channels or None,
+                ids=id_values or None,
+                include_failed=include_failed,
+            )
 
         if dry_run:
-            for notification in to_process:
-                self.stdout.write(
-                    f"WOULD_QUEUE id={notification.id} channel={notification.channel} created_at={notification.created_at}"
-                )
+            for notification in matched:
+                self.stdout.write(f"WOULD_QUEUE id={notification.id} channel={getattr(notification, 'channel', None)} created_at={notification.created_at}")
             self.stdout.write(
                 self.style.SUCCESS(
-                f"Retry pending notifications done. total_matched={total_matched} queued=0 dry_run=True"
+                    f"Retry pending notifications done. total_matched={len(matched)} queued=0 dry_run=True"
                 )
             )
             return
 
-        for notification in to_process:
-            self.stdout.write(f"QUEUEING id={notification.id} channel={notification.channel} created_at={notification.created_at}")
-
-        matched, queued_notifications = queue_pending_notifications(
-            limit=limit,
-            older_than_minutes=older_than_minutes,
-            channel=channels or None,
-            ids=id_values or None,
-            include_failed=include_failed,
-        )
+        for notification in matched:
+            self.stdout.write(f"QUEUEING id={notification.id} channel={getattr(notification, 'channel', None)} created_at={notification.created_at}")
 
         self.stdout.write(
             self.style.SUCCESS(
-                f"Retry pending notifications done. total_matched={total_matched} queued={len(queued_notifications)} dry_run=False"
+                f"Retry pending notifications done. total_matched={len(matched)} queued={len(queued_notifications)} dry_run=False"
             )
         )

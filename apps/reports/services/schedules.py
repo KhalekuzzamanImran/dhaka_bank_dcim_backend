@@ -12,7 +12,7 @@ from django.utils.dateparse import parse_datetime
 
 from apps.common.audit import write_audit
 from apps.accounts.models import User
-from apps.notifications.models import Notification, NotificationChannel, NotificationStatus
+from apps.notifications.models import Notification, NotificationChannel, NotificationDelivery, NotificationStatus
 from apps.notifications.services import queue_notification_delivery
 
 from ..models import ReportJob, ReportJobStatus, ReportSchedule
@@ -120,13 +120,11 @@ def _queue_report_sms_notifications(schedule: ReportSchedule, report_job: Report
             continue
         notification, created = Notification.objects.get_or_create(
             organization=schedule.organization,
-            channel=NotificationChannel.SMS,
             dedupe_key=f"report_schedule:{schedule.pk}:{report_job_id}:sms:{normalized_phone}",
             defaults={
                 "recipient": None,
                 "subject": f"{schedule.name} - SMS delivery",
                 "message": message,
-                "status": NotificationStatus.PENDING,
                 "metadata": {
                     "report_schedule_id": report_schedule_id,
                     "report_job_id": report_job_id,
@@ -150,11 +148,29 @@ def _queue_report_sms_notifications(schedule: ReportSchedule, report_job: Report
             )
             notification.message = message
             notification.metadata = metadata
-            notification.status = NotificationStatus.PENDING
-            notification.error_message = ""
-            notification.sent_at = None
-            notification.save(update_fields=["message", "metadata", "status", "error_message", "sent_at", "updated_at"])
-        queue_notification_delivery(notification)
+            notification.save(update_fields=["message", "metadata", "updated_at"])
+        delivery, _ = NotificationDelivery.objects.get_or_create(
+            notification=notification,
+            channel=NotificationChannel.SMS,
+            defaults={
+                "status": NotificationStatus.PENDING,
+                "recipient_address": normalized_phone,
+                "attempt_count": 0,
+                "max_attempts": 3,
+                "metadata": {
+                    "report_schedule_id": report_schedule_id,
+                    "report_job_id": report_job_id,
+                    "report_schedule_name": schedule.name,
+                    "report_type": schedule.report_type,
+                    "phone": normalized_phone,
+                    "channel": NotificationChannel.SMS,
+                },
+            },
+        )
+        if not delivery.recipient_address:
+            delivery.recipient_address = normalized_phone
+            delivery.save(update_fields=["recipient_address", "updated_at"])
+        queue_notification_delivery(delivery)
         queued_notifications.append(notification)
 
     return queued_notifications
