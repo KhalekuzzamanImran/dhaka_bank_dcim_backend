@@ -19,7 +19,7 @@ def _artifact_metadata(path: str, filename: str) -> RenderedArtifact:
         format="CSV",
         path=path,
         filename=filename,
-        content_type="text/csv; charset=utf-8",
+        content_type="text/csv",
         size_bytes=size_bytes,
         checksum_sha256=sha256.hexdigest(),
     )
@@ -36,4 +36,3 @@ def render_csv(dataset: ReportDataset, context: GeneratorContext, output_path: s
         for row in table.rows:
             writer.writerow([format_cell_value(row.get(column)) for column in table.columns])
     return _artifact_metadata(output_path, filename)
-

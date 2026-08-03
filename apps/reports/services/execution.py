@@ -6,7 +6,6 @@ from copy import deepcopy
 from dataclasses import dataclass
 
 from django.core.exceptions import ValidationError
-from django.core.files import File
 from django.db import transaction
 from django.utils import timezone
 
@@ -14,9 +13,10 @@ from apps.common.audit import write_audit
 
 from ..constants import normalize_report_format
 from ..enums import ReportTriggerSource
-from ..models import ReportJob, ReportJobStatus
+from ..models import ReportArtifact, ReportJob, ReportJobStatus
 from .definitions import get_active_definition_by_code, get_definition_by_code, get_definition_code_for_report_type
 from ..generators import GeneratorContext, RenderedArtifact, get_generator_class
+from .artifacts import ReportArtifactPersistenceResult, create_report_artifact
 
 
 @dataclass(frozen=True)
@@ -193,22 +193,6 @@ def _render_requested_artifacts(job: ReportJob, definition, generator, context: 
     return artifacts
 
 
-def _attach_primary_artifact(job: ReportJob, artifacts: list[RenderedArtifact]):
-    if not artifacts:
-        raise ValueError("No generated artifact was produced.")
-
-    primary = artifacts[0]
-    if job.file:
-        try:
-            job.file.delete(save=False)
-        except Exception:
-            pass
-
-    with open(primary.path, "rb") as handle:
-        job.file.save(primary.filename, File(handle), save=False)
-    return primary
-
-
 def _cleanup_artifacts(artifacts: list[RenderedArtifact]):
     for artifact in artifacts:
         try:
@@ -217,8 +201,23 @@ def _cleanup_artifacts(artifacts: list[RenderedArtifact]):
             pass
 
 
+def _cleanup_persisted_artifacts(persisted_artifacts: list[ReportArtifactPersistenceResult]):
+    for result in persisted_artifacts:
+        if not result.created:
+            continue
+        artifact = result.artifact
+        file_name = artifact.file.name if artifact and artifact.file else ""
+        if not file_name:
+            continue
+        try:
+            artifact.file.storage.delete(file_name)
+        except Exception:
+            pass
+
+
 def _finalize_success(job: ReportJob, artifacts: list[RenderedArtifact]):
-    primary = _attach_primary_artifact(job, artifacts)
+    if not artifacts:
+        raise ValueError("No generated artifact was produced.")
     job.status = ReportJobStatus.COMPLETED
     job.completed_at = timezone.now()
     job.failed_at = None
@@ -234,13 +233,12 @@ def _finalize_success(job: ReportJob, artifacts: list[RenderedArtifact]):
         actor=job.requested_by,
         message=f"Report generated successfully for {getattr(job.definition, 'code', job.report_type or 'unknown')}",
     )
-    job._rendered_artifacts = artifacts  # transient compatibility hook
-    job._primary_rendered_artifact = primary
     return job
 
 
 def _finalize_failure(job: ReportJob, exc: Exception):
     message = _format_validation_message(exc)
+    error_code = getattr(exc, "error_code", None) or exc.__class__.__name__
     with transaction.atomic():
         locked = ReportJob.objects.select_for_update().filter(pk=job.pk).first()
         if not locked:
@@ -257,7 +255,8 @@ def _finalize_failure(job: ReportJob, exc: Exception):
         locked.progress_percent = min(max(locked.progress_percent or 0, 0), 99)
         locked.progress_message = "Report generation failed."
         locked.error_message = message
-        locked.save(update_fields=["file", "status", "completed_at", "failed_at", "progress_percent", "progress_message", "error_message", "updated_at"])
+        locked.error_code = str(error_code)[:64]
+        locked.save(update_fields=["file", "status", "completed_at", "failed_at", "progress_percent", "progress_message", "error_message", "error_code", "updated_at"])
         _safe_write_audit(
             "REPORT_GENERATION_FAILED",
             "ReportJob",
@@ -291,6 +290,7 @@ def generate_report_job(report_job_id):
     context = _build_context(job, definition)
 
     artifacts: list[RenderedArtifact] = []
+    persisted_artifacts: list[ReportArtifactPersistenceResult] = []
     try:
         generator.validate_parameters(context)
         artifacts = _render_requested_artifacts(job, definition, generator, context)
@@ -298,10 +298,24 @@ def generate_report_job(report_job_id):
             locked = ReportJob.objects.select_for_update().get(pk=job.pk)
             if locked.status == ReportJobStatus.CANCELLED:
                 return locked
+            for artifact in artifacts:
+                persisted = create_report_artifact(
+                    job=locked,
+                    generated_file=artifact,
+                    format=artifact.format,
+                    filename=artifact.filename,
+                    content_type=artifact.content_type,
+                )
+                persisted_artifacts.append(persisted)
+
+            primary_artifact = persisted_artifacts[0].artifact if persisted_artifacts else None
+            if primary_artifact is not None:
+                locked.file = primary_artifact.file.name
             final_job = _finalize_success(locked, artifacts)
             _cleanup_artifacts(artifacts)
             return final_job
     except Exception as exc:
+        _cleanup_persisted_artifacts(persisted_artifacts)
         locked = _finalize_failure(job, exc)
         _cleanup_artifacts(artifacts)
         return locked

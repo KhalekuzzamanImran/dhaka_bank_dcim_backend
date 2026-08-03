@@ -108,6 +108,7 @@ STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+REPORT_ARTIFACT_RETENTION_DAYS = config('REPORT_ARTIFACT_RETENTION_DAYS', default=90, cast=int)
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 def _csv_setting(name, default=''):

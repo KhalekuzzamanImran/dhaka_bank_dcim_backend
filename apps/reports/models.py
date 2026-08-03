@@ -251,7 +251,7 @@ class ReportJob(TimeStampedModel):
     output_config_snapshot = models.JSONField(default=dict, blank=True)
     parameters_snapshot = models.JSONField(default=dict, blank=True)
     template_snapshot = models.JSONField(default=dict, blank=True)
-    file = models.FileField(upload_to="reports/", blank=True, null=True)
+    file = models.FileField(upload_to="reports/", blank=True, null=True, max_length=500)
     progress_percent = models.PositiveSmallIntegerField(default=0)
     progress_message = models.CharField(max_length=255, blank=True, default="")
     started_at = models.DateTimeField(blank=True, null=True)
@@ -845,7 +845,7 @@ class ReportScheduleRecipient(TimeStampedModel):
 class ReportArtifact(TimeStampedModel):
     job = models.ForeignKey(ReportJob, on_delete=models.CASCADE, related_name="artifacts")
     format = models.CharField(max_length=30, choices=ReportArtifactFormat.choices)
-    file = models.FileField(upload_to="reports/artifacts/")
+    file = models.FileField(upload_to="reports/artifacts/", max_length=500)
     original_filename = models.CharField(max_length=255)
     content_type = models.CharField(max_length=100, blank=True, default="")
     size_bytes = models.PositiveBigIntegerField(default=0)
@@ -854,6 +854,9 @@ class ReportArtifact(TimeStampedModel):
 
     class Meta:
         db_table = "report_artifacts"
+        constraints = [
+            models.UniqueConstraint(fields=["job", "format"], name="uq_report_artifact_job_format"),
+        ]
         indexes = [
             models.Index(fields=["job"]),
             models.Index(fields=["format"]),
@@ -873,8 +876,11 @@ class ReportArtifact(TimeStampedModel):
             errors.setdefault("original_filename", []).append("Original filename is required.")
         if self.size_bytes < 0:
             errors.setdefault("size_bytes", []).append("Size must be non-negative.")
-        if self.checksum_sha256 and len(self.checksum_sha256) != 64:
-            errors.setdefault("checksum_sha256", []).append("Checksum must be a SHA-256 hex digest.")
+        if self.checksum_sha256:
+            checksum = self.checksum_sha256.strip().lower()
+            if len(checksum) != 64 or any(char not in "0123456789abcdef" for char in checksum):
+                errors.setdefault("checksum_sha256", []).append("Checksum must be a SHA-256 hex digest.")
+            self.checksum_sha256 = checksum
         if errors:
             raise ValidationError(errors)
 
