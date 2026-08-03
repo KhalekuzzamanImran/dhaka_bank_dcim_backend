@@ -5,6 +5,7 @@ from copy import deepcopy
 from django.core.exceptions import PermissionDenied, ValidationError
 
 from apps.common.access import get_access_scope
+from apps.common.permissions import user_has_permission
 from apps.datacenters.models import DataCenter, Rack, Room
 from apps.devices.models import Device
 from apps.organizations.models import Organization
@@ -134,3 +135,79 @@ def resolve_scope_selection(
         "selected_racks": selected_racks,
         "selected_devices": selected_devices,
     }
+
+
+def _unique_actions(actions):
+    seen = set()
+    result = []
+    for action in actions:
+        if action in seen:
+            continue
+        seen.add(action)
+        result.append(action)
+    return result
+
+
+def report_definition_allowed_actions(user, definition=None):
+    actions = ["view"]
+    return _unique_actions(actions)
+
+
+def report_template_allowed_actions(user, template):
+    actions = ["view"]
+    if user_has_permission(user, "report.update"):
+        actions.append("edit")
+        if getattr(template, "is_active", False):
+            actions.append("disable")
+    if user_has_permission(user, "report.generate"):
+        actions.append("generate")
+    return _unique_actions(actions)
+
+
+def report_schedule_allowed_actions(user, schedule):
+    actions = ["view"]
+    if user_has_permission(user, "report.update"):
+        actions.append("edit")
+        if getattr(schedule, "status", None) == "ACTIVE":
+            actions.extend(["pause", "disable"])
+        elif getattr(schedule, "status", None) == "PAUSED":
+            actions.append("resume")
+        elif getattr(schedule, "status", None) == "DISABLED":
+            actions.append("resume")
+    if user_has_permission(user, "report.generate") or user_has_permission(user, "report.update"):
+        if getattr(schedule, "status", None) in {"ACTIVE", "PAUSED"}:
+            actions.append("run_now")
+    actions.extend(["view_runs", "view_deliveries"])
+    return _unique_actions(actions)
+
+
+def report_schedule_run_allowed_actions(user, run=None):
+    return ["view"]
+
+
+def report_job_allowed_actions(user, job):
+    actions = ["view"]
+    if getattr(job, "can_cancel", False) and user_has_permission(user, "report.update"):
+        actions.append("cancel")
+    if getattr(job, "can_retry", False) and (user_has_permission(user, "report.generate") or user_has_permission(user, "report.update")):
+        actions.append("retry")
+    if getattr(job, "is_downloadable", False) and user_has_permission(user, "report.download"):
+        actions.append("download")
+    actions.append("view_deliveries")
+    return _unique_actions(actions)
+
+
+def report_artifact_allowed_actions(user, artifact):
+    actions = ["view"]
+    if user_has_permission(user, "report.download"):
+        actions.append("download")
+    return _unique_actions(actions)
+
+
+def report_delivery_allowed_actions(user, delivery):
+    actions = ["view"]
+    if getattr(delivery, "status", None) == "FAILED" and (
+        user_has_permission(user, "report.retry") or user_has_permission(user, "report.generate") or user_has_permission(user, "report.update")
+    ):
+        actions.append("retry")
+    return _unique_actions(actions)

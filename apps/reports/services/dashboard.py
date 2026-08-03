@@ -437,12 +437,18 @@ def _upcoming_schedules(scope: DashboardScope) -> list[dict]:
         organization_field="organization",
         data_center_field="data_center",
     )
-    rows = list(
-        schedules_qs.filter(status=ReportScheduleStatus.ACTIVE, next_run_at__isnull=False, next_run_at__gte=dj_timezone.now())
-        .order_by("next_run_at", "created_at")[:UPCOMING_SCHEDULE_LIMIT]
-    )
+    now = dj_timezone.now()
+    rows = list(schedules_qs.filter(status=ReportScheduleStatus.ACTIVE).order_by("next_run_at", "created_at")[:UPCOMING_SCHEDULE_LIMIT * 2])
     results = []
     for schedule in rows:
+        next_run_at = schedule.next_run_at
+        if next_run_at is None or next_run_at < now:
+            try:
+                next_run_at = schedule.calculate_next_run_at(reference_time=now)
+            except Exception:
+                next_run_at = schedule.next_run_at
+        if next_run_at is None or next_run_at < now:
+            continue
         structured = list(getattr(schedule, "_prefetched_objects_cache", {}).get("structured_recipients", []))
         emails = {value for value in schedule.normalize_recipients()}
         sms_values = {
@@ -471,7 +477,7 @@ def _upcoming_schedules(scope: DashboardScope) -> list[dict]:
                 "definition_name": getattr(schedule.template.definition, "name", None) if getattr(schedule.template, "definition_id", None) else None,
                 "frequency": schedule.frequency,
                 "timezone": schedule.timezone,
-                "next_run_at": _format_datetime(schedule.next_run_at, scope.timezone),
+                "next_run_at": _format_datetime(next_run_at, scope.timezone),
                 "recipient_count": len(emails) + len(sms_values),
                 "channels": channels,
                 "primary_format": schedule.primary_format or schedule.output_format,
@@ -486,7 +492,8 @@ def _upcoming_schedules(scope: DashboardScope) -> list[dict]:
                 ),
             }
         )
-    return results
+    results.sort(key=lambda row: row["next_run_at"] or "")
+    return results[:UPCOMING_SCHEDULE_LIMIT]
 
 
 def _recent_failures(scope: DashboardScope) -> list[dict]:
