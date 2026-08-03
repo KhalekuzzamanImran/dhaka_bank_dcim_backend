@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from django.http import Http404
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Prefetch
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError as DRFValidationError
+from rest_framework.views import APIView
 from rest_framework.response import Response
 
+from apps.common.permissions import DCIMRBACPermission
 from apps.common.audit import write_audit
 from apps.common.viewsets import ScopedModelViewSet
 
@@ -20,6 +24,8 @@ from .serializers import (
     ReportJobGenerateSerializer,
     ReportJobListSerializer,
     ReportJobRetrySerializer,
+    ReportDashboardQuerySerializer,
+    ReportDashboardResponseSerializer,
     ReportScheduleDeliverySerializer,
     ReportScheduleSerializer,
     ReportScheduleRunNowSerializer,
@@ -28,6 +34,7 @@ from .serializers import (
 )
 from .services.downloads import download_report_artifact, download_report_job_artifact
 from .services.configuration import build_report_template_options
+from .services.dashboard import get_reporting_dashboard
 
 
 def _safe_write_audit(*args, **kwargs):
@@ -297,3 +304,27 @@ class ReportScheduleRunViewSet(ScopedModelViewSet):
         deliveries = run.deliveries.all().order_by("created_at")
         serializer = ReportScheduleDeliverySerializer(deliveries, many=True, context=self.get_serializer_context())
         return Response(serializer.data)
+
+
+class ReportDashboardAPIView(APIView):
+    permission_classes = [DCIMRBACPermission]
+    permission_module = "report"
+
+    def get(self, request):
+        serializer = ReportDashboardQuerySerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        try:
+            payload = get_reporting_dashboard(
+                user=request.user,
+                organization=serializer.validated_data.get("organization"),
+                data_center=serializer.validated_data.get("data_center"),
+                start_at=serializer.validated_data.get("start_at"),
+                end_at=serializer.validated_data.get("end_at"),
+                timezone_name=serializer.validated_data.get("timezone"),
+            )
+        except ValidationError as exc:
+            if hasattr(exc, "message_dict"):
+                raise DRFValidationError(exc.message_dict)
+            raise DRFValidationError(getattr(exc, "messages", [str(exc)]))
+        response_serializer = ReportDashboardResponseSerializer(instance=payload)
+        return Response(response_serializer.data)

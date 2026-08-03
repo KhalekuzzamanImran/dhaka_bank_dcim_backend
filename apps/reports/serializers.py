@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, time as time_cls
+from zoneinfo import ZoneInfo
 
 from django.core.exceptions import ValidationError
 from rest_framework import serializers
@@ -312,6 +313,47 @@ class ReportTemplateOptionsSerializer(serializers.Serializer):
     aggregation_options = serializers.ListField(child=serializers.CharField(), read_only=True)
     maximum_date_range_days = serializers.IntegerField(required=False, allow_null=True, read_only=True)
     field_options = serializers.JSONField(read_only=True)
+
+
+class ReportDashboardQuerySerializer(serializers.Serializer):
+    organization = serializers.CharField(required=False, allow_blank=False, allow_null=True)
+    data_center = serializers.CharField(required=False, allow_blank=False, allow_null=True)
+    start_at = serializers.DateTimeField(required=False, allow_null=True)
+    end_at = serializers.DateTimeField(required=False, allow_null=True)
+    timezone = serializers.CharField(required=False, allow_blank=False, allow_null=True, default="Asia/Dhaka")
+
+    def validate_timezone(self, value):
+        candidate = str(value or "Asia/Dhaka").strip() or "Asia/Dhaka"
+        try:
+            ZoneInfo(candidate)
+        except Exception as exc:
+            raise serializers.ValidationError("Invalid timezone.") from exc
+        return candidate
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        start_at = attrs.get("start_at")
+        end_at = attrs.get("end_at")
+        if start_at and end_at and start_at >= end_at:
+            raise serializers.ValidationError({"end_at": "End time must be after start time."})
+        if start_at and end_at and (end_at - start_at).days > 365:
+            raise serializers.ValidationError({"end_at": "Dashboard range must not exceed 365 days."})
+        return attrs
+
+
+class ReportDashboardResponseSerializer(serializers.Serializer):
+    range = serializers.JSONField(read_only=True)
+    summary = serializers.JSONField(read_only=True)
+    generation_trend = serializers.JSONField(read_only=True)
+    by_definition = serializers.JSONField(read_only=True)
+    by_format = serializers.JSONField(read_only=True)
+    delivery_summary = serializers.JSONField(read_only=True)
+    recent_jobs = serializers.JSONField(read_only=True)
+    upcoming_schedules = serializers.JSONField(read_only=True)
+    recent_failures = serializers.JSONField(read_only=True)
+    frequent_templates = serializers.JSONField(read_only=True)
+    schedule_health = serializers.JSONField(read_only=True)
+    operational_health = serializers.JSONField(read_only=True)
 
 
 class ReportJobCreateSerializer(_ReportJobBaseSerializer):

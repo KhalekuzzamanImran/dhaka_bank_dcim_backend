@@ -1,5 +1,14 @@
 from rest_framework.routers import DefaultRouter
-from .views import ReportArtifactViewSet, ReportTemplateViewSet, ReportJobViewSet, ReportScheduleRunViewSet, ReportScheduleViewSet
+from django.urls import path
+
+from .views import (
+    ReportArtifactViewSet,
+    ReportDashboardAPIView,
+    ReportTemplateViewSet,
+    ReportJobViewSet,
+    ReportScheduleRunViewSet,
+    ReportScheduleViewSet,
+)
 
 router = DefaultRouter()
 router.register(r"report-templates", ReportTemplateViewSet, basename="report-template")
@@ -8,4 +17,7 @@ router.register(r"report-artifacts", ReportArtifactViewSet, basename="report-art
 router.register(r"report-schedules", ReportScheduleViewSet, basename="report-schedule")
 router.register(r"report-schedule-runs", ReportScheduleRunViewSet, basename="report-schedule-run")
 
-urlpatterns = router.urls
+urlpatterns = [
+    path("dashboard/", ReportDashboardAPIView.as_view(), name="report-dashboard"),
+]
+urlpatterns += router.urls
