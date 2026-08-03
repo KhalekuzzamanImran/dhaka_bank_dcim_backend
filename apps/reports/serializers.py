@@ -16,6 +16,7 @@ from .constants import (
     normalize_report_type,
 )
 from .models import (
+    ReportArtifact,
     ReportJob,
     ReportJobStatus,
     ReportSchedule,
@@ -259,6 +260,47 @@ class ReportJobDetailSerializer(_ReportJobBaseSerializer):
 
     def get_template_config(self, obj):
         return obj.template.config if obj.template_id else {}
+
+
+class ReportArtifactSerializer(serializers.ModelSerializer):
+    job_status = serializers.CharField(source="job.status", read_only=True)
+    organization_id = serializers.SerializerMethodField(read_only=True)
+    data_center_id = serializers.SerializerMethodField(read_only=True)
+    organization_name = serializers.SerializerMethodField(read_only=True)
+    data_center_name = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = ReportArtifact
+        fields = (
+            "id",
+            "job",
+            "job_status",
+            "organization_id",
+            "organization_name",
+            "data_center_id",
+            "data_center_name",
+            "format",
+            "original_filename",
+            "content_type",
+            "size_bytes",
+            "checksum_sha256",
+            "retention_expires_at",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = fields
+
+    def get_organization_id(self, obj):
+        return str(obj.job.organization_id) if obj.job_id and obj.job.organization_id else None
+
+    def get_data_center_id(self, obj):
+        return str(obj.job.data_center_id) if obj.job_id and obj.job.data_center_id else None
+
+    def get_organization_name(self, obj):
+        return getattr(obj.job.organization, "name", None) if obj.job_id else None
+
+    def get_data_center_name(self, obj):
+        return getattr(obj.job.data_center, "name", None) if obj.job_id else None
 
 
 class ReportTemplateOptionsSerializer(serializers.Serializer):

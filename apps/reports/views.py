@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import os
-
-from django.http import FileResponse
+from django.http import Http404
 from django.db import transaction
 from django.db.models import Prefetch
 from django.utils import timezone
@@ -14,8 +12,9 @@ from apps.common.audit import write_audit
 from apps.common.viewsets import ScopedModelViewSet
 
 from .filters import ReportJobFilter, ReportScheduleFilter
-from .models import ReportJob, ReportJobStatus, ReportSchedule, ReportScheduleRun, ReportTemplate
+from .models import ReportArtifact, ReportJob, ReportJobStatus, ReportSchedule, ReportScheduleRun, ReportTemplate
 from .serializers import (
+    ReportArtifactSerializer,
     ReportJobCreateSerializer,
     ReportJobDetailSerializer,
     ReportJobGenerateSerializer,
@@ -27,6 +26,7 @@ from .serializers import (
     ReportScheduleRunSerializer,
     ReportTemplateSerializer,
 )
+from .services.downloads import download_report_artifact, download_report_job_artifact
 from .services.configuration import build_report_template_options
 
 
@@ -178,25 +178,38 @@ class ReportJobViewSet(ScopedModelViewSet):
     @action(detail=True, methods=["get"])
     def download(self, request, pk=None):
         job = self.get_object()
-        if not job.is_downloadable:
+        try:
+            return download_report_job_artifact(job, request=request)
+        except Http404:
             return Response(
                 {"detail": "This report is not available for download."},
-                status=status.HTTP_400_BAD_REQUEST,
+                status=status.HTTP_404_NOT_FOUND,
             )
-        _safe_write_audit(
-            "REPORT_DOWNLOADED",
-            "ReportJob",
-            job.pk,
-            organization=job.organization,
-            actor=request.user,
-            message="Report downloaded",
-        )
-        file_handle = job.file.open("rb")
-        return FileResponse(
-            file_handle,
-            as_attachment=True,
-            filename=os.path.basename(job.file.name),
-        )
+
+
+class ReportArtifactViewSet(ScopedModelViewSet):
+    access_scope = "mixed"
+    organization_field = "job__organization"
+    data_center_field = "job__data_center"
+    queryset = ReportArtifact.objects.select_related("job", "job__organization", "job__data_center").all().order_by("-created_at")
+    serializer_class = ReportArtifactSerializer
+    permission_module = "report"
+    audit_resource_type = "ReportArtifact"
+    filterset_fields = ["job", "format", "content_type"]
+    search_fields = ["original_filename", "checksum_sha256", "job__template__name", "job__template__code"]
+    ordering_fields = ["created_at", "updated_at", "size_bytes", "format"]
+    ordering = ["-created_at"]
+
+    @action(detail=True, methods=["get"])
+    def download(self, request, pk=None):
+        artifact = self.get_object()
+        try:
+            return download_report_artifact(artifact, request=request)
+        except Http404:
+            return Response(
+                {"detail": "This artifact is not available for download."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
 
 class ReportScheduleViewSet(ScopedModelViewSet):
