@@ -32,6 +32,12 @@ def _retry_delivery_failure(delivery_id, exc, *, self_task=None):
         delivery.error_message = str(exc)
         delivery.next_retry_at = timezone.now() + timedelta(minutes=10 * max(1, int(delivery.attempt_count or 1)))
         delivery.save(update_fields=["status", "failed_at", "error_message", "next_retry_at", "updated_at"])
+        try:
+            from apps.reports.services.deliveries import sync_report_delivery_from_notification_delivery
+
+            sync_report_delivery_from_notification_delivery(delivery, error_message=str(exc))
+        except Exception:
+            logger.warning("Failed to sync report delivery after notification failure.", exc_info=True)
     if self_task is None:
         return
     if self_task.request.retries >= self_task.max_retries:

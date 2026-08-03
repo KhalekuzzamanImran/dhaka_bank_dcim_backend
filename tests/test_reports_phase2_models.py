@@ -252,7 +252,6 @@ class ReportPhase2ModelTestCase(TestCase):
         result_two.refresh_from_db()
         self.assertEqual(ReportScheduleRun.objects.filter(schedule=schedule).count(), 2)
         self.assertEqual(ReportJob.objects.filter(schedule=schedule).count(), 2)
-        self.assertTrue(mock_send_report_email.called)
 
         manual_window_end = timezone.now().replace(microsecond=0)
         manual_result = execute_report_schedule(

@@ -215,6 +215,15 @@ def _cleanup_persisted_artifacts(persisted_artifacts: list[ReportArtifactPersist
             pass
 
 
+def _queue_report_deliveries(job_id):
+    try:
+        from ..tasks import queue_report_deliveries_for_job_task
+
+        queue_report_deliveries_for_job_task.delay(str(job_id))
+    except Exception:
+        logger.exception("Failed to queue report deliveries report_job=%s", job_id)
+
+
 def _finalize_success(job: ReportJob, artifacts: list[RenderedArtifact]):
     if not artifacts:
         raise ValueError("No generated artifact was produced.")
@@ -233,6 +242,7 @@ def _finalize_success(job: ReportJob, artifacts: list[RenderedArtifact]):
         actor=job.requested_by,
         message=f"Report generated successfully for {getattr(job.definition, 'code', job.report_type or 'unknown')}",
     )
+    transaction.on_commit(lambda job_id=job.pk: _queue_report_deliveries(job_id))
     return job
 
 

@@ -66,6 +66,13 @@ class Notification(TimeStampedModel):
 
 class NotificationDelivery(TimeStampedModel):
     notification = models.ForeignKey(Notification, on_delete=models.CASCADE, related_name="deliveries")
+    report_delivery = models.ForeignKey(
+        "reports.ReportDelivery",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="notification_deliveries",
+    )
     channel = models.CharField(max_length=30, choices=NotificationChannel.choices)
     status = models.CharField(max_length=30, choices=NotificationStatus.choices, default=NotificationStatus.PENDING, db_index=True)
     recipient_address = models.CharField(max_length=255, blank=True, null=True)

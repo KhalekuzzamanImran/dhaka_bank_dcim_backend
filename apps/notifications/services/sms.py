@@ -176,7 +176,7 @@ def _notification_from_target(target):
     return getattr(target, "notification", None) or target
 
 
-def send_sms_notification(target):
+def send_sms_notification(target, *, message=None):
     notification = _notification_from_target(target)
     recipient_address = getattr(target, "recipient_address", None)
     phone = str(recipient_address).strip() if recipient_address else None
@@ -191,7 +191,7 @@ def send_sms_notification(target):
     if not phone:
         raise ValueError("Recipient phone/mobile is missing for SMS notification")
 
-    return send_sms_message(phone, notification.message)
+    return send_sms_message(phone, message or notification.message)
 
 
 def send_sms_message(phone: str, message: str):

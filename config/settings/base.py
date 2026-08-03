@@ -2,6 +2,7 @@ from pathlib import Path
 from datetime import timedelta
 from decouple import config
 import dj_database_url
+from celery.schedules import crontab
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 SECRET_KEY = config('SECRET_KEY', default='unsafe-dev-key-change-in-production')
@@ -109,6 +110,8 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 REPORT_ARTIFACT_RETENTION_DAYS = config('REPORT_ARTIFACT_RETENTION_DAYS', default=90, cast=int)
+REPORT_ARTIFACT_CLEANUP_BATCH_SIZE = config('REPORT_ARTIFACT_CLEANUP_BATCH_SIZE', default=200, cast=int)
+REPORT_ARTIFACT_CLEANUP_ENABLED = config('REPORT_ARTIFACT_CLEANUP_ENABLED', default=True, cast=bool)
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 def _csv_setting(name, default=''):
@@ -169,6 +172,10 @@ SNMP_MIB_MAX_DESCRIPTION_LENGTH = config('SNMP_MIB_MAX_DESCRIPTION_LENGTH', defa
 SNMP_UNMAPPED_TRAP_SEVERITY = config('SNMP_UNMAPPED_TRAP_SEVERITY', default='WARNING')
 SNMP_UNMAPPED_TRAP_CREATE_REVIEW_ALERT = config('SNMP_UNMAPPED_TRAP_CREATE_REVIEW_ALERT', default=True, cast=bool)
 NOTIFICATION_DELIVERING_TIMEOUT_MINUTES = config('NOTIFICATION_DELIVERING_TIMEOUT_MINUTES', default=10, cast=int)
+REPORT_EMAIL_ATTACHMENT_MAX_BYTES = config('REPORT_EMAIL_ATTACHMENT_MAX_BYTES', default=5 * 1024 * 1024, cast=int)
+REPORT_EMAIL_SUBJECT_PREFIX = config('REPORT_EMAIL_SUBJECT_PREFIX', default='DCIM Report')
+REPORT_DELIVERY_MAX_RETRIES = config('REPORT_DELIVERY_MAX_RETRIES', default=3, cast=int)
+REPORT_SMS_MAX_LENGTH = config('REPORT_SMS_MAX_LENGTH', default=480, cast=int)
 
 CELERY_TASK_ROUTES = {
     'collectors.scheduler.tasks.enqueue_due_polls': {'queue': 'scheduler'},
@@ -202,5 +209,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.reports.tasks.enqueue_due_report_schedules_task',
         'schedule': 60,
         'kwargs': {'limit': 100},
-    }
+    },
+    'cleanup-expired-report-artifacts-daily': {
+        'task': 'apps.reports.tasks.cleanup_expired_report_artifacts_task',
+        'schedule': crontab(hour=3, minute=15),
+        'kwargs': {'dry_run': False},
+    },
 }

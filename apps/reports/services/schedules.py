@@ -7,15 +7,12 @@ from copy import deepcopy
 
 from django.db import IntegrityError, transaction
 
-from django.conf import settings
-from django.core.mail import EmailMessage
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from apps.common.audit import write_audit
 from apps.accounts.models import User
-from apps.notifications.models import Notification, NotificationChannel, NotificationDelivery, NotificationStatus
-from apps.notifications.services import deliver_notification_delivery, queue_notification_delivery
+from apps.notifications.models import NotificationChannel
 
 from ..models import (
     ReportJob,
@@ -27,6 +24,7 @@ from ..models import (
     ReportScheduleRunStatus,
     ReportScheduleStatus,
 )
+from .deliveries import report_delivery_summary
 from .definitions import get_active_definition_by_code, get_definition_code_for_report_type
 from .factory import create_report_job
 from .generator import generate_report_job
@@ -502,84 +500,14 @@ def execute_report_schedule(
             )
             return schedule
 
-        email_failed = False
-        for recipient in email_recipients:
-            delivery = run.deliveries.filter(channel=NotificationChannel.EMAIL, recipient_address=recipient).first()
-            if not delivery:
-                delivery = ReportScheduleDelivery.objects.create(
-                    run=run,
-                    channel=NotificationChannel.EMAIL,
-                    status=ReportScheduleDeliveryStatus.PENDING,
-                    recipient_address=recipient,
-                    queued_at=timezone.now(),
-                    metadata={"channel": NotificationChannel.EMAIL, "recipient_address": recipient},
-                )
-            delivery.status = ReportScheduleDeliveryStatus.DELIVERING
-            delivery.delivering_at = timezone.now()
-            delivery.attempt_count = delivery.attempt_count + 1
-            delivery.save(update_fields=["status", "delivering_at", "attempt_count", "updated_at"])
-            try:
-                _send_report_email(schedule, generated_job, recipient)
-                delivery.status = ReportScheduleDeliveryStatus.SENT
-                delivery.sent_at = timezone.now()
-                delivery.error_message = ""
-                delivery.save(update_fields=["status", "sent_at", "error_message", "updated_at"])
-            except Exception as exc:
-                email_failed = True
-                delivery.status = ReportScheduleDeliveryStatus.FAILED
-                delivery.failed_at = timezone.now()
-                delivery.error_message = str(exc)
-                delivery.save(update_fields=["status", "failed_at", "error_message", "updated_at"])
-
-        sms_failed = False
-        if schedule.send_sms:
-            try:
-                _queue_report_sms_notifications(schedule, generated_job, run)
-                for recipient in sms_recipients:
-                    normalized_phone = str(recipient).strip()
-                    if not normalized_phone:
-                        continue
-                    delivery = run.deliveries.filter(channel=NotificationChannel.SMS, recipient_address=normalized_phone).first()
-                    if delivery:
-                        delivery.status = ReportScheduleDeliveryStatus.SENT
-                        delivery.sent_at = timezone.now()
-                        delivery.error_message = ""
-                        delivery.save(update_fields=["status", "sent_at", "error_message", "updated_at"])
-            except Exception as exc:
-                sms_failed = True
-                for recipient in sms_recipients:
-                    normalized_phone = str(recipient).strip()
-                    if not normalized_phone:
-                        continue
-                    delivery = run.deliveries.filter(channel=NotificationChannel.SMS, recipient_address=normalized_phone).first()
-                    if delivery:
-                        delivery.status = ReportScheduleDeliveryStatus.FAILED
-                        delivery.failed_at = timezone.now()
-                        delivery.error_message = str(exc)
-                        delivery.save(update_fields=["status", "failed_at", "error_message", "updated_at"])
-                schedule.last_delivery_status = "FAILED"
-                schedule.last_error_message = str(exc)
-                schedule.save(update_fields=["last_job", "last_run_at", "next_run_at", "last_delivery_status", "last_error_message", "updated_at"])
-                run.status = ReportScheduleRunStatus.FAILED
-                run.error_message = str(exc)
-                run.save(update_fields=["generated_job", "started_at", "completed_at", "status", "error_message", "updated_at"])
-                _safe_write_audit(
-                    "REPORT_GENERATION_FAILED",
-                    "ReportSchedule",
-                    schedule.pk,
-                    organization=schedule.organization,
-                    actor=requested_by,
-                    message=str(exc),
-                )
-                raise
-
-        run.status = ReportScheduleRunStatus.FAILED if (email_failed or sms_failed) else ReportScheduleRunStatus.COMPLETED
-        run.error_message = "" if run.status == ReportScheduleRunStatus.COMPLETED else "One or more deliveries failed."
+        run.status = ReportScheduleRunStatus.COMPLETED
+        run.error_message = ""
         run.save(update_fields=["job", "generated_job", "started_at", "completed_at", "status", "error_message", "updated_at"])
 
-        schedule.last_sent_at = timezone.now()
-        schedule.last_delivery_status = "FAILED" if email_failed else "SENT"
-        schedule.last_error_message = "" if not email_failed else "One or more deliveries failed."
+        delivery_summary = report_delivery_summary(generated_job)
+        schedule.last_sent_at = timezone.now() if delivery_summary in {"SENT", "PARTIAL", "FAILED"} else schedule.last_sent_at
+        schedule.last_delivery_status = delivery_summary
+        schedule.last_error_message = ""
         schedule.save(update_fields=["last_job", "last_run_at", "next_run_at", "last_sent_at", "last_delivery_status", "last_error_message", "updated_at"])
         _safe_write_audit(
             "REPORT_GENERATED",

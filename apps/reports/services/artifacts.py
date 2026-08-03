@@ -132,7 +132,13 @@ def _validate_source_file(generated_file, *, format: str, filename: str, content
     return source_path
 
 
-def create_report_artifact(*, job, generated_file, format, filename, content_type):
+def get_default_artifact_retention_expires_at(*, now=None, retention_days=None):
+    effective_now = now or timezone.now()
+    effective_days = getattr(settings, "REPORT_ARTIFACT_RETENTION_DAYS", 90) if retention_days is None else retention_days
+    return effective_now + timedelta(days=int(effective_days))
+
+
+def create_report_artifact(*, job, generated_file, format, filename, content_type, retention_expires_at=None):
     if job is None:
         raise ValidationError({"job": "Job is required."})
 
@@ -147,8 +153,7 @@ def create_report_artifact(*, job, generated_file, format, filename, content_typ
     if allowed_formats and normalized_format not in allowed_formats:
         raise ValidationError({"format": f"Output format {normalized_format} is not allowed for this job."})
 
-    retention_days = getattr(settings, "REPORT_ARTIFACT_RETENTION_DAYS", 90)
-    retention_expires_at = timezone.now() + timedelta(days=int(retention_days))
+    retention_expires_at = retention_expires_at or get_default_artifact_retention_expires_at()
     storage_name = _deterministic_storage_name(job, filename)
     original_filename = Path(filename).name
 

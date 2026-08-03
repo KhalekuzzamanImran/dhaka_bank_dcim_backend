@@ -99,6 +99,7 @@ def _mark_delivery_sent(delivery: NotificationDelivery, provider_response=None):
             "updated_at",
         ]
     )
+    _sync_report_delivery_from_notification_delivery(delivery, provider_response=provider_response)
     return delivery
 
 
@@ -118,7 +119,28 @@ def _mark_delivery_failed(delivery: NotificationDelivery, exc: Exception):
             "updated_at",
         ]
     )
+    _sync_report_delivery_from_notification_delivery(delivery, error_message=str(exc))
     return delivery
+
+
+def _sync_report_delivery_from_notification_delivery(delivery: NotificationDelivery, *, provider_response=None, error_message: str | None = None):
+    report_delivery = getattr(delivery, "report_delivery", None)
+    if not report_delivery:
+        return None
+    try:
+        from apps.reports.services.deliveries import sync_report_delivery_from_notification_delivery
+
+        return sync_report_delivery_from_notification_delivery(
+            delivery,
+            provider_response=provider_response,
+            error_message=error_message,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to sync report delivery state from notification delivery=%s",
+            getattr(delivery, "pk", None),
+        )
+        return None
 
 
 def claim_delivery_for_processing(delivery_id: str | int):
@@ -127,7 +149,7 @@ def claim_delivery_for_processing(delivery_id: str | int):
     with transaction.atomic():
         delivery = (
             NotificationDelivery.objects.select_for_update()
-            .select_related("notification", "notification__recipient")
+            .select_related("notification")
             .filter(pk=delivery_id)
             .first()
         )
@@ -420,17 +442,22 @@ def queue_pending_notifications(
     return legacy_matched, queued_legacy
 
 
-def deliver_notification_delivery(delivery: NotificationDelivery):
+def deliver_notification_delivery(delivery: NotificationDelivery, *, email_subject=None, email_body=None, email_attachments=None, sms_message=None):
     notification = delivery.notification
     if delivery.channel == NotificationChannel.WEB:
         return _mark_delivery_sent(delivery)
 
     if delivery.channel == NotificationChannel.EMAIL:
-        provider_response = send_email_notification(delivery)
+        provider_response = send_email_notification(
+            delivery,
+            subject=email_subject,
+            body=email_body,
+            attachments=email_attachments,
+        )
         return _mark_delivery_sent(delivery, provider_response=provider_response)
 
     if delivery.channel == NotificationChannel.SMS:
-        provider_response = send_sms_notification(delivery)
+        provider_response = send_sms_notification(delivery, message=sms_message)
         return _mark_delivery_sent(delivery, provider_response=provider_response)
 
     if delivery.channel == NotificationChannel.WEBHOOK:
