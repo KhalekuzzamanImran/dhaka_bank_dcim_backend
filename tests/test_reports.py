@@ -692,7 +692,7 @@ class ReportTestCase(TestCase):
         self.assertEqual(schedule.recipients, [])
         self.assertEqual(schedule.sms_recipients, ["01329665857"])
 
-    def test_report_schedule_execution_queues_sms_notifications(self):
+    def test_report_schedule_execution_sends_sms_notifications(self):
         schedule = ReportSchedule.objects.create(
             organization=self.org,
             data_center=self.dc,
@@ -724,7 +724,7 @@ class ReportTestCase(TestCase):
         schedule.refresh_from_db()
         self.assertEqual(executed.pk, schedule.pk)
         self.assertEqual(schedule.last_delivery_status, "SENT")
-        self.assertEqual(len(queued_notifications), 2)
+        self.assertEqual(len(queued_notifications), 0)
         self.assertEqual(schedule.runs.count(), 1)
         run = schedule.runs.first()
         self.assertIsNotNone(run)
@@ -741,6 +741,7 @@ class ReportTestCase(TestCase):
             ["01677757054", "01329665857"],
         )
         self.assertTrue(all(delivery.notification.recipient_id is None for delivery in sms_deliveries))
+        self.assertTrue(all(delivery.status == NotificationStatus.SENT for delivery in sms_deliveries))
 
     def test_report_schedule_rejects_run_without_delivery_channel(self):
         schedule = ReportSchedule.objects.create(

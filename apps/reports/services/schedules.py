@@ -13,7 +13,7 @@ from django.utils.dateparse import parse_datetime
 from apps.common.audit import write_audit
 from apps.accounts.models import User
 from apps.notifications.models import Notification, NotificationChannel, NotificationDelivery, NotificationStatus
-from apps.notifications.services import queue_notification_delivery
+from apps.notifications.services import deliver_notification_delivery, queue_notification_delivery
 
 from ..models import (
     ReportJob,
@@ -254,7 +254,19 @@ def _queue_report_sms_notifications(schedule: ReportSchedule, report_job: Report
         if not delivery.recipient_address:
             delivery.recipient_address = normalized_phone
             delivery.save(update_fields=["recipient_address", "updated_at"])
-        queue_notification_delivery(delivery)
+        delivery.status = NotificationStatus.DELIVERING
+        delivery.delivering_at = timezone.now()
+        delivery.attempt_count = delivery.attempt_count + 1
+        delivery.save(update_fields=["status", "delivering_at", "attempt_count", "updated_at"])
+        try:
+            deliver_notification_delivery(delivery)
+        except Exception as exc:
+            delivery = NotificationDelivery.objects.filter(pk=delivery.pk).first() or delivery
+            delivery.status = NotificationStatus.FAILED
+            delivery.failed_at = timezone.now()
+            delivery.error_message = str(exc)
+            delivery.save(update_fields=["status", "failed_at", "error_message", "updated_at"])
+            raise
 
         schedule_delivery = run.deliveries.filter(channel=NotificationChannel.SMS, recipient_address=normalized_phone).first()
         if schedule_delivery:
