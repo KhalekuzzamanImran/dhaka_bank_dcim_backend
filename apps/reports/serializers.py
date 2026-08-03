@@ -27,6 +27,9 @@ from .models import (
     ReportTemplate,
 )
 from .services.configuration import build_report_template_options, validate_report_template_config
+from .services.definitions import get_active_definition_by_code, get_definition_code_for_report_type
+from .services.factory import create_report_job
+from .services.templates import create_report_template, update_report_template
 
 
 def _user_can_access_organization(user, organization_id):
@@ -124,6 +127,16 @@ class ReportTemplateSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(exc.message_dict)
             raise serializers.ValidationError({"config": exc.messages})
         return attrs
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        actor = getattr(request, "user", None) if request else None
+        return create_report_template(actor=actor, updated_by=actor, **validated_data)
+
+    def update(self, instance, validated_data):
+        request = self.context.get("request")
+        actor = getattr(request, "user", None) if request else None
+        return update_report_template(instance, actor=actor, updated_by=actor, **validated_data)
 
 
 class _ReportJobBaseSerializer(serializers.ModelSerializer):
@@ -313,34 +326,30 @@ class ReportJobCreateSerializer(_ReportJobBaseSerializer):
 
     def create(self, validated_data):
         request = self.context.get("request")
-        if request and getattr(request, "user", None) and request.user.is_authenticated:
-            validated_data["requested_by"] = request.user
+        actor = getattr(request, "user", None) if request else None
         template = validated_data.get("template")
         parameters = validated_data.get("parameters") or {}
-        template_config = getattr(template, "config", {}) if template else {}
-        output_config_snapshot = deepcopy(template_config) if isinstance(template_config, dict) else {}
-        parameters_snapshot = deepcopy(parameters) if isinstance(parameters, dict) else {}
-        default_parameters = template_config.get("default_parameters", {}) if isinstance(template_config, dict) else {}
-        merged_parameters = {}
-        if isinstance(default_parameters, dict):
-            merged_parameters.update(default_parameters)
-        if isinstance(parameters, dict):
-            merged_parameters.update(parameters)
-        if isinstance(template_config, dict):
-            if "default_metric_codes" in template_config and "metric_codes" not in merged_parameters and "metrics" not in merged_parameters:
-                merged_parameters["metric_codes"] = template_config.get("default_metric_codes") or []
-            if "default_date_range" in template_config and isinstance(template_config.get("default_date_range"), dict):
-                default_date_range = template_config.get("default_date_range") or {}
-                if "date_from" not in merged_parameters and default_date_range.get("from"):
-                    merged_parameters["date_from"] = default_date_range.get("from")
-                if "date_to" not in merged_parameters and default_date_range.get("to"):
-                    merged_parameters["date_to"] = default_date_range.get("to")
-            if "output_format" not in merged_parameters and template_config.get("output_format"):
-                merged_parameters["output_format"] = template_config.get("output_format")
-        validated_data["parameters"] = merged_parameters
-        validated_data["output_config_snapshot"] = output_config_snapshot
-        validated_data["parameters_snapshot"] = parameters_snapshot
-        return super().create(validated_data)
+        report_type = getattr(template, "report_type", None) or parameters.get("report_type")
+        definition = template.definition if template and template.definition_id else None
+        if definition is None and report_type:
+            definition = get_active_definition_by_code(get_definition_code_for_report_type(report_type))
+        result = create_report_job(
+            definition=definition,
+            organization=validated_data["organization"],
+            actor=actor,
+            data_center=validated_data.get("data_center"),
+            template=template,
+            schedule=validated_data.get("schedule"),
+            trigger_source=validated_data.get("trigger_source", "MANUAL"),
+            requested_by=validated_data.get("requested_by") or actor,
+            parameters=parameters,
+            runtime_parameters={},
+            recipients=None,
+            source_event=validated_data.get("source_event_snapshot"),
+            idempotency_key=validated_data.get("idempotency_key"),
+            queue_job=True,
+        )
+        return result.job
 
 
 class ReportJobGenerateSerializer(serializers.Serializer):

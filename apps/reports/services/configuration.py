@@ -13,7 +13,7 @@ from apps.telemetry.models import MetricDefinition
 from ..constants import normalize_key, normalize_report_type, SUPPORTED_REPORT_TYPES
 
 
-SUPPORTED_TEMPLATE_OUTPUT_FORMATS = ["csv"]
+SUPPORTED_TEMPLATE_OUTPUT_FORMATS = ["csv", "xlsx", "pdf"]
 
 
 REPORT_TEMPLATE_OPTIONS = {
@@ -214,24 +214,23 @@ REPORT_TEMPLATE_OPTIONS = {
     "room_environment": {
         "available_columns": [
             "timestamp",
-            "organization",
-            "data_center",
-            "room",
-            "rack",
-            "device",
-            "device_model",
-            "device_type",
+            "room_name",
+            "room_code",
+            "device_name",
+            "device_code",
             "metric_code",
             "metric_name",
             "value",
             "unit",
             "quality",
+            "source",
         ],
         "optional_fields": [
             "default_columns",
             "default_parameters",
             "default_date_range",
             "max_date_range_days",
+            "metrics",
             "aggregation",
             "device_id",
             "device_model_id",
@@ -325,17 +324,19 @@ def validate_report_template_config(config, *, existing_config: dict | None = No
         raise ValidationError({"report_type": "Unsupported report type."})
     normalized["report_type"] = report_type
 
-    output_format = str(normalized.get("output_format", "csv")).strip().lower()
-    if output_format != "csv":
-        raise ValidationError({"output_format": "Unsupported output format. Only CSV is supported for report templates."})
-    normalized["output_format"] = "csv"
+    output_format = str(normalized.get("output_format", "csv")).strip()
+    normalized_output_format = normalize_key(output_format).upper()
+    if normalized_output_format not in {"CSV", "XLSX", "PDF"}:
+        raise ValidationError({"output_format": "Unsupported output format. Supported formats are CSV, XLSX, and PDF."})
+    normalized["output_format"] = normalized_output_format.lower()
 
     allowed_output_formats = _as_list(normalized.get("allowed_output_formats"))
-    if allowed_output_formats and any(normalize_key(value) != "csv" for value in allowed_output_formats):
+    normalized_allowed_output_formats = [normalize_key(value) for value in allowed_output_formats if normalize_key(value)]
+    if normalized_allowed_output_formats and any(value.upper() not in {"CSV", "XLSX", "PDF"} for value in normalized_allowed_output_formats):
         raise ValidationError({
-            "allowed_output_formats": "Unsupported output format. Only CSV is supported for report templates.",
+            "allowed_output_formats": "Unsupported output format. Supported formats are CSV, XLSX, and PDF.",
         })
-    normalized["allowed_output_formats"] = ["csv"]
+    normalized["allowed_output_formats"] = [value.lower() for value in normalized_allowed_output_formats] or [normalized["output_format"]]
 
     options = REPORT_TEMPLATE_OPTIONS.get(report_type, {})
     if "default_columns" in normalized:
@@ -391,6 +392,13 @@ def build_report_template_options(template) -> dict:
     template_config = getattr(template, "config", None)
     template_config = template_config if isinstance(template_config, dict) else {}
     options = REPORT_TEMPLATE_OPTIONS.get(report_type, {})
+    definition_supported_formats = []
+    if getattr(template, "definition_id", None) and getattr(template, "definition", None):
+        definition_supported_formats = [
+            str(value).strip().lower()
+            for value in getattr(template.definition, "supported_formats", []) or []
+            if str(value).strip()
+        ]
     maximum_date_range_days = template_config.get("max_date_range_days", options.get("maximum_date_range_days"))
     try:
         maximum_date_range_days = int(maximum_date_range_days) if maximum_date_range_days not in (None, "") else None
@@ -399,7 +407,7 @@ def build_report_template_options(template) -> dict:
 
     response = {
         "report_type": report_type,
-        "supported_output_formats": list(SUPPORTED_TEMPLATE_OUTPUT_FORMATS),
+        "supported_output_formats": definition_supported_formats or list(SUPPORTED_TEMPLATE_OUTPUT_FORMATS),
         "available_columns": list(options.get("available_columns", [])),
         "required_fields": list(options.get("required_fields", [])),
         "optional_fields": list(options.get("optional_fields", [])),

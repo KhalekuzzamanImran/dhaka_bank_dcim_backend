@@ -2,7 +2,7 @@ import logging
 
 from celery import shared_task
 
-from .services.generator import generate_report_job
+from .services.execution import generate_report_job
 from .services.schedules import claim_due_report_schedules, execute_report_schedule
 
 logger = logging.getLogger(__name__)
@@ -14,17 +14,15 @@ def generate_report_job_task(self, report_job_id):
     try:
         job = generate_report_job(report_job_id)
         logger.info("Report generation task finished report_job=%s status=%s", report_job_id, getattr(job, "status", None))
+        if getattr(job, "status", None) == "FAILED":
+            raise RuntimeError(getattr(job, "error_message", "Report generation failed."))
         return {
             "report_job_id": str(report_job_id),
             "status": getattr(job, "status", None),
         }
     except Exception as exc:
         logger.exception("Report generation task failed report_job=%s", report_job_id)
-        return {
-            "report_job_id": str(report_job_id),
-            "status": "FAILED",
-            "error": str(exc),
-        }
+        raise
 
 
 @shared_task(bind=True, queue="scheduler")

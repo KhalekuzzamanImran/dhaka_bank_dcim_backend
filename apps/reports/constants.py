@@ -15,6 +15,7 @@ REPORT_TYPE_LABELS = {
     "audit_export": "Audit Export",
     "telemetry_export": "Telemetry Export",
     "room_environment": "Environmental Trends Report",
+    "ups_performance": "UPS Performance",
 }
 
 REPORT_TYPE_ALIASES = {
@@ -37,6 +38,8 @@ REPORT_TYPE_ALIASES = {
     normalize_key("audit export"): "audit_export",
     normalize_key("telemetry export"): "telemetry_export",
     normalize_key("telemetry_export"): "telemetry_export",
+    normalize_key("ups performance"): "ups_performance",
+    normalize_key("ups_performance"): "ups_performance",
 }
 
 SUPPORTED_REPORT_TYPES = tuple(REPORT_TYPE_LABELS.keys())
@@ -60,12 +63,15 @@ REPORT_SCHEDULE_FREQUENCY_CHOICES = tuple((code, label) for code, label in REPOR
 
 REPORT_SCHEDULE_FORMAT_LABELS = {
     "CSV": "CSV",
+    "XLSX": "XLSX",
     "PDF": "PDF",
     "PDF_CSV": "PDF / CSV",
 }
 
 REPORT_SCHEDULE_FORMAT_ALIASES = {
     normalize_key("csv"): "CSV",
+    normalize_key("xlsx"): "XLSX",
+    normalize_key("excel"): "XLSX",
     normalize_key("pdf"): "PDF",
     normalize_key("pdf csv"): "PDF_CSV",
     normalize_key("pdf / csv"): "PDF_CSV",

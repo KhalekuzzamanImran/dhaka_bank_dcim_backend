@@ -27,6 +27,8 @@ from ..models import (
     ReportScheduleRunStatus,
     ReportScheduleStatus,
 )
+from .definitions import get_active_definition_by_code, get_definition_code_for_report_type
+from .factory import create_report_job
 from .generator import generate_report_job
 
 logger = logging.getLogger(__name__)
@@ -440,74 +442,32 @@ def execute_report_schedule(
         if not schedule:
             raise ValueError(f"Report schedule {schedule_id} does not exist.")
 
-        run = None
-        if trigger_source == "SCHEDULED" and scheduled_for_dt is not None:
-            run_defaults = {
-                "organization": schedule.organization,
-                "requested_by": requested_by,
-                "window_start": window_start_dt,
-                "window_end": window_end_dt,
-                "status": ReportScheduleRunStatus.PENDING,
-                "queued_at": timezone.now(),
-                "snapshot": {
-                    "schedule_id": str(schedule.pk),
-                    "schedule_name": schedule.name,
-                    "report_type": schedule.report_type,
-                    "frequency": schedule.frequency,
-                    "delivery_time": schedule.delivery_time.strftime("%H:%M:%S"),
-                    "output_format": schedule.output_format,
-                    "recipients": schedule.normalize_recipients(),
-                    "sms_recipients": list(schedule.sms_recipients or []) if isinstance(schedule.sms_recipients, list) else [],
-                    "attach_raw_data": schedule.attach_raw_data,
-                    "parameters": deepcopy(parameters),
-                    "scheduled_for": scheduled_for_dt.isoformat(),
-                    "trigger_source": trigger_source,
-                },
-            }
-            try:
-                run, created = ReportScheduleRun.objects.get_or_create(
-                    schedule=schedule,
-                    scheduled_for=scheduled_for_dt,
-                    trigger_source="SCHEDULED",
-                    defaults=run_defaults,
-                )
-            except IntegrityError:
-                logger.info("Duplicate scheduled run detected schedule=%s scheduled_for=%s", schedule.pk, scheduled_for_dt)
-                return schedule
-            if not created:
-                logger.info("Scheduled run already exists schedule=%s scheduled_for=%s", schedule.pk, scheduled_for_dt)
-                return schedule
-        else:
-            run = _create_schedule_run(
-                schedule,
-                requested_by=requested_by,
-                window_start=window_start_dt,
-                window_end=window_end_dt,
-                scheduled_for=None,
-                trigger_source=trigger_source,
-                parameters=parameters,
-            )
+        definition = schedule.template.definition if schedule.template_id and schedule.template and schedule.template.definition_id else None
 
-        job_kwargs = {
-            "organization": schedule.organization,
-            "data_center": schedule.data_center,
-            "schedule": schedule,
-            "requested_by": requested_by,
-            "status": ReportJobStatus.PENDING,
-            "parameters": parameters,
-            "parameters_snapshot": parameters_snapshot,
-            "template_snapshot": template_snapshot,
-            "template_config_snapshot": deepcopy(template.config if template and isinstance(template.config, dict) else {}),
-            "output_config_snapshot": output_config_snapshot,
-            "scope_snapshot": scope_snapshot,
-            "recipient_snapshot": recipient_snapshot,
-            "source_event_snapshot": {},
-            "trigger_source": trigger_source,
-        }
-        if template:
-            job_kwargs["template"] = template
-            job_kwargs["definition"] = template.definition
-        job = ReportJob.objects.create(**job_kwargs)
+        factory_result = create_report_job(
+            definition=definition,
+            organization=schedule.organization,
+            actor=None,
+            data_center=schedule.data_center,
+            template=schedule.template if schedule.template_id else None,
+            schedule=schedule,
+            trigger_source=trigger_source,
+            requested_by=requested_by,
+            parameters=parameters,
+            runtime_parameters={
+                "delivery_channels": ["EMAIL"] + (["SMS"] if schedule.send_sms else []),
+                "primary_format": schedule.primary_format or schedule.output_format,
+                "attachment_formats": schedule.attachment_formats,
+            },
+            source_event={},
+            scheduled_for=scheduled_for_dt,
+            window_start=window_start_dt,
+            window_end=window_end_dt,
+            queue_job=False,
+            compatibility_mode=True,
+        )
+        job = factory_result.job
+        run = factory_result.schedule_run
 
         schedule.last_run_at = scheduled_for_dt or window_end_dt
         schedule.next_run_at = schedule.calculate_next_run_at(reference_time=scheduled_for_dt or window_end_dt)
@@ -515,6 +475,9 @@ def execute_report_schedule(
         schedule.last_error_message = ""
         schedule.last_job = job
         schedule.save(update_fields=["last_job", "last_run_at", "next_run_at", "last_delivery_status", "last_error_message", "updated_at"])
+
+        if factory_result.duplicate:
+            return schedule
 
     try:
         generated_job = generate_report_job(job.id)
