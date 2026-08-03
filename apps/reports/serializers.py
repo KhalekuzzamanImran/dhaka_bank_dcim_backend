@@ -23,6 +23,7 @@ from .models import (
     ReportScheduleDeliveryStatus,
     ReportScheduleRun,
     ReportScheduleRunStatus,
+    ReportScheduleStatus,
     ReportTemplate,
 )
 from .services.configuration import build_report_template_options, validate_report_template_config
@@ -441,6 +442,7 @@ class ReportScheduleRunSerializer(serializers.ModelSerializer):
 
 
 class ReportScheduleSerializer(serializers.ModelSerializer):
+    status = serializers.CharField(required=False, write_only=True)
     report_type = serializers.CharField()
     frequency = serializers.CharField()
     output_format = serializers.CharField()
@@ -473,6 +475,7 @@ class ReportScheduleSerializer(serializers.ModelSerializer):
             "delivery_time",
             "output_format",
             "output_format_label",
+            "status",
             "parameters",
             "recipients",
             "send_sms",
@@ -611,6 +614,16 @@ class ReportScheduleSerializer(serializers.ModelSerializer):
         if not normalized_format:
             raise serializers.ValidationError({"output_format": "Unsupported report format."})
         attrs["output_format"] = normalized_format
+
+        requested_status = attrs.get("status", getattr(self.instance, "status", None))
+        if requested_status in (None, ""):
+            requested_is_active = attrs.get("is_active", getattr(self.instance, "is_active", True))
+            requested_status = ReportScheduleStatus.ACTIVE if requested_is_active else ReportScheduleStatus.PAUSED
+        normalized_status = str(requested_status).strip().upper()
+        if normalized_status not in ReportScheduleStatus.values:
+            raise serializers.ValidationError({"status": "Unsupported schedule status."})
+        attrs["status"] = normalized_status
+        attrs["is_active"] = normalized_status == ReportScheduleStatus.ACTIVE
 
         delivery_time = attrs.get("delivery_time", getattr(self.instance, "delivery_time", None))
         normalized_delivery_time = _normalize_delivery_time(delivery_time)

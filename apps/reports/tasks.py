@@ -32,7 +32,13 @@ def enqueue_due_report_schedules_task(self, limit=100):
     logger.info("Checking due report schedules limit=%s", limit)
     claimed = claim_due_report_schedules(limit=limit)
     for entry in claimed:
-        deliver_report_schedule_task.delay(entry.schedule_id, entry.window_start, entry.window_end, "SCHEDULED")
+        deliver_report_schedule_task.delay(
+            entry.schedule_id,
+            entry.window_start,
+            entry.window_end,
+            "SCHEDULED",
+            entry.scheduled_for,
+        )
     logger.info("Due report schedules queued matched=%s queued=%s", len(claimed), len(claimed))
     return {
         "matched_count": len(claimed),
@@ -41,13 +47,14 @@ def enqueue_due_report_schedules_task(self, limit=100):
 
 
 @shared_task(bind=True, queue="reports")
-def deliver_report_schedule_task(self, schedule_id, window_start=None, window_end=None, trigger_source="SCHEDULED"):
+def deliver_report_schedule_task(self, schedule_id, window_start=None, window_end=None, trigger_source="SCHEDULED", scheduled_for=None):
     logger.info("Delivering scheduled report schedule=%s", schedule_id)
     try:
         schedule = execute_report_schedule(
             schedule_id,
             window_start=window_start,
             window_end=window_end,
+            scheduled_for=scheduled_for,
             trigger_source=trigger_source,
         )
         logger.info(

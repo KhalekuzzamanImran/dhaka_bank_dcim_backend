@@ -3,10 +3,12 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from copy import deepcopy
+
+from django.db import IntegrityError, transaction
 
 from django.conf import settings
 from django.core.mail import EmailMessage
-from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -23,6 +25,7 @@ from ..models import (
     ReportScheduleDeliveryStatus,
     ReportScheduleRun,
     ReportScheduleRunStatus,
+    ReportScheduleStatus,
 )
 from .generator import generate_report_job
 
@@ -34,6 +37,7 @@ class ClaimedSchedule:
     schedule_id: str
     window_start: str
     window_end: str
+    scheduled_for: str | None = None
 
 
 def _safe_write_audit(*args, **kwargs):
@@ -116,6 +120,7 @@ def _create_schedule_run(
     requested_by,
     window_start,
     window_end,
+    scheduled_for,
     trigger_source: str,
     parameters: dict,
 ):
@@ -130,6 +135,7 @@ def _create_schedule_run(
         "sms_recipients": list(schedule.sms_recipients or []) if isinstance(schedule.sms_recipients, list) else [],
         "attach_raw_data": schedule.attach_raw_data,
         "parameters": parameters,
+        "scheduled_for": scheduled_for.isoformat() if scheduled_for else None,
         "trigger_source": trigger_source,
     }
     run = ReportScheduleRun.objects.create(
@@ -138,6 +144,7 @@ def _create_schedule_run(
         requested_by=requested_by,
         window_start=window_start,
         window_end=window_end,
+        scheduled_for=scheduled_for,
         status=ReportScheduleRunStatus.PENDING,
         queued_at=timezone.now(),
         trigger_source=trigger_source,
@@ -287,13 +294,14 @@ def claim_due_report_schedules(limit: int = 100) -> list[ClaimedSchedule]:
     with transaction.atomic():
         due_schedules = (
             ReportSchedule.objects.select_for_update(skip_locked=True)
-            .filter(is_active=True, next_run_at__lte=now)
+            .filter(status=ReportScheduleStatus.ACTIVE, next_run_at__lte=now)
             .order_by("next_run_at", "created_at")[:limit]
         )
         for schedule in due_schedules:
-            window_start, window_end = schedule.calculate_execution_window(reference_time=now)
-            schedule.last_run_at = window_end
-            schedule.next_run_at = schedule.calculate_next_run_at(reference_time=now)
+            scheduled_for = schedule.next_run_at
+            window_start, window_end = schedule.calculate_execution_window(reference_time=scheduled_for)
+            schedule.last_run_at = scheduled_for
+            schedule.next_run_at = schedule.calculate_next_run_at(reference_time=scheduled_for)
             schedule.last_delivery_status = "PENDING"
             schedule.last_error_message = ""
             schedule.save(update_fields=["last_run_at", "next_run_at", "last_delivery_status", "last_error_message", "updated_at"])
@@ -302,6 +310,7 @@ def claim_due_report_schedules(limit: int = 100) -> list[ClaimedSchedule]:
                     schedule_id=str(schedule.pk),
                     window_start=window_start.isoformat(),
                     window_end=window_end.isoformat(),
+                    scheduled_for=scheduled_for.isoformat() if scheduled_for else None,
                 )
             )
     return claimed
@@ -312,13 +321,25 @@ def execute_report_schedule(
     *,
     window_start: str | None = None,
     window_end: str | None = None,
+    scheduled_for: str | None = None,
     trigger_source: str = "SCHEDULED",
 ):
-    schedule = ReportSchedule.objects.select_related("organization", "data_center", "created_by", "last_job").filter(pk=schedule_id).first()
+    schedule = (
+        ReportSchedule.objects.select_related(
+            "organization",
+            "data_center",
+            "created_by",
+            "last_job",
+            "template",
+            "template__definition",
+        )
+        .filter(pk=schedule_id)
+        .first()
+    )
     if not schedule:
         raise ValueError(f"Report schedule {schedule_id} does not exist.")
 
-    if not schedule.is_active:
+    if schedule.status != ReportScheduleStatus.ACTIVE:
         logger.info("Skipping inactive report schedule schedule=%s", schedule.pk)
         return schedule
 
@@ -341,14 +362,18 @@ def execute_report_schedule(
 
     window_start_dt = parse_datetime(window_start) if window_start else None
     window_end_dt = parse_datetime(window_end) if window_end else None
+    scheduled_for_dt = parse_datetime(scheduled_for) if scheduled_for else None
+    if scheduled_for_dt is None and trigger_source == "SCHEDULED":
+        scheduled_for_dt = schedule.next_run_at
     if window_end_dt is None:
-        window_end_dt = timezone.now()
+        window_end_dt = scheduled_for_dt or timezone.now()
     if window_start_dt is None:
-        window_start_dt, _ = schedule.calculate_execution_window(reference_time=window_end_dt)
+        window_start_dt, _ = schedule.calculate_execution_window(reference_time=scheduled_for_dt or window_end_dt)
 
-    configured_parameters = schedule.parameters if isinstance(schedule.parameters, dict) else {}
-    parameters = {
-        **configured_parameters,
+    template = schedule.template if schedule.template_id else None
+    template_defaults = deepcopy(template.default_parameters) if template and isinstance(template.default_parameters, dict) else {}
+    schedule_overrides = deepcopy(schedule.parameter_overrides) if isinstance(schedule.parameter_overrides, dict) else {}
+    runtime_parameters = {
         "report_type": schedule.report_type,
         "output_format": schedule.output_format,
         "schedule_id": str(schedule.pk),
@@ -358,36 +383,134 @@ def execute_report_schedule(
         "attach_raw_data": schedule.attach_raw_data,
     }
 
+    parameters = {}
+    if template:
+        parameters.update(template_defaults)
+        parameters.update(schedule_overrides)
+    else:
+        configured_parameters = schedule.parameters if isinstance(schedule.parameters, dict) else {}
+        parameters.update(configured_parameters)
+    parameters.update(runtime_parameters)
+
     has_date_from = parameters.get("date_from") not in (None, "") or parameters.get("start_date") not in (None, "")
     has_date_to = parameters.get("date_to") not in (None, "") or parameters.get("end_date") not in (None, "")
     if not has_date_from and not has_date_to:
         parameters["date_from"] = window_start_dt.isoformat()
         parameters["date_to"] = window_end_dt.isoformat()
 
+    parameters_snapshot = deepcopy(parameters)
+    template_snapshot = {}
+    output_config_snapshot = {
+        "report_type": schedule.report_type,
+        "output_format": schedule.output_format,
+        "primary_format": template.primary_format if template and template.primary_format else schedule.output_format,
+        "attachment_formats": deepcopy(template.attachment_formats if template and isinstance(template.attachment_formats, list) else []),
+        "attach_raw_data": schedule.attach_raw_data,
+    }
+    scope_snapshot = {
+        "organization_id": str(schedule.organization_id) if schedule.organization_id else None,
+        "organization_name": getattr(schedule.organization, "name", None),
+        "data_center_id": str(schedule.data_center_id) if schedule.data_center_id else None,
+        "data_center_name": getattr(schedule.data_center, "name", None),
+    }
+    recipient_snapshot = {
+        "email_recipients": deepcopy(schedule.normalize_recipients()),
+        "sms_recipients": deepcopy(schedule.sms_recipients if isinstance(schedule.sms_recipients, list) else []),
+        "send_sms": schedule.send_sms,
+    }
+    if template:
+        template_snapshot = {
+            "id": str(template.pk),
+            "code": template.code,
+            "name": template.name,
+            "version": template.version,
+            "definition_id": str(template.definition_id) if template.definition_id else None,
+            "definition_code": getattr(template.definition, "code", None),
+            "default_parameters": deepcopy(template.default_parameters if isinstance(template.default_parameters, dict) else {}),
+            "config": deepcopy(template.config if isinstance(template.config, dict) else {}),
+            "primary_format": template.primary_format,
+            "attachment_formats": deepcopy(template.attachment_formats if isinstance(template.attachment_formats, list) else []),
+            "include_charts": template.include_charts,
+            "include_raw_data": template.include_raw_data,
+            "is_active": template.is_active,
+        }
+
     with transaction.atomic():
         schedule = ReportSchedule.objects.select_for_update().filter(pk=schedule.pk).first()
         if not schedule:
             raise ValueError(f"Report schedule {schedule_id} does not exist.")
 
-        run = _create_schedule_run(
-            schedule,
-            requested_by=requested_by,
-            window_start=window_start_dt,
-            window_end=window_end_dt,
-            trigger_source=trigger_source,
-            parameters=parameters,
-        )
+        run = None
+        if trigger_source == "SCHEDULED" and scheduled_for_dt is not None:
+            run_defaults = {
+                "organization": schedule.organization,
+                "requested_by": requested_by,
+                "window_start": window_start_dt,
+                "window_end": window_end_dt,
+                "status": ReportScheduleRunStatus.PENDING,
+                "queued_at": timezone.now(),
+                "snapshot": {
+                    "schedule_id": str(schedule.pk),
+                    "schedule_name": schedule.name,
+                    "report_type": schedule.report_type,
+                    "frequency": schedule.frequency,
+                    "delivery_time": schedule.delivery_time.strftime("%H:%M:%S"),
+                    "output_format": schedule.output_format,
+                    "recipients": schedule.normalize_recipients(),
+                    "sms_recipients": list(schedule.sms_recipients or []) if isinstance(schedule.sms_recipients, list) else [],
+                    "attach_raw_data": schedule.attach_raw_data,
+                    "parameters": deepcopy(parameters),
+                    "scheduled_for": scheduled_for_dt.isoformat(),
+                    "trigger_source": trigger_source,
+                },
+            }
+            try:
+                run, created = ReportScheduleRun.objects.get_or_create(
+                    schedule=schedule,
+                    scheduled_for=scheduled_for_dt,
+                    trigger_source="SCHEDULED",
+                    defaults=run_defaults,
+                )
+            except IntegrityError:
+                logger.info("Duplicate scheduled run detected schedule=%s scheduled_for=%s", schedule.pk, scheduled_for_dt)
+                return schedule
+            if not created:
+                logger.info("Scheduled run already exists schedule=%s scheduled_for=%s", schedule.pk, scheduled_for_dt)
+                return schedule
+        else:
+            run = _create_schedule_run(
+                schedule,
+                requested_by=requested_by,
+                window_start=window_start_dt,
+                window_end=window_end_dt,
+                scheduled_for=None,
+                trigger_source=trigger_source,
+                parameters=parameters,
+            )
 
-        job = ReportJob.objects.create(
-            organization=schedule.organization,
-            data_center=schedule.data_center,
-            requested_by=requested_by,
-            status=ReportJobStatus.PENDING,
-            parameters=parameters,
-        )
+        job_kwargs = {
+            "organization": schedule.organization,
+            "data_center": schedule.data_center,
+            "schedule": schedule,
+            "requested_by": requested_by,
+            "status": ReportJobStatus.PENDING,
+            "parameters": parameters,
+            "parameters_snapshot": parameters_snapshot,
+            "template_snapshot": template_snapshot,
+            "template_config_snapshot": deepcopy(template.config if template and isinstance(template.config, dict) else {}),
+            "output_config_snapshot": output_config_snapshot,
+            "scope_snapshot": scope_snapshot,
+            "recipient_snapshot": recipient_snapshot,
+            "source_event_snapshot": {},
+            "trigger_source": trigger_source,
+        }
+        if template:
+            job_kwargs["template"] = template
+            job_kwargs["definition"] = template.definition
+        job = ReportJob.objects.create(**job_kwargs)
 
-        schedule.last_run_at = window_end_dt
-        schedule.next_run_at = schedule.calculate_next_run_at(reference_time=window_end_dt)
+        schedule.last_run_at = scheduled_for_dt or window_end_dt
+        schedule.next_run_at = schedule.calculate_next_run_at(reference_time=scheduled_for_dt or window_end_dt)
         schedule.last_delivery_status = "PENDING"
         schedule.last_error_message = ""
         schedule.last_job = job
@@ -395,13 +518,14 @@ def execute_report_schedule(
 
     try:
         generated_job = generate_report_job(job.id)
+        run.job = generated_job
         run.generated_job = generated_job
         run.started_at = generated_job.started_at or timezone.now()
         run.completed_at = generated_job.completed_at or timezone.now()
         if generated_job.status != ReportJobStatus.COMPLETED or not generated_job.file:
             run.status = ReportScheduleRunStatus.FAILED
             run.error_message = generated_job.error_message or "Scheduled report generation failed."
-            run.save(update_fields=["generated_job", "started_at", "completed_at", "status", "error_message", "updated_at"])
+            run.save(update_fields=["job", "generated_job", "started_at", "completed_at", "status", "error_message", "updated_at"])
             schedule.last_delivery_status = "FAILED"
             schedule.last_error_message = run.error_message
             schedule.save(update_fields=["last_job", "last_run_at", "next_run_at", "last_delivery_status", "last_error_message", "updated_at"])
@@ -488,7 +612,7 @@ def execute_report_schedule(
 
         run.status = ReportScheduleRunStatus.FAILED if (email_failed or sms_failed) else ReportScheduleRunStatus.COMPLETED
         run.error_message = "" if run.status == ReportScheduleRunStatus.COMPLETED else "One or more deliveries failed."
-        run.save(update_fields=["generated_job", "started_at", "completed_at", "status", "error_message", "updated_at"])
+        run.save(update_fields=["job", "generated_job", "started_at", "completed_at", "status", "error_message", "updated_at"])
 
         schedule.last_sent_at = timezone.now()
         schedule.last_delivery_status = "FAILED" if email_failed else "SENT"
