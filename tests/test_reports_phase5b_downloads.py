@@ -123,7 +123,7 @@ class ReportPhase5BDownloadTestCase(TestCase):
         generated, artifact = self._generated_job()
         self.client.force_authenticate(user=self.user)
 
-        response = self.client.get(f"/api/v1/reports/report-artifacts/{artifact.id}/download/")
+        response = self.client.get(f"/api/v1/reports/artifacts/{artifact.id}/download/")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "text/csv")
@@ -145,7 +145,7 @@ class ReportPhase5BDownloadTestCase(TestCase):
         self.client.force_authenticate(user=self.user)
 
         response = self.client.get(
-            f"/api/v1/reports/report-artifacts/{artifact.id}/download/",
+            f"/api/v1/reports/artifacts/{artifact.id}/download/",
             HTTP_RANGE="bytes=0-9",
         )
 
@@ -166,7 +166,7 @@ class ReportPhase5BDownloadTestCase(TestCase):
         generated, artifact = self._generated_job()
         self.client.force_authenticate(user=self.user)
 
-        response = self.client.get(f"/api/v1/reports/report-jobs/{generated.id}/download/")
+        response = self.client.get(f"/api/v1/reports/artifacts/{artifact.id}/download/")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "text/csv")

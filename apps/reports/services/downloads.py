@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import mimetypes
 import os
 import re
@@ -15,6 +16,10 @@ from apps.common.audit import write_audit
 
 from ..enums import ReportArtifactFormat
 from ..models import ReportArtifact, ReportJob
+from .observability import log_report_event, log_report_metric
+
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_write_audit(*args, **kwargs):
@@ -102,6 +107,22 @@ def _build_response(
     response["Accept-Ranges"] = "bytes"
     if content_range:
         response["Content-Range"] = content_range
+    log_report_event(
+        logger,
+        "Report artifact downloaded",
+        job=artifact.job,
+        artifact_count=1,
+        artifact_size_bytes=len(payload),
+        request=request,
+    )
+    log_report_metric(
+        logger,
+        "report_downloads",
+        job=artifact.job,
+        artifact_count=1,
+        artifact_size_bytes=len(payload),
+        request=request,
+    )
     _safe_write_audit(
         "REPORT_ARTIFACT_DOWNLOADED",
         "ReportArtifact",
@@ -183,32 +204,4 @@ def download_report_job_artifact(job: ReportJob, request=None):
     )
     if artifact is not None:
         return download_report_artifact(artifact, request=request)
-
-    if not job.file:
-        raise Http404("The requested report is unavailable.")
-
-    if not job.file.storage.exists(job.file.name):
-        raise Http404("The requested report is unavailable.")
-
-    size_bytes = os.path.getsize(job.file.path)
-    content_type = mimetypes.guess_type(job.file.name)[0] or "application/octet-stream"
-    response = HttpResponse(job.file.open("rb").read(), content_type=content_type)
-    response["Content-Disposition"] = _content_disposition(Path(job.file.name).name)
-    response["Content-Length"] = str(size_bytes)
-    response["Accept-Ranges"] = "bytes"
-    _safe_write_audit(
-        "REPORT_LEGACY_FILE_DOWNLOADED",
-        "ReportJob",
-        job.pk,
-        organization=job.organization,
-        actor=getattr(request, "user", None),
-        message="Legacy report file downloaded",
-        new_value={
-            "job_id": str(job.pk),
-            "filename": Path(job.file.name).name,
-            "size": size_bytes,
-            "organization_id": str(job.organization_id) if job.organization_id else None,
-            "data_center_id": str(job.data_center_id) if job.data_center_id else None,
-        },
-    )
-    return response
+    raise Http404("The requested report is unavailable.")

@@ -180,7 +180,11 @@ class ReportTemplate(TimeStampedModel):
             errors.setdefault("organization", []).append("Organization is required.")
         if isinstance(self.config, dict):
             try:
-                self.config = validate_report_template_config(self.config, existing_config={})
+                self.config = validate_report_template_config(
+                    self.config,
+                    existing_config={},
+                    definition_code=getattr(self.definition, "code", None) if self.definition_id else None,
+                )
             except ValidationError as exc:
                 if hasattr(exc, "message_dict"):
                     for field_name, messages in exc.message_dict.items():
@@ -191,7 +195,7 @@ class ReportTemplate(TimeStampedModel):
             errors.setdefault("config", []).append("Config must be a dictionary/object.")
 
         if self.definition_id and self.definition and self.definition.code:
-            report_type = self.report_type
+            report_type = self.report_type or self.definition.code
             if report_type and self.definition.generator_key:
                 # Keep compatibility: report_type and definition may diverge during transition,
                 # but a populated definition should still be active and internally consistent.
@@ -571,6 +575,11 @@ class ReportSchedule(TimeStampedModel):
         except Exception:
             errors.setdefault("timezone", []).append("Unsupported timezone.")
 
+        if not self.report_type and self.template_id and self.template and self.template.definition_id:
+            normalized_report_type = normalize_report_type(self.template.definition.code)
+            if normalized_report_type:
+                self.report_type = normalized_report_type
+
         report_type = normalize_report_type(self.report_type)
         if not report_type:
             errors.setdefault("report_type", []).append("Unsupported report type.")
@@ -593,8 +602,11 @@ class ReportSchedule(TimeStampedModel):
             errors.setdefault("template", []).append("Template must belong to the selected organization.")
 
         if self.template_id and self.template and self.template.definition_id:
-            if self.report_type and self.template.report_type and self.template.report_type != self.report_type:
-                errors.setdefault("template", []).append("Template report type must match the selected schedule report type.")
+            template_definition_code = self.template.definition.code if self.template.definition else None
+            if template_definition_code:
+                normalized_report_type = normalize_report_type(template_definition_code)
+                if normalized_report_type:
+                    self.report_type = normalized_report_type
 
         if self.data_center_id and self.organization_id and self.data_center.organization_id != self.organization_id:
             errors.setdefault("data_center", []).append("Data center must belong to the selected organization.")
@@ -611,11 +623,6 @@ class ReportSchedule(TimeStampedModel):
             errors.setdefault("day_of_month", []).append("Day of month must be between 1 and 31.")
         if self.status not in ReportScheduleStatus.values:
             errors.setdefault("status", []).append("Unsupported schedule status.")
-        if self.status in {ReportScheduleStatus.DISABLED, ReportScheduleStatus.PAUSED}:
-            self.is_active = False
-        else:
-            self.is_active = True
-
         if not isinstance(self.recipients, list):
             errors.setdefault("recipients", []).append("Recipients must be a list of email addresses.")
         else:
@@ -662,12 +669,6 @@ class ReportSchedule(TimeStampedModel):
                     update_fields = set(update_fields)
                     update_fields.add("next_run_at")
                     kwargs["update_fields"] = update_fields
-        # Compatibility mirror only: status is the canonical schedule state.
-        self.is_active = self.status == ReportScheduleStatus.ACTIVE
-        if update_fields is not None:
-            current_update_fields = set(kwargs.get("update_fields", update_fields))
-            current_update_fields.update({"is_active", "status"})
-            kwargs["update_fields"] = current_update_fields
         self.full_clean()
         return super().save(*args, **kwargs)
 

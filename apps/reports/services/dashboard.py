@@ -12,6 +12,7 @@ from django.db.models.functions import TruncDate
 from django.utils import timezone as dj_timezone
 
 from apps.common.access import filter_queryset_for_user, get_access_scope
+from .observability import log_report_event, log_report_metric
 
 from ..enums import ReportDeliveryStatus, ReportScheduleStatus, ReportTriggerSource
 from ..models import (
@@ -333,6 +334,16 @@ def _reports_by_definition(scope: DashboardScope) -> list[dict]:
     return results
 
 
+def _job_display_name(job: ReportJob | None) -> str:
+    if not job:
+        return "Legacy / Custom"
+    return (
+        getattr(job.template, "name", None)
+        or getattr(job.definition, "name", None)
+        or "Legacy / Custom"
+    )
+
+
 def _reports_by_format(scope: DashboardScope) -> list[dict]:
     artifacts_qs = _apply_scope(ReportArtifact.objects.select_related("job"), scope, organization_field="job__organization", data_center_field="job__data_center")
     rows = (
@@ -511,7 +522,7 @@ def _recent_failures(scope: DashboardScope) -> list[dict]:
             {
                 "type": "JOB",
                 "id": str(job.id),
-                "report_name": getattr(job.template, "name", None) or getattr(job.definition, "name", None) or job.report_type or "Legacy / Custom",
+                "report_name": _job_display_name(job),
                 "channel": None,
                 "recipient": None,
                 "error_code": job.error_code or None,
@@ -526,7 +537,7 @@ def _recent_failures(scope: DashboardScope) -> list[dict]:
             {
                 "type": "DELIVERY",
                 "id": str(delivery.id),
-                "report_name": getattr(delivery.job.template, "name", None) or getattr(delivery.job.definition, "name", None) or delivery.job.report_type or "Legacy / Custom",
+                "report_name": _job_display_name(delivery.job),
                 "channel": delivery.channel,
                 "recipient": _mask_recipient(delivery.recipient),
                 "error_code": delivery.error_code or None,
@@ -665,7 +676,10 @@ def _operational_health(scope: DashboardScope, summary: dict) -> dict:
     }
 
 
-def get_reporting_dashboard(*, user, organization=None, data_center=None, start_at=None, end_at=None, timezone_name="Asia/Dhaka"):
+def get_reporting_dashboard(*, user, organization=None, data_center=None, start_at=None, end_at=None, timezone_name="Asia/Dhaka", request=None):
+    from time import perf_counter
+
+    started = perf_counter()
     tz = _resolve_timezone(timezone_name)
     scope = _resolve_scope(user, organization=organization, data_center=data_center, timezone_name=timezone_name)
 
@@ -697,13 +711,12 @@ def get_reporting_dashboard(*, user, organization=None, data_center=None, start_
         today_end=scope.today_end,
     )
 
-    _safe_write_log(
-        "dashboard requested",
-        organization_id=str(scope.organization.id) if scope.organization else None,
-        data_center_id=str(scope.data_center.id) if scope.data_center else None,
-        start_at=scope.start_at.isoformat(),
-        end_at=scope.end_at.isoformat(),
-        timezone=tz.key,
+    log_report_event(
+        logger,
+        "Dashboard requested",
+        organization=scope.organization,
+        data_center=scope.data_center,
+        request=request,
     )
 
     summary = _summary_for_scope(scope)
@@ -725,4 +738,14 @@ def get_reporting_dashboard(*, user, organization=None, data_center=None, start_
         "schedule_health": _schedule_health(scope),
         "operational_health": _operational_health(scope, summary),
     }
+    elapsed_ms = round((perf_counter() - started) * 1000)
+    log_report_event(
+        logger,
+        "Dashboard completed",
+        organization=scope.organization,
+        data_center=scope.data_center,
+        execution_time_ms=elapsed_ms,
+        request=request,
+    )
+    log_report_metric(logger, "report_dashboard_response", value=elapsed_ms, organization=scope.organization, data_center=scope.data_center, request=request)
     return payload

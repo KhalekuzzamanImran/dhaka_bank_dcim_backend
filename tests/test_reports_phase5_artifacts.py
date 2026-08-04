@@ -106,7 +106,6 @@ class ReportPhase5ArtifactTestCase(TestCase):
         artifact = generated.artifacts.get()
         self.assertEqual(artifact.format, "CSV")
         self.assertTrue(default_storage.exists(artifact.file.name))
-        self.assertEqual(generated.file.name, artifact.file.name)
         self.assertTrue(artifact.file.name.startswith(f"reports/{self.org.id}/"))
         self.assertIn(f"/{generated.id}/", artifact.file.name)
         self.assertTrue(re.search(r"/[a-z0-9_-]+_\d{4}-\d{2}-\d{2}_job-[a-f0-9]{8}\.csv$", artifact.file.name))
@@ -125,8 +124,7 @@ class ReportPhase5ArtifactTestCase(TestCase):
         self.assertEqual(generated.status, ReportJobStatus.COMPLETED)
         self.assertEqual(generated.artifacts.count(), 2)
         self.assertEqual(set(generated.artifacts.values_list("format", flat=True)), {"PDF", "CSV"})
-        self.assertTrue(generated.file)
-        self.assertTrue(default_storage.exists(generated.file.name))
+        self.assertTrue(all(default_storage.exists(artifact.file.name) for artifact in generated.artifacts.all()))
 
     def test_duplicate_processing_reuses_existing_artifact(self):
         template = self._template(primary_format="CSV")
@@ -220,7 +218,7 @@ class ReportPhase5ArtifactTestCase(TestCase):
         )
         generated = generate_report_job(legacy_job.id)
         self.assertEqual(generated.status, ReportJobStatus.COMPLETED)
-        self.assertTrue(generated.file)
+        self.assertTrue(generated.artifacts.exists())
         self.assertEqual(generated.artifacts.count(), 1)
 
     def test_artifact_audit_event_is_written(self):

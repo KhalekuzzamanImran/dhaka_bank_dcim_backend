@@ -119,7 +119,6 @@ def build_output_config_snapshot(*, definition, template=None, schedule=None, pr
         attachment_formats = attachment_formats if attachment_formats is not None else schedule.attachment_formats
     return {
         "definition_code": getattr(definition, "code", None),
-        "report_type": getattr(template, "report_type", None) or getattr(schedule, "report_type", None) or getattr(definition, "code", None),
         "primary_format": primary_format,
         "attachment_formats": deepcopy(attachment_formats or []),
         "include_charts": bool(getattr(template, "include_charts", False)),
@@ -183,15 +182,12 @@ def create_report_job(
     queue_job=True,
     compatibility_mode=False,
 ):
-    resolved_definition = definition
-    if resolved_definition is None and template is not None and getattr(template, "report_type", None):
-        from .definitions import get_active_definition_by_code, get_definition_code_for_report_type
-
-        definition_code = get_definition_code_for_report_type(template.report_type)
-        resolved_definition = get_active_definition_by_code(definition_code) if definition_code else None
-
-    legacy_compatibility_mode = schedule is not None and template is None and resolved_definition is None
-    if resolved_definition is None and not legacy_compatibility_mode:
+    resolved_definition = definition or (template.definition if template and template.definition_id else None)
+    if resolved_definition is None and schedule is not None and schedule.template_id:
+        resolved_definition = schedule.template.definition
+    if resolved_definition is None and schedule is not None and not compatibility_mode and schedule.template_id is None:
+        compatibility_mode = True
+    if resolved_definition is None and not compatibility_mode:
         raise ValidationError({"definition": "A report definition is required."})
     if resolved_definition is not None and not resolved_definition.is_active:
         raise ValidationError({"definition": "Selected report definition is inactive."})
@@ -303,12 +299,12 @@ def create_report_job(
             )
         except IntegrityError:
             schedule_run = (
-                ReportScheduleRun.objects.select_related("job", "generated_job")
+                ReportScheduleRun.objects.select_related("job")
                 .filter(schedule=schedule, scheduled_for=scheduled_for if trigger_source == ReportTriggerSource.SCHEDULED else None, trigger_source=trigger_source)
                 .first()
             )
         if schedule_run and schedule_run.job_id:
-            existing = schedule_run.job or schedule_run.generated_job
+            existing = schedule_run.job
             if existing:
                 return ReportJobFactoryResult(job=existing, schedule_run=schedule_run, created=False, duplicate=True, queued=False)
 
@@ -336,8 +332,7 @@ def create_report_job(
 
     if schedule_run is not None and not schedule_run.job_id:
         schedule_run.job = job
-        schedule_run.generated_job = job
-        schedule_run.save(update_fields=["job", "generated_job", "updated_at"])
+        schedule_run.save(update_fields=["job", "updated_at"])
 
     _safe_write_audit(
         "REPORT_JOB_CREATED" if trigger_source == ReportTriggerSource.MANUAL else "REPORT_SCHEDULED_JOB_CREATED" if trigger_source == ReportTriggerSource.SCHEDULED else "REPORT_EVENT_REQUESTED",

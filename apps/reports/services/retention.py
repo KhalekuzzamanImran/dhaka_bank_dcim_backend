@@ -8,6 +8,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.common.audit import write_audit
+from .observability import log_report_event, log_report_metric
 
 from ..models import ReportArtifact
 
@@ -106,6 +107,7 @@ def cleanup_expired_report_artifacts(*, now=None, batch_size=None, dry_run=False
 
     if not getattr(settings, "REPORT_ARTIFACT_CLEANUP_ENABLED", True):
         result.disabled = True
+        log_report_event(logger, "Report artifact cleanup disabled", execution_time_ms=0)
         return result.as_dict()
 
     with transaction.atomic():
@@ -175,4 +177,13 @@ def cleanup_expired_report_artifacts(*, now=None, batch_size=None, dry_run=False
         message="Report artifact cleanup batch completed",
         new_value=result.as_dict(),
     )
+    log_report_event(
+        logger,
+        "Report artifact cleanup batch completed",
+        execution_time_ms=0,
+        artifact_count=result.examined,
+        retry_count=result.failed,
+    )
+    log_report_metric(logger, "report_artifact_cleanup_examined", value=result.examined)
+    log_report_metric(logger, "report_artifact_cleanup_deleted", value=result.deleted)
     return result.as_dict()

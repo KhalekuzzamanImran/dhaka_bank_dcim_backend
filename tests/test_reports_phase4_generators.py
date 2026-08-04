@@ -129,6 +129,9 @@ class ReportPhase4GeneratorTestCase(TestCase):
             queue_job=False,
         ).job
 
+    def _primary_artifact(self, job):
+        return job.artifacts.order_by("created_at", "pk").first()
+
     def test_generator_registry_rejects_duplicates_and_unknown_keys(self):
         class DuplicateGenerator(BaseReportGenerator):
             definition_code = "DUPLICATE"
@@ -166,7 +169,9 @@ class ReportPhase4GeneratorTestCase(TestCase):
         )
         job = self._inventory_job(template)
         generated = generate_report_job(job.id)
-        with generated.file.open("rb") as handle:
+        artifact = self._primary_artifact(generated)
+        self.assertIsNotNone(artifact)
+        with artifact.file.open("rb") as handle:
             content = handle.read().decode("utf-8")
         self.assertIn("device_id,organization,data_center,room,rack,device,code,hostname,ip_address,device_type,device_model,vendor,status,is_active,last_seen", content)
         self.assertIn("UPS-01", content)
@@ -191,7 +196,9 @@ class ReportPhase4GeneratorTestCase(TestCase):
             queue_job=False,
         ).job
         generated = generate_report_job(job.id)
-        with generated.file.open("rb") as handle:
+        artifact = self._primary_artifact(generated)
+        self.assertIsNotNone(artifact)
+        with artifact.file.open("rb") as handle:
             content = handle.read().decode("utf-8")
         self.assertIn("created_at,actor,action,resource_type,resource_id,organization,message,ip_address,user_agent", content)
         self.assertIn("pytest", content)
@@ -243,7 +250,9 @@ class ReportPhase4GeneratorTestCase(TestCase):
             queue_job=False,
         ).job
         generated = generate_report_job(job.id)
-        with generated.file.open("rb") as handle:
+        artifact = self._primary_artifact(generated)
+        self.assertIsNotNone(artifact)
+        with artifact.file.open("rb") as handle:
             content = handle.read().decode("utf-8")
         self.assertIn("room_name,room_code,device_name,device_code,metric_code", content)
         self.assertIn("Server Room", content)
@@ -260,7 +269,9 @@ class ReportPhase4GeneratorTestCase(TestCase):
         )
         job = self._inventory_job(template)
         generated = generate_report_job(job.id)
-        with zipfile.ZipFile(generated.file.path, "r") as archive:
+        artifact = self._primary_artifact(generated)
+        self.assertIsNotNone(artifact)
+        with zipfile.ZipFile(artifact.file.path, "r") as archive:
             names = set(archive.namelist())
             self.assertIn("[Content_Types].xml", names)
             self.assertIn("xl/workbook.xml", names)
@@ -277,7 +288,9 @@ class ReportPhase4GeneratorTestCase(TestCase):
         )
         job = self._inventory_job(template)
         generated = generate_report_job(job.id)
-        with generated.file.open("rb") as handle:
+        artifact = self._primary_artifact(generated)
+        self.assertIsNotNone(artifact)
+        with artifact.file.open("rb") as handle:
             content = handle.read()
         self.assertTrue(content.startswith(b"%PDF-1.4"))
         self.assertIn(b"Confidential - Dhaka Bank DCIM report", content)
@@ -332,7 +345,9 @@ class ReportPhase4GeneratorTestCase(TestCase):
         template.save(update_fields=["default_parameters", "updated_at"])
 
         generated = generate_report_job(job_result.job.id)
-        with generated.file.open("rb") as handle:
+        artifact = self._primary_artifact(generated)
+        self.assertIsNotNone(artifact)
+        with artifact.file.open("rb") as handle:
             content = handle.read().decode("utf-8")
         self.assertIn("pac_room_temperature", content)
         self.assertNotIn("pac_room_humidity", content)
@@ -340,7 +355,9 @@ class ReportPhase4GeneratorTestCase(TestCase):
         updated_at = generated.updated_at
         regenerated = generate_report_job(generated.id)
         self.assertEqual(regenerated.status, ReportJobStatus.COMPLETED)
-        self.assertEqual(regenerated.file.name, generated.file.name)
+        regenerated_artifact = self._primary_artifact(regenerated)
+        self.assertIsNotNone(regenerated_artifact)
+        self.assertEqual(regenerated_artifact.file.name, artifact.file.name)
         self.assertEqual(regenerated.updated_at, updated_at)
 
     def test_unsupported_definition_format_is_rejected(self):

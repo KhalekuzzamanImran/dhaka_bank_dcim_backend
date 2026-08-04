@@ -148,7 +148,7 @@ class ReportPhase5CRetentionTestCase(TestCase):
         self.assertEqual(result["deleted"], 1)
         self.assertFalse(ReportArtifact.objects.filter(pk=artifact.pk).exists())
         self.assertFalse(default_storage.exists(artifact.file.name))
-        self.assertFalse(generated.file and default_storage.exists(generated.file.name))
+        self.assertFalse(default_storage.exists(artifact.file.name))
 
     def test_non_expired_artifact_is_retained(self):
         generated, artifact = self._generated_artifact(retention_expires_at=timezone.now() + timedelta(days=1))
@@ -156,7 +156,7 @@ class ReportPhase5CRetentionTestCase(TestCase):
         self.assertEqual(result["examined"], 0)
         self.assertTrue(ReportArtifact.objects.filter(pk=artifact.pk).exists())
         self.assertTrue(default_storage.exists(artifact.file.name))
-        self.assertTrue(generated.file and default_storage.exists(generated.file.name))
+        self.assertTrue(default_storage.exists(artifact.file.name))
 
     def test_null_retention_artifact_is_retained(self):
         generated, artifact = self._generated_artifact()
@@ -165,7 +165,7 @@ class ReportPhase5CRetentionTestCase(TestCase):
         self.assertEqual(result["examined"], 0)
         self.assertTrue(ReportArtifact.objects.filter(pk=artifact.pk).exists())
         self.assertTrue(default_storage.exists(artifact.file.name))
-        self.assertTrue(generated.file and default_storage.exists(generated.file.name))
+        self.assertTrue(default_storage.exists(artifact.file.name))
 
     def test_dry_run_does_not_delete(self):
         _, artifact = self._generated_artifact(retention_expires_at=timezone.now() - timedelta(days=1))

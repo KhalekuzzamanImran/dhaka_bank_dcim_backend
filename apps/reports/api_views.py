@@ -355,7 +355,7 @@ class ReportScheduleViewSet(ScopedModelViewSet):
                 schedule.pk,
                 organization=schedule.organization,
                 actor=request.user,
-                message=f"Manual report delivery queued for {schedule.name}.",
+                message=f"Manual report delivery queued for {getattr(getattr(schedule.template, 'definition', None), 'name', None) or getattr(schedule.template, 'name', None) or schedule.name}.",
             )
 
         transaction.on_commit(_queue_delivery)
@@ -392,7 +392,7 @@ class ReportScheduleViewSet(ScopedModelViewSet):
     @action(detail=True, methods=["get"])
     def runs(self, request, pk=None):
         schedule = self.get_object()
-        runs = schedule.runs.select_related("schedule", "generated_job", "job", "requested_by").prefetch_related("deliveries", "generated_job__artifacts", "job__artifacts").order_by("-created_at")[:10]
+        runs = schedule.runs.select_related("schedule", "job", "requested_by").prefetch_related("deliveries", "job__artifacts").order_by("-created_at")[:10]
         serializer = ReportScheduleRunSerializer(runs, many=True, context=self.get_serializer_context())
         return Response(serializer.data)
 
@@ -447,12 +447,11 @@ class ReportScheduleRunViewSet(viewsets.ReadOnlyModelViewSet):
         "organization",
         "requested_by",
         "job",
-        "generated_job",
         "schedule__template",
         "schedule__template__definition",
-    ).prefetch_related("deliveries", "generated_job__artifacts", "job__artifacts").all().order_by("-created_at")
+    ).prefetch_related("deliveries", "job__artifacts").all().order_by("-created_at")
     serializer_class = ReportScheduleRunSerializer
-    search_fields = ["schedule__name", "schedule__template__code", "schedule__template__name", "error_message", "trigger_source"]
+    search_fields = ["schedule__name", "schedule__template__definition__code", "schedule__template__code", "schedule__template__name", "error_message", "trigger_source"]
     ordering_fields = ["created_at", "updated_at", "queued_at", "started_at", "completed_at", "status", "window_start", "window_end"]
     ordering = ["-created_at"]
 
@@ -467,7 +466,7 @@ class ReportScheduleRunViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=["get"])
     def deliveries(self, request, pk=None):
         run = self.get_object()
-        job = run.generated_job or run.job
+        job = run.job
         deliveries = job.deliveries.select_related("job", "schedule_recipient") if job else ReportDelivery.objects.none()
         serializer = ReportDeliverySerializer(deliveries.order_by("created_at"), many=True, context=self.get_serializer_context())
         return Response(serializer.data)
@@ -502,14 +501,11 @@ class ReportJobViewSet(viewsets.ReadOnlyModelViewSet):
         job = self.get_object()
         if job.status != ReportJobStatus.PENDING:
             return Response({"detail": "Only pending jobs can be cancelled."}, status=status.HTTP_400_BAD_REQUEST)
-        if job.file:
-            job.file.delete(save=False)
-            job.file = None
         job.status = ReportJobStatus.CANCELLED
         job.started_at = job.started_at or timezone.now()
         job.completed_at = timezone.now()
         job.error_message = "Cancelled by user"
-        job.save(update_fields=["status", "started_at", "completed_at", "error_message", "file", "updated_at"])
+        job.save(update_fields=["status", "started_at", "completed_at", "error_message", "updated_at"])
         _safe_write_audit("REPORT_CANCELLED", "ReportJob", job.pk, organization=job.organization, actor=request.user, message="Report job cancelled by user")
         return Response(ReportJobDetailSerializer(job, context=self.get_serializer_context()).data)
 
@@ -522,10 +518,7 @@ class ReportJobViewSet(viewsets.ReadOnlyModelViewSet):
         job.error_message = ""
         job.started_at = None
         job.completed_at = None
-        if job.file:
-            job.file.delete(save=False)
-            job.file = None
-        job.save(update_fields=["status", "error_message", "started_at", "completed_at", "file", "updated_at"])
+        job.save(update_fields=["status", "error_message", "started_at", "completed_at", "updated_at"])
         from .tasks import generate_report_job_task
 
         def _queue_generation():

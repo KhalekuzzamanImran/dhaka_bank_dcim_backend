@@ -23,6 +23,11 @@ REPORT_TYPE_TO_DEFINITION_CODE = {
     "ups_performance": "UPS_PERFORMANCE",
 }
 
+DEFINITION_CODE_TO_REPORT_TYPE = {
+    definition_code: report_type
+    for report_type, definition_code in REPORT_TYPE_TO_DEFINITION_CODE.items()
+}
+
 RESERVED_RUNTIME_PARAMETER_KEYS = {
     "report_type",
     "output_format",
@@ -49,6 +54,12 @@ def get_definition_code_for_report_type(report_type: str | None) -> str | None:
     if not report_type:
         return None
     return REPORT_TYPE_TO_DEFINITION_CODE.get(str(report_type).strip())
+
+
+def get_report_type_for_definition_code(definition_code: str | None) -> str | None:
+    if not definition_code:
+        return None
+    return DEFINITION_CODE_TO_REPORT_TYPE.get(str(definition_code).strip().upper())
 
 
 def seed_report_definitions(ReportDefinitionModel=None, *, seeds=None):

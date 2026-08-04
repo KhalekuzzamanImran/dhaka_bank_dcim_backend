@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import tempfile
+import logging
 from copy import deepcopy
 from dataclasses import dataclass
+from time import perf_counter
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -11,12 +13,16 @@ from django.utils import timezone
 
 from apps.common.audit import write_audit
 
-from ..constants import normalize_report_format
+from ..constants import normalize_report_format, normalize_report_type
 from ..enums import ReportTriggerSource
 from ..models import ReportArtifact, ReportJob, ReportJobStatus
 from .definitions import get_active_definition_by_code, get_definition_by_code, get_definition_code_for_report_type
+from .observability import log_report_event, log_report_metric
 from ..generators import GeneratorContext, RenderedArtifact, get_generator_class
 from .artifacts import ReportArtifactPersistenceResult, create_report_artifact
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -59,11 +65,13 @@ def _resolve_definition_for_job(job: ReportJob):
         definition = get_definition_by_code(definition_code)
         if definition:
             return definition
-    parameters = job.parameters_snapshot if isinstance(job.parameters_snapshot, dict) else job.parameters or {}
-    report_type = parameters.get("report_type") or job.report_type
-    definition_code = get_definition_code_for_report_type(report_type)
-    if definition_code:
-        return get_definition_by_code(definition_code) or get_active_definition_by_code(definition_code)
+    parameters = job.parameters if isinstance(job.parameters, dict) else {}
+    legacy_report_type = normalize_report_type(parameters.get("report_type") or job.report_type)
+    legacy_definition_code = get_definition_code_for_report_type(legacy_report_type)
+    if legacy_definition_code:
+        definition = get_definition_by_code(legacy_definition_code)
+        if definition:
+            return definition
     return None
 
 
@@ -73,11 +81,6 @@ def _normalize_requested_formats(primary_format, attachment_formats):
     def _append(value):
         normalized = normalize_report_format(value)
         if not normalized:
-            return
-        if normalized == "PDF_CSV":
-            for candidate in ("PDF", "CSV"):
-                if candidate not in formats:
-                    formats.append(candidate)
             return
         if normalized not in formats:
             formats.append(normalized)
@@ -126,7 +129,7 @@ def _claim_job(report_job_id):
         if job.status == ReportJobStatus.CANCELLED:
             job._generation_claimed = False
             return job
-        if job.status == ReportJobStatus.COMPLETED and job.file:
+        if job.status == ReportJobStatus.COMPLETED and job.artifacts.exists():
             job._generation_claimed = False
             return job
         if job.status in {ReportJobStatus.RUNNING, ReportJobStatus.PROCESSING, ReportJobStatus.QUEUED}:
@@ -147,8 +150,9 @@ def _claim_job(report_job_id):
             job.pk,
             organization=job.organization,
             actor=job.requested_by,
-            message=f"Report generation started for {job.report_type or 'unknown'}",
+        message=f"Report generation started for {getattr(job.definition, 'code', job.template_snapshot.get('definition_code') if isinstance(job.template_snapshot, dict) else 'unknown')}",
         )
+        log_report_event(logger, "Report generation claimed", job=job)
         return job
 
 
@@ -221,7 +225,7 @@ def _queue_report_deliveries(job_id):
 
         queue_report_deliveries_for_job_task.delay(str(job_id))
     except Exception:
-        logger.exception("Failed to queue report deliveries report_job=%s", job_id)
+        logger.exception("Failed to queue report deliveries job_id=%s", job_id)
 
 
 def _finalize_success(job: ReportJob, artifacts: list[RenderedArtifact]):
@@ -233,14 +237,21 @@ def _finalize_success(job: ReportJob, artifacts: list[RenderedArtifact]):
     job.progress_percent = 100
     job.progress_message = "Report generation completed."
     job.error_message = ""
-    job.save(update_fields=["file", "status", "completed_at", "failed_at", "progress_percent", "progress_message", "error_message", "updated_at"])
+    job.save(update_fields=["status", "completed_at", "failed_at", "progress_percent", "progress_message", "error_message", "updated_at"])
     _safe_write_audit(
         "REPORT_GENERATED",
         "ReportJob",
         job.pk,
         organization=job.organization,
         actor=job.requested_by,
-        message=f"Report generated successfully for {getattr(job.definition, 'code', job.report_type or 'unknown')}",
+        message=f"Report generated successfully for {getattr(job.definition, 'code', job.template_snapshot.get('definition_code') if isinstance(job.template_snapshot, dict) else 'unknown')}",
+    )
+    log_report_metric(
+        logger,
+        "report_jobs_completed",
+        job=job,
+        artifact_count=len(artifacts),
+        artifact_size_bytes=sum(getattr(artifact, "size_bytes", 0) or 0 for artifact in job.artifacts.all()),
     )
     transaction.on_commit(lambda job_id=job.pk: _queue_report_deliveries(job_id))
     return job
@@ -253,12 +264,6 @@ def _finalize_failure(job: ReportJob, exc: Exception):
         locked = ReportJob.objects.select_for_update().filter(pk=job.pk).first()
         if not locked:
             return job
-        if locked.file:
-            try:
-                locked.file.delete(save=False)
-            except Exception:
-                pass
-            locked.file = None
         locked.status = ReportJobStatus.FAILED
         locked.completed_at = timezone.now()
         locked.failed_at = timezone.now()
@@ -266,7 +271,7 @@ def _finalize_failure(job: ReportJob, exc: Exception):
         locked.progress_message = "Report generation failed."
         locked.error_message = message
         locked.error_code = str(error_code)[:64]
-        locked.save(update_fields=["file", "status", "completed_at", "failed_at", "progress_percent", "progress_message", "error_message", "error_code", "updated_at"])
+        locked.save(update_fields=["status", "completed_at", "failed_at", "progress_percent", "progress_message", "error_message", "error_code", "updated_at"])
         _safe_write_audit(
             "REPORT_GENERATION_FAILED",
             "ReportJob",
@@ -275,16 +280,18 @@ def _finalize_failure(job: ReportJob, exc: Exception):
             actor=locked.requested_by,
             message=message,
         )
+        log_report_metric(logger, "report_jobs_failed", job=locked)
         return locked
 
 
 def generate_report_job(report_job_id):
+    started = perf_counter()
     job = _claim_job(report_job_id)
     if not getattr(job, "_generation_claimed", False):
         return job
-    if job.status in {ReportJobStatus.CANCELLED, ReportJobStatus.COMPLETED} and job.file:
+    if job.status in {ReportJobStatus.CANCELLED, ReportJobStatus.COMPLETED} and job.artifacts.exists():
         return job
-    if job.status in {ReportJobStatus.RUNNING, ReportJobStatus.PROCESSING, ReportJobStatus.QUEUED} and job.file:
+    if job.status in {ReportJobStatus.RUNNING, ReportJobStatus.PROCESSING, ReportJobStatus.QUEUED} and job.artifacts.exists():
         return job
 
     definition = _resolve_definition_for_job(job)
@@ -318,14 +325,29 @@ def generate_report_job(report_job_id):
                 )
                 persisted_artifacts.append(persisted)
 
-            primary_artifact = persisted_artifacts[0].artifact if persisted_artifacts else None
-            if primary_artifact is not None:
-                locked.file = primary_artifact.file.name
             final_job = _finalize_success(locked, artifacts)
             _cleanup_artifacts(artifacts)
+            log_report_event(
+                logger,
+                "Report generation finished",
+                job=final_job,
+                execution_time_ms=round((perf_counter() - started) * 1000),
+                artifact_count=len(artifacts),
+                artifact_size_bytes=sum(getattr(result.artifact, "size_bytes", 0) or 0 for result in persisted_artifacts),
+            )
+            log_report_metric(
+                logger,
+                "report_generation_duration_ms",
+                value=round((perf_counter() - started) * 1000),
+                job=final_job,
+                artifact_count=len(artifacts),
+                artifact_size_bytes=sum(getattr(result.artifact, "size_bytes", 0) or 0 for result in persisted_artifacts),
+            )
             return final_job
     except Exception as exc:
         _cleanup_persisted_artifacts(persisted_artifacts)
         locked = _finalize_failure(job, exc)
         _cleanup_artifacts(artifacts)
+        log_report_event(logger, "Report generation error", job=locked, execution_time_ms=round((perf_counter() - started) * 1000))
+        log_report_metric(logger, "report_generation_duration_ms", value=round((perf_counter() - started) * 1000), job=locked)
         return locked

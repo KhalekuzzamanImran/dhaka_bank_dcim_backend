@@ -75,7 +75,7 @@ class BaseReportGenerator:
     def get_filename(self, context: GeneratorContext, output_format: str) -> str:
         from django.utils.text import slugify
 
-        prefix = slugify(context.definition.code or context.output_config_snapshot.get("report_type") or "report") or "report"
+        prefix = slugify(context.definition.code or context.output_config_snapshot.get("definition_code") or "report") or "report"
         timestamp = context.generated_at.strftime("%Y%m%d_%H%M%S")
         return f"{prefix}_{context.job.pk}_{timestamp}.{output_format.lower()}"
 
@@ -92,4 +92,3 @@ class BaseReportGenerator:
         if normalized == "PDF":
             return render_pdf(dataset, context, output_path, self.get_filename(context, normalized), row_limit=self.row_limit_for_pdf)
         raise ValueError(f"Unsupported output format: {output_format}")
-

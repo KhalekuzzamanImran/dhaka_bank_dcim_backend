@@ -254,6 +254,36 @@ def _normalize_schema_value(value, schema: dict | None, *, field_name: str):
     if not isinstance(schema, dict):
         return deepcopy(value)
 
+    schema_keys = {
+        "type",
+        "properties",
+        "items",
+        "enum",
+        "choices",
+        "required",
+        "additionalProperties",
+        "nullable",
+        "minimum",
+        "maximum",
+        "min_items",
+        "max_items",
+        "minItems",
+        "maxItems",
+    }
+    legacy_config_keys = {
+        "default_columns",
+        "optional_filters",
+        "required_filters",
+        "allowed_output_formats",
+        "field_options",
+        "aggregation_options",
+        "default_parameters",
+    }
+    if isinstance(value, dict) and not any(key in schema for key in schema_keys) and any(
+        key in schema for key in legacy_config_keys
+    ):
+        return deepcopy(value)
+
     candidates = _normalize_required_types(schema)
     if len(candidates) > 1:
         last_error = None

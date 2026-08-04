@@ -1,19 +1,19 @@
 from django.contrib import admin
 
-from .models import ReportJob, ReportSchedule, ReportScheduleDelivery, ReportScheduleRun, ReportTemplate
+from .models import ReportArtifact, ReportDelivery, ReportJob, ReportSchedule, ReportScheduleRun, ReportTemplate
 
 
 @admin.register(ReportTemplate)
 class ReportTemplateAdmin(admin.ModelAdmin):
-    list_display = ("name", "code", "organization", "is_active", "created_at", "updated_at")
-    list_filter = ("organization", "is_active", "created_at")
+    list_display = ("name", "code", "definition", "organization", "is_active", "created_at", "updated_at")
+    list_filter = ("organization", "definition", "is_active", "created_at")
     search_fields = ("name", "code", "description", "organization__name", "organization__code")
     ordering = ("-created_at",)
 
 
 @admin.register(ReportJob)
 class ReportJobAdmin(admin.ModelAdmin):
-    list_display = ("id", "template", "organization", "data_center", "requested_by", "status", "started_at", "completed_at")
+    list_display = ("id", "definition", "template", "organization", "data_center", "requested_by", "status", "started_at", "completed_at")
     list_filter = ("status", "organization", "data_center", "template", "created_at", "completed_at")
     search_fields = (
         "template__name",
@@ -24,7 +24,7 @@ class ReportJobAdmin(admin.ModelAdmin):
         "organization__code",
         "error_message",
     )
-    readonly_fields = ("status", "file", "started_at", "completed_at", "error_message", "created_at", "updated_at")
+    readonly_fields = ("status", "started_at", "completed_at", "error_message", "created_at", "updated_at")
     ordering = ("-created_at",)
 
 
@@ -34,42 +34,41 @@ class ReportScheduleAdmin(admin.ModelAdmin):
         "name",
         "organization",
         "data_center",
-        "report_type",
+        "template",
+        "status",
         "frequency",
         "delivery_time",
-        "is_active",
         "next_run_at",
         "last_sent_at",
     )
-    list_filter = ("organization", "data_center", "report_type", "frequency", "output_format", "is_active", "last_delivery_status", "created_at")
-    search_fields = ("name", "report_type", "organization__name", "organization__code", "last_error_message", "recipients")
+    list_filter = ("organization", "data_center", "template", "status", "frequency", "primary_format", "last_delivery_status", "created_at")
+    search_fields = ("name", "template__name", "template__code", "template__definition__code", "organization__name", "organization__code", "last_error_message")
     readonly_fields = ("next_run_at", "last_run_at", "last_sent_at", "last_delivery_status", "last_error_message", "last_job", "created_at", "updated_at")
     ordering = ("-created_at",)
 
 
-class ReportScheduleDeliveryInline(admin.TabularInline):
-    model = ReportScheduleDelivery
-    extra = 0
-    fields = (
-        "channel",
-        "status",
-        "recipient_address",
-        "attempt_count",
-        "queued_at",
-        "delivering_at",
-        "sent_at",
-        "failed_at",
-        "next_retry_at",
-        "error_message",
-    )
-    readonly_fields = fields
-
-
 @admin.register(ReportScheduleRun)
 class ReportScheduleRunAdmin(admin.ModelAdmin):
-    list_display = ("schedule", "organization", "status", "trigger_source", "window_start", "window_end", "generated_job", "created_at")
+    list_display = ("schedule", "organization", "status", "trigger_source", "window_start", "window_end", "job", "created_at")
     list_filter = ("organization", "schedule", "status", "trigger_source", "created_at")
-    search_fields = ("schedule__name", "schedule__report_type", "error_message")
-    readonly_fields = ("queued_at", "started_at", "completed_at", "generated_job", "error_message", "trigger_source", "snapshot", "created_at", "updated_at")
-    inlines = [ReportScheduleDeliveryInline]
+    search_fields = ("schedule__name", "schedule__template__definition__code", "error_message")
+    readonly_fields = ("queued_at", "started_at", "completed_at", "job", "error_message", "trigger_source", "snapshot", "created_at", "updated_at")
+    ordering = ("-created_at",)
+
+
+@admin.register(ReportArtifact)
+class ReportArtifactAdmin(admin.ModelAdmin):
+    list_display = ("job", "format", "size_bytes", "retention_expires_at", "created_at")
+    list_filter = ("format", "created_at", "retention_expires_at")
+    search_fields = ("job__template__name", "job__template__code", "original_filename", "checksum_sha256")
+    readonly_fields = ("job", "format", "file", "original_filename", "content_type", "size_bytes", "checksum_sha256", "retention_expires_at", "created_at", "updated_at")
+    ordering = ("-created_at",)
+
+
+@admin.register(ReportDelivery)
+class ReportDeliveryAdmin(admin.ModelAdmin):
+    list_display = ("job", "channel", "recipient", "status", "retry_count", "created_at")
+    list_filter = ("channel", "status", "created_at")
+    search_fields = ("job__template__name", "job__template__code", "recipient", "provider_message_id", "error_message")
+    readonly_fields = ("job", "schedule_recipient", "channel", "recipient", "status", "queued_at", "started_at", "sent_at", "failed_at", "retry_count", "provider_message_id", "provider_response", "error_code", "error_message", "created_at", "updated_at")
     ordering = ("-created_at",)

@@ -15,6 +15,7 @@ from apps.common.audit import write_audit
 from apps.notifications.models import Notification, NotificationChannel, NotificationDelivery, NotificationStatus
 from apps.notifications.services.delivery import deliver_notification_delivery
 from apps.notifications.services.sms import _normalize_bangladesh_mobile
+from .observability import log_report_event, log_report_metric
 
 from ..enums import ReportDeliveryStatus
 from ..models import (
@@ -97,15 +98,14 @@ def _masked_recipient(recipient: str) -> str:
 
 
 def _artifact_download_url(artifact: ReportArtifact) -> str:
-    return f"/api/v1/reports/report-artifacts/{artifact.pk}/download/"
+    return f"/api/v1/reports/artifacts/{artifact.pk}/download/"
 
 
 def _resolve_schedule_run(job: ReportJob) -> ReportScheduleRun | None:
     if not job.schedule_id:
         return None
     return (
-        job.schedule.runs.filter(generated_job=job).order_by("-created_at").first()
-        or job.schedule.runs.filter(job=job).order_by("-created_at").first()
+        job.schedule.runs.filter(job=job).order_by("-created_at").first()
     )
 
 
@@ -257,7 +257,7 @@ def _attachment_payload(artifact: ReportArtifact) -> dict:
 
 def _build_email_subject(job: ReportJob) -> str:
     prefix = str(getattr(settings, "REPORT_EMAIL_SUBJECT_PREFIX", "DCIM Report") or "DCIM Report").strip()
-    report_name = getattr(job.template, "name", None) or getattr(job.definition, "name", None) or job.report_type or "Report"
+    report_name = getattr(job.template, "name", None) or getattr(job.definition, "name", None) or "Report"
     period = []
     parameters = job.parameters_snapshot if isinstance(job.parameters_snapshot, dict) else {}
     for key in ("date_from", "start_date", "window_start"):
@@ -275,7 +275,7 @@ def _build_email_subject(job: ReportJob) -> str:
 
 def _build_email_body(job: ReportJob, delivery: ReportDelivery, artifacts: list[ReportArtifact]) -> str:
     lines = [
-        f"Report: {getattr(job.template, 'name', None) or getattr(job.definition, 'name', None) or job.report_type or 'Report'}",
+        f"Report: {getattr(job.template, 'name', None) or getattr(job.definition, 'name', None) or 'Report'}",
         f"Organization: {getattr(job.organization, 'name', None) or job.organization_id}",
         f"Data center: {getattr(job.data_center, 'name', None) or job.data_center_id or '--'}",
         f"Generated: {timezone.localtime(job.completed_at or timezone.now()).strftime('%d %b %Y, %H:%M')}",
@@ -294,7 +294,7 @@ def _build_email_body(job: ReportJob, delivery: ReportDelivery, artifacts: list[
 
 
 def _build_sms_body(job: ReportJob, delivery: ReportDelivery, artifacts: list[ReportArtifact]) -> str:
-    report_name = getattr(job.template, "name", None) or getattr(job.definition, "name", None) or job.report_type or "Report"
+    report_name = getattr(job.template, "name", None) or getattr(job.definition, "name", None) or "Report"
     status = job.status
     parts = [
         f"DCIM report ready: {report_name}.",
@@ -315,7 +315,7 @@ def _create_notification_delivery(report_delivery: ReportDelivery) -> Notificati
         defaults={
             "recipient": report_delivery.job.requested_by if report_delivery.job.requested_by_id else None,
             "subject": _build_email_subject(report_delivery.job),
-            "message": report_delivery.job.template.name if report_delivery.job.template_id else (report_delivery.job.definition.name if report_delivery.job.definition_id else report_delivery.job.report_type or "Report"),
+            "message": report_delivery.job.template.name if report_delivery.job.template_id else (report_delivery.job.definition.name if report_delivery.job.definition_id else "Report"),
             "metadata": {
                 "report_job_id": str(report_delivery.job_id),
                 "report_delivery_id": str(report_delivery.pk),
@@ -536,7 +536,6 @@ def sync_report_delivery_from_notification_delivery(notification_delivery: Notif
                 "updated_at",
             ]
         )
-        _sync_legacy_schedule_delivery(locked)
         _sync_job_schedule_summary(locked.job)
         return locked
 
@@ -578,6 +577,13 @@ def create_report_deliveries_for_job(*, job, recipients=None):
             )
             if created:
                 created_count += 1
+                log_report_event(
+                    logger,
+                    "Report delivery created",
+                    job=locked_job,
+                    delivery_count=1,
+                    retry_count=0,
+                )
                 _safe_write_audit(
                     "REPORT_DELIVERY_CREATED",
                     "ReportDelivery",
@@ -606,7 +612,6 @@ def create_report_deliveries_for_job(*, job, recipients=None):
             if not delivery.queued_at:
                 delivery.queued_at = timezone.now()
             delivery.save(update_fields=["schedule_recipient", "status", "queued_at", "updated_at"])
-            _ensure_legacy_schedule_delivery(delivery)
             created_deliveries.append(delivery)
 
     for delivery in created_deliveries:
@@ -640,6 +645,8 @@ def queue_report_delivery(*, delivery: ReportDelivery):
         locked.status = ReportDeliveryStatus.QUEUED
         locked.queued_at = locked.queued_at or timezone.now()
         locked.save(update_fields=["status", "queued_at", "updated_at"])
+        log_report_event(logger, "Report delivery queued", job=locked.job, delivery_count=1, trigger_source=locked.job.trigger_source)
+        log_report_metric(logger, "report_deliveries_queued", job=locked.job, delivery_count=1)
         _safe_write_audit(
             "REPORT_DELIVERY_QUEUED",
             "ReportDelivery",
@@ -683,6 +690,7 @@ def _claim_report_delivery(delivery_id):
         delivery.status = ReportDeliveryStatus.DELIVERING
         delivery.started_at = delivery.started_at or timezone.now()
         delivery.save(update_fields=["status", "started_at", "updated_at"])
+        log_report_event(logger, "Report delivery started", job=delivery.job, delivery_count=1, trigger_source=delivery.job.trigger_source)
         _safe_write_audit(
             "REPORT_DELIVERY_STARTED",
             "ReportDelivery",
@@ -736,6 +744,8 @@ def _finalize_delivery_state(report_delivery: ReportDelivery, notification_deliv
             locked.provider_response = provider_response if isinstance(provider_response, dict) else (notification_delivery.provider_response or {})
             locked.provider_message_id = notification_delivery.provider_message_id or locked.provider_message_id
             locked.save(update_fields=["status", "sent_at", "failed_at", "error_code", "error_message", "provider_response", "provider_message_id", "updated_at"])
+            log_report_event(logger, "Report delivery sent", job=locked.job, delivery_count=1)
+            log_report_metric(logger, "report_deliveries_sent", job=locked.job, delivery_count=1)
             _safe_write_audit(
                 "REPORT_DELIVERY_SENT",
                 "ReportDelivery",
@@ -762,6 +772,8 @@ def _finalize_delivery_state(report_delivery: ReportDelivery, notification_deliv
                 locked.queued_at = now
                 locked.started_at = locked.started_at or now
                 locked.save(update_fields=["status", "retry_count", "queued_at", "started_at", "error_code", "error_message", "provider_response", "updated_at"])
+                log_report_event(logger, "Report delivery retry scheduled", job=locked.job, retry_count=locked.retry_count, delivery_count=1)
+                log_report_metric(logger, "report_deliveries_retry", job=locked.job, retry_count=locked.retry_count, delivery_count=1)
                 _safe_write_audit(
                     "REPORT_DELIVERY_RETRY_REQUESTED",
                     "ReportDelivery",
@@ -782,6 +794,8 @@ def _finalize_delivery_state(report_delivery: ReportDelivery, notification_deliv
                 locked.status = ReportDeliveryStatus.FAILED
                 locked.failed_at = locked.failed_at or now
                 locked.save(update_fields=["status", "failed_at", "error_code", "error_message", "provider_response", "updated_at"])
+                log_report_event(logger, "Report delivery failed", job=locked.job, retry_count=locked.retry_count, delivery_count=1)
+                log_report_metric(logger, "report_deliveries_failed", job=locked.job, retry_count=locked.retry_count, delivery_count=1)
                 _safe_write_audit(
                     "REPORT_DELIVERY_FAILED",
                     "ReportDelivery",
@@ -798,7 +812,6 @@ def _finalize_delivery_state(report_delivery: ReportDelivery, notification_deliv
                         "error_code": locked.error_code,
                     },
                 )
-        _sync_legacy_schedule_delivery(locked)
         _sync_job_schedule_summary(locked.job)
         return locked
 
@@ -822,6 +835,7 @@ def execute_report_delivery(*, delivery_id):
         deliver_notification_delivery(notification_delivery, **provider_kwargs)
         notification_delivery.refresh_from_db()
         final_delivery = _finalize_delivery_state(delivery, notification_delivery, provider_response=notification_delivery.provider_response)
+        log_report_metric(logger, "report_deliveries_sent", job=delivery.job, delivery_count=1)
         return final_delivery
     except Exception as exc:
         notification_delivery = NotificationDelivery.objects.filter(pk=notification_delivery.pk).first() or notification_delivery
@@ -831,7 +845,7 @@ def execute_report_delivery(*, delivery_id):
         notification_delivery.save(update_fields=["status", "failed_at", "error_message", "updated_at"])
         final_delivery = _finalize_delivery_state(delivery, notification_delivery, error=exc)
         if final_delivery.status == ReportDeliveryStatus.QUEUED:
-            logger.info("Retrying report delivery later delivery=%s", delivery_id)
+            log_report_event(logger, "Retrying report delivery later", job=delivery.job, retry_count=delivery.retry_count)
             raise exc
         raise
 

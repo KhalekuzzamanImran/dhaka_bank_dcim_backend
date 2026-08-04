@@ -42,7 +42,7 @@ def _user_can_access_organization(user, organization_id):
     scope = get_access_scope(user)
     if scope["global_access"]:
         return True
-    return organization_id in scope["organization_ids"]
+    return str(organization_id) in {str(value) for value in scope["organization_ids"]}
 
 
 def _user_can_access_data_center(user, data_center_id):
@@ -53,7 +53,7 @@ def _user_can_access_data_center(user, data_center_id):
     scope = get_access_scope(user)
     if scope["global_access"]:
         return True
-    return data_center_id in scope["data_center_ids"]
+    return str(data_center_id) in {str(value) for value in scope["data_center_ids"]}
 
 
 def _normalize_delivery_time(value):

@@ -6,6 +6,7 @@ from django.core.exceptions import ValidationError
 
 from .services.execution import generate_report_job
 from .services.deliveries import create_report_deliveries_for_job, execute_report_delivery
+from .services.observability import log_report_event, log_report_metric
 from .services.retention import cleanup_expired_report_artifacts
 from .services.schedules import claim_due_report_schedules, execute_report_schedule
 
@@ -14,10 +15,17 @@ logger = logging.getLogger(__name__)
 
 @shared_task(bind=True, queue="reports")
 def generate_report_job_task(self, report_job_id):
-    logger.info("Report generation task started report_job=%s", report_job_id)
+    log_report_event(logger, "Report generation task", job_id=report_job_id)
     try:
         job = generate_report_job(report_job_id)
-        logger.info("Report generation task finished report_job=%s status=%s", report_job_id, getattr(job, "status", None))
+        log_report_event(
+            logger,
+            "Report generation task finished",
+            job=job,
+            artifact_count=getattr(job, "artifacts", None).count() if getattr(job, "artifacts", None) is not None else None,
+            artifact_size_bytes=sum(getattr(artifact, "size_bytes", 0) or 0 for artifact in getattr(job, "artifacts", []).all()) if getattr(job, "artifacts", None) is not None else None,
+        )
+        log_report_metric(logger, "report_jobs_completed", job=job)
         if getattr(job, "status", None) == "FAILED":
             raise RuntimeError(getattr(job, "error_message", "Report generation failed."))
         return {
@@ -25,7 +33,7 @@ def generate_report_job_task(self, report_job_id):
             "status": getattr(job, "status", None),
         }
     except Exception as exc:
-        logger.exception("Report generation task failed report_job=%s", report_job_id)
+        logger.exception("Report generation task failed job_id=%s", report_job_id)
         raise
 
 
@@ -34,6 +42,7 @@ def enqueue_due_report_schedules_task(self, limit=100):
     logger.info("Checking due report schedules limit=%s", limit)
     claimed = claim_due_report_schedules(limit=limit)
     for entry in claimed:
+        log_report_metric(logger, "report_schedule_claimed", schedule_id=entry.schedule_id, queue_latency_ms=None)
         deliver_report_schedule_task.delay(
             entry.schedule_id,
             entry.window_start,
@@ -50,7 +59,7 @@ def enqueue_due_report_schedules_task(self, limit=100):
 
 @shared_task(bind=True, queue="reports")
 def deliver_report_schedule_task(self, schedule_id, window_start=None, window_end=None, trigger_source="SCHEDULED", scheduled_for=None):
-    logger.info("Delivering scheduled report schedule=%s", schedule_id)
+    log_report_event(logger, "Scheduled report delivery", schedule_id=schedule_id, trigger_source=trigger_source)
     try:
         schedule = execute_report_schedule(
             schedule_id,
@@ -59,17 +68,13 @@ def deliver_report_schedule_task(self, schedule_id, window_start=None, window_en
             scheduled_for=scheduled_for,
             trigger_source=trigger_source,
         )
-        logger.info(
-            "Scheduled report delivery finished schedule=%s status=%s",
-            schedule_id,
-            getattr(schedule, "last_delivery_status", None),
-        )
+        log_report_event(logger, "Scheduled report delivery finished", schedule=schedule, trigger_source=trigger_source)
         return {
             "schedule_id": str(schedule_id),
             "status": getattr(schedule, "last_delivery_status", None),
         }
     except Exception as exc:
-        logger.exception("Scheduled report delivery failed schedule=%s", schedule_id)
+        logger.exception("Scheduled report delivery failed schedule_id=%s", schedule_id)
         return {
             "schedule_id": str(schedule_id),
             "status": "FAILED",
@@ -79,12 +84,7 @@ def deliver_report_schedule_task(self, schedule_id, window_start=None, window_en
 
 @shared_task(bind=True, queue="reports")
 def cleanup_expired_report_artifacts_task(self, dry_run=False, batch_size=None, now=None):
-    logger.info(
-        "Cleaning up expired report artifacts dry_run=%s batch_size=%s now=%s",
-        dry_run,
-        batch_size,
-        now,
-    )
+    logger.info("Cleaning up expired report artifacts dry_run=%s batch_size=%s now=%s", dry_run, batch_size, now)
     try:
         result = cleanup_expired_report_artifacts(
             now=now,
@@ -99,6 +99,8 @@ def cleanup_expired_report_artifacts_task(self, dry_run=False, batch_size=None, 
             result.get("skipped"),
             result.get("disabled"),
         )
+        log_report_metric(logger, "report_artifact_cleanup_examined", value=result.get("examined", 0))
+        log_report_metric(logger, "report_artifact_cleanup_deleted", value=result.get("deleted", 0))
         return result
     except Exception:
         logger.exception("Expired report artifact cleanup failed")
@@ -107,7 +109,7 @@ def cleanup_expired_report_artifacts_task(self, dry_run=False, batch_size=None, 
 
 @shared_task(bind=True, queue="reports", max_retries=3)
 def queue_report_deliveries_for_job_task(self, report_job_id):
-    logger.info("Queueing report deliveries report_job=%s", report_job_id)
+    log_report_event(logger, "Queueing report deliveries", job_id=report_job_id)
     try:
         from .models import ReportJob
 
@@ -122,6 +124,7 @@ def queue_report_deliveries_for_job_task(self, report_job_id):
             result.get("queued_count"),
             result.get("skipped_count"),
         )
+        log_report_metric(logger, "report_deliveries_created", job_id=report_job_id, value=result.get("created_count", 0))
         return {
             "report_job_id": str(report_job_id),
             "status": "queued",
@@ -130,25 +133,25 @@ def queue_report_deliveries_for_job_task(self, report_job_id):
             "skipped_count": result.get("skipped_count"),
         }
     except Exception:
-        logger.exception("Report delivery queueing failed report_job=%s", report_job_id)
+        logger.exception("Report delivery queueing failed job_id=%s", report_job_id)
         raise
 
 
 @shared_task(bind=True, queue="reports", max_retries=3)
 def execute_report_delivery_task(self, delivery_id):
-    logger.info("Executing report delivery delivery=%s", delivery_id)
+    log_report_event(logger, "Executing report delivery", delivery_id=delivery_id)
     try:
         delivery = execute_report_delivery(delivery_id=delivery_id)
         if not delivery:
             return {"delivery_id": str(delivery_id), "status": "missing"}
-        logger.info("Report delivery finished delivery=%s status=%s", delivery_id, getattr(delivery, "status", None))
+        log_report_event(logger, "Report delivery finished", delivery=delivery, delivery_count=1)
         return {
             "delivery_id": str(delivery_id),
             "status": getattr(delivery, "status", None),
             "channel": getattr(delivery, "channel", None),
         }
     except Exception as exc:
-        logger.exception("Report delivery failed delivery=%s", delivery_id)
+        logger.exception("Report delivery failed delivery_id=%s", delivery_id)
         if isinstance(exc, (ValidationError, ValueError)):
             raise
         if self.request.retries >= self.max_retries:

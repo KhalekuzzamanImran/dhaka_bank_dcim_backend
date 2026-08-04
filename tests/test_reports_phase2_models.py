@@ -116,7 +116,7 @@ class ReportPhase2ModelTestCase(TestCase):
         self.assertEqual(second["created"], 0)
         self.assertEqual(second["updated"], len(REPORT_DEFINITION_SEEDS))
 
-    def test_schedule_status_and_is_active_remain_mirrored(self):
+    def test_schedule_status_is_canonical_and_is_active_is_not_rewritten(self):
         schedule = self._schedule(status=ReportScheduleStatus.PAUSED)
         schedule.refresh_from_db()
         self.assertEqual(schedule.status, ReportScheduleStatus.PAUSED)
@@ -127,7 +127,7 @@ class ReportPhase2ModelTestCase(TestCase):
         schedule.save(update_fields={"status", "is_active"})
         schedule.refresh_from_db()
         self.assertEqual(schedule.status, ReportScheduleStatus.ACTIVE)
-        self.assertTrue(schedule.is_active)
+        self.assertFalse(schedule.is_active)
 
     def test_claim_due_report_schedules_uses_canonical_status(self):
         active_schedule = self._schedule(status=ReportScheduleStatus.ACTIVE)

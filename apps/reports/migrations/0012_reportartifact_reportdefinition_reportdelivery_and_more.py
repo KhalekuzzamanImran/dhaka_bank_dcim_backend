@@ -6,6 +6,11 @@ from django.conf import settings
 from django.db import migrations, models
 
 
+
+def _add_column_sql(table: str, column: str, definition: str) -> str:
+    return f'ALTER TABLE "{table}" ADD COLUMN IF NOT EXISTS "{column}" {definition};'
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -16,210 +21,545 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.CreateModel(
-            name='ReportArtifact',
-            fields=[
-                ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
-                ('created_at', models.DateTimeField(auto_now_add=True, db_index=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('format', models.CharField(choices=[('CSV', 'CSV'), ('XLSX', 'XLSX'), ('PDF', 'PDF')], max_length=30)),
-                ('file', models.FileField(upload_to='reports/artifacts/')),
-                ('original_filename', models.CharField(max_length=255)),
-                ('content_type', models.CharField(blank=True, default='', max_length=100)),
-                ('size_bytes', models.PositiveBigIntegerField(default=0)),
-                ('checksum_sha256', models.CharField(blank=True, default='', max_length=64)),
-                ('retention_expires_at', models.DateTimeField(blank=True, null=True)),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(
+                    """
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1
+                            FROM information_schema.tables
+                            WHERE table_schema = 'public'
+                              AND table_name = 'report_artifacts'
+                        ) THEN
+                            CREATE TABLE "report_artifacts" (
+                                "id" uuid NOT NULL PRIMARY KEY,
+                                "created_at" timestamp with time zone NOT NULL,
+                                "updated_at" timestamp with time zone NOT NULL,
+                                "format" varchar(30) NOT NULL,
+                                "file" varchar(100) NOT NULL,
+                                "original_filename" varchar(255) NOT NULL,
+                                "content_type" varchar(100) NOT NULL DEFAULT '',
+                                "size_bytes" bigint NOT NULL DEFAULT 0,
+                                "checksum_sha256" varchar(64) NOT NULL DEFAULT '',
+                                "retention_expires_at" timestamp with time zone NULL
+                            );
+                        END IF;
+                    END $$;
+                    """,
+                    reverse_sql='DROP TABLE IF EXISTS "report_artifacts";',
+                ),
             ],
-            options={
-                'db_table': 'report_artifacts',
-            },
+            state_operations=[
+                migrations.CreateModel(
+                    name='ReportArtifact',
+                    fields=[
+                        ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                        ('created_at', models.DateTimeField(auto_now_add=True, db_index=True)),
+                        ('updated_at', models.DateTimeField(auto_now=True)),
+                        ('format', models.CharField(choices=[('CSV', 'CSV'), ('XLSX', 'XLSX'), ('PDF', 'PDF')], max_length=30)),
+                        ('file', models.FileField(upload_to='reports/artifacts/')),
+                        ('original_filename', models.CharField(max_length=255)),
+                        ('content_type', models.CharField(blank=True, default='', max_length=100)),
+                        ('size_bytes', models.PositiveBigIntegerField(default=0)),
+                        ('checksum_sha256', models.CharField(blank=True, default='', max_length=64)),
+                        ('retention_expires_at', models.DateTimeField(blank=True, null=True)),
+                    ],
+                    options={
+                        'db_table': 'report_artifacts',
+                    },
+                ),
+            ],
         ),
-        migrations.CreateModel(
-            name='ReportDefinition',
-            fields=[
-                ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
-                ('created_at', models.DateTimeField(auto_now_add=True, db_index=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('code', models.CharField(max_length=100, unique=True)),
-                ('name', models.CharField(max_length=255)),
-                ('description', models.TextField(blank=True, default='')),
-                ('category', models.CharField(choices=[('INVENTORY', 'Inventory'), ('TELEMETRY', 'Telemetry'), ('POWER', 'Power'), ('ENVIRONMENT', 'Environment'), ('ALERT', 'Alert'), ('AVAILABILITY', 'Availability'), ('NOTIFICATION', 'Notification'), ('AUDIT', 'Audit'), ('CAPACITY', 'Capacity'), ('COMPLIANCE', 'Compliance'), ('EXECUTIVE', 'Executive'), ('INCIDENT', 'Incident')], max_length=32)),
-                ('generator_key', models.CharField(max_length=100, unique=True)),
-                ('parameter_schema', models.JSONField(blank=True, default=dict)),
-                ('supported_formats', models.JSONField(blank=True, default=list)),
-                ('supported_delivery_channels', models.JSONField(blank=True, default=list)),
-                ('requires_telemetry', models.BooleanField(default=False)),
-                ('requires_data_center', models.BooleanField(default=False)),
-                ('is_system', models.BooleanField(default=False)),
-                ('is_active', models.BooleanField(default=True)),
-                ('version', models.PositiveIntegerField(default=1)),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(
+                    """
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1
+                            FROM information_schema.tables
+                            WHERE table_schema = 'public'
+                              AND table_name = 'report_definitions'
+                        ) THEN
+                            CREATE TABLE "report_definitions" (
+                                "id" uuid NOT NULL PRIMARY KEY,
+                                "created_at" timestamp with time zone NOT NULL,
+                                "updated_at" timestamp with time zone NOT NULL,
+                                "code" varchar(100) NOT NULL UNIQUE,
+                                "name" varchar(255) NOT NULL,
+                                "description" text NOT NULL DEFAULT '',
+                                "category" varchar(32) NOT NULL,
+                                "generator_key" varchar(100) NOT NULL UNIQUE,
+                                "parameter_schema" jsonb NOT NULL DEFAULT '{}'::jsonb,
+                                "supported_formats" jsonb NOT NULL DEFAULT '[]'::jsonb,
+                                "supported_delivery_channels" jsonb NOT NULL DEFAULT '[]'::jsonb,
+                                "requires_telemetry" boolean NOT NULL DEFAULT false,
+                                "requires_data_center" boolean NOT NULL DEFAULT false,
+                                "is_system" boolean NOT NULL DEFAULT false,
+                                "is_active" boolean NOT NULL DEFAULT true,
+                                "version" integer NOT NULL DEFAULT 1
+                            );
+                        END IF;
+                    END $$;
+                    """,
+                    reverse_sql='DROP TABLE IF EXISTS "report_definitions";',
+                ),
             ],
-            options={
-                'db_table': 'report_definitions',
-            },
+            state_operations=[
+                migrations.CreateModel(
+                    name='ReportDefinition',
+                    fields=[
+                        ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                        ('created_at', models.DateTimeField(auto_now_add=True, db_index=True)),
+                        ('updated_at', models.DateTimeField(auto_now=True)),
+                        ('code', models.CharField(max_length=100, unique=True)),
+                        ('name', models.CharField(max_length=255)),
+                        ('description', models.TextField(blank=True, default='')),
+                        ('category', models.CharField(choices=[('INVENTORY', 'Inventory'), ('TELEMETRY', 'Telemetry'), ('POWER', 'Power'), ('ENVIRONMENT', 'Environment'), ('ALERT', 'Alert'), ('AVAILABILITY', 'Availability'), ('NOTIFICATION', 'Notification'), ('AUDIT', 'Audit'), ('CAPACITY', 'Capacity'), ('COMPLIANCE', 'Compliance'), ('EXECUTIVE', 'Executive'), ('INCIDENT', 'Incident')], max_length=32)),
+                        ('generator_key', models.CharField(max_length=100, unique=True)),
+                        ('parameter_schema', models.JSONField(blank=True, default=dict)),
+                        ('supported_formats', models.JSONField(blank=True, default=list)),
+                        ('supported_delivery_channels', models.JSONField(blank=True, default=list)),
+                        ('requires_telemetry', models.BooleanField(default=False)),
+                        ('requires_data_center', models.BooleanField(default=False)),
+                        ('is_system', models.BooleanField(default=False)),
+                        ('is_active', models.BooleanField(default=True)),
+                        ('version', models.PositiveIntegerField(default=1)),
+                    ],
+                    options={
+                        'db_table': 'report_definitions',
+                    },
+                ),
+            ],
         ),
-        migrations.CreateModel(
-            name='ReportDelivery',
-            fields=[
-                ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
-                ('created_at', models.DateTimeField(auto_now_add=True, db_index=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('channel', models.CharField(choices=[('EMAIL', 'Email'), ('SMS', 'SMS'), ('WEB', 'Web'), ('WEBHOOK', 'Webhook')], max_length=30)),
-                ('recipient', models.CharField(max_length=255)),
-                ('status', models.CharField(choices=[('PENDING', 'Pending'), ('QUEUED', 'Queued'), ('DELIVERING', 'Delivering'), ('SENT', 'Sent'), ('FAILED', 'Failed'), ('CANCELLED', 'Cancelled')], db_index=True, default='PENDING', max_length=30)),
-                ('queued_at', models.DateTimeField(blank=True, null=True)),
-                ('started_at', models.DateTimeField(blank=True, null=True)),
-                ('sent_at', models.DateTimeField(blank=True, null=True)),
-                ('failed_at', models.DateTimeField(blank=True, null=True)),
-                ('retry_count', models.PositiveIntegerField(default=0)),
-                ('provider_message_id', models.CharField(blank=True, default='', max_length=255)),
-                ('provider_response', models.JSONField(blank=True, default=dict)),
-                ('error_code', models.CharField(blank=True, default='', max_length=64)),
-                ('error_message', models.TextField(blank=True, default='')),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(
+                    """
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1
+                            FROM information_schema.tables
+                            WHERE table_schema = 'public'
+                              AND table_name = 'report_deliveries'
+                        ) THEN
+                            CREATE TABLE "report_deliveries" (
+                                "id" uuid NOT NULL PRIMARY KEY,
+                                "created_at" timestamp with time zone NOT NULL,
+                                "updated_at" timestamp with time zone NOT NULL,
+                                "channel" varchar(30) NOT NULL,
+                                "recipient" varchar(255) NOT NULL,
+                                "status" varchar(30) NOT NULL DEFAULT 'PENDING',
+                                "queued_at" timestamp with time zone NULL,
+                                "started_at" timestamp with time zone NULL,
+                                "sent_at" timestamp with time zone NULL,
+                                "failed_at" timestamp with time zone NULL,
+                                "retry_count" integer NOT NULL DEFAULT 0,
+                                "provider_message_id" varchar(255) NOT NULL DEFAULT '',
+                                "provider_response" jsonb NOT NULL DEFAULT '{}'::jsonb,
+                                "error_code" varchar(64) NOT NULL DEFAULT '',
+                                "error_message" text NOT NULL DEFAULT ''
+                            );
+                        END IF;
+                    END $$;
+                    """,
+                    reverse_sql='DROP TABLE IF EXISTS "report_deliveries";',
+                ),
             ],
-            options={
-                'db_table': 'report_deliveries',
-            },
+            state_operations=[
+                migrations.CreateModel(
+                    name='ReportDelivery',
+                    fields=[
+                        ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                        ('created_at', models.DateTimeField(auto_now_add=True, db_index=True)),
+                        ('updated_at', models.DateTimeField(auto_now=True)),
+                        ('channel', models.CharField(choices=[('EMAIL', 'Email'), ('SMS', 'SMS'), ('WEB', 'Web'), ('WEBHOOK', 'Webhook')], max_length=30)),
+                        ('recipient', models.CharField(max_length=255)),
+                        ('status', models.CharField(choices=[('PENDING', 'Pending'), ('QUEUED', 'Queued'), ('DELIVERING', 'Delivering'), ('SENT', 'Sent'), ('FAILED', 'Failed'), ('CANCELLED', 'Cancelled')], db_index=True, default='PENDING', max_length=30)),
+                        ('queued_at', models.DateTimeField(blank=True, null=True)),
+                        ('started_at', models.DateTimeField(blank=True, null=True)),
+                        ('sent_at', models.DateTimeField(blank=True, null=True)),
+                        ('failed_at', models.DateTimeField(blank=True, null=True)),
+                        ('retry_count', models.PositiveIntegerField(default=0)),
+                        ('provider_message_id', models.CharField(blank=True, default='', max_length=255)),
+                        ('provider_response', models.JSONField(blank=True, default=dict)),
+                        ('error_code', models.CharField(blank=True, default='', max_length=64)),
+                        ('error_message', models.TextField(blank=True, default='')),
+                    ],
+                    options={
+                        'db_table': 'report_deliveries',
+                    },
+                ),
+            ],
         ),
-        migrations.CreateModel(
-            name='ReportScheduleRecipient',
-            fields=[
-                ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
-                ('created_at', models.DateTimeField(auto_now_add=True, db_index=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('channel', models.CharField(choices=[('EMAIL', 'Email'), ('SMS', 'SMS')], max_length=30)),
-                ('display_name', models.CharField(blank=True, default='', max_length=255)),
-                ('email_address', models.EmailField(blank=True, max_length=254, null=True)),
-                ('phone_number', models.CharField(blank=True, max_length=32, null=True)),
-                ('is_active', models.BooleanField(default=True)),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(
+                    """
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1
+                            FROM information_schema.tables
+                            WHERE table_schema = 'public'
+                              AND table_name = 'report_schedule_recipients'
+                        ) THEN
+                            CREATE TABLE "report_schedule_recipients" (
+                                "id" uuid NOT NULL PRIMARY KEY,
+                                "created_at" timestamp with time zone NOT NULL,
+                                "updated_at" timestamp with time zone NOT NULL,
+                                "channel" varchar(30) NOT NULL,
+                                "display_name" varchar(255) NOT NULL DEFAULT '',
+                                "email_address" varchar(254) NULL,
+                                "phone_number" varchar(32) NULL,
+                                "is_active" boolean NOT NULL DEFAULT true
+                            );
+                        END IF;
+                    END $$;
+                    """,
+                    reverse_sql='DROP TABLE IF EXISTS "report_schedule_recipients";',
+                ),
             ],
-            options={
-                'db_table': 'report_schedule_recipients',
-            },
+            state_operations=[
+                migrations.CreateModel(
+                    name='ReportScheduleRecipient',
+                    fields=[
+                        ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                        ('created_at', models.DateTimeField(auto_now_add=True, db_index=True)),
+                        ('updated_at', models.DateTimeField(auto_now=True)),
+                        ('channel', models.CharField(choices=[('EMAIL', 'Email'), ('SMS', 'SMS')], max_length=30)),
+                        ('display_name', models.CharField(blank=True, default='', max_length=255)),
+                        ('email_address', models.EmailField(blank=True, max_length=254, null=True)),
+                        ('phone_number', models.CharField(blank=True, max_length=32, null=True)),
+                        ('is_active', models.BooleanField(default=True)),
+                    ],
+                    options={
+                        'db_table': 'report_schedule_recipients',
+                    },
+                ),
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_definitions", "generator_key", "varchar(100) NULL")),
+                migrations.RunSQL(_add_column_sql("report_definitions", "supported_formats", "jsonb NOT NULL DEFAULT '[]'::jsonb")),
+                migrations.RunSQL(_add_column_sql("report_definitions", "supported_delivery_channels", "jsonb NOT NULL DEFAULT '[]'::jsonb")),
+                migrations.RunSQL(_add_column_sql("report_definitions", "requires_telemetry", "boolean NOT NULL DEFAULT false")),
+                migrations.RunSQL(_add_column_sql("report_definitions", "requires_data_center", "boolean NOT NULL DEFAULT false")),
+                migrations.RunSQL(_add_column_sql("report_definitions", "is_system", "boolean NOT NULL DEFAULT false")),
+                migrations.RunSQL(_add_column_sql("report_templates", "default_parameters", "jsonb NOT NULL DEFAULT '{}'::jsonb")),
+                migrations.RunSQL(_add_column_sql("report_templates", "primary_format", "varchar(30) NULL")),
+                migrations.RunSQL(_add_column_sql("report_templates", "attachment_formats", "jsonb NOT NULL DEFAULT '[]'::jsonb")),
+                migrations.RunSQL(_add_column_sql("report_templates", "include_charts", "boolean NOT NULL DEFAULT false")),
+                migrations.RunSQL(_add_column_sql("report_templates", "include_raw_data", "boolean NOT NULL DEFAULT false")),
+                migrations.RunSQL(_add_column_sql("report_templates", "updated_by_id", "uuid NULL")),
+                migrations.RunSQL(_add_column_sql("report_artifacts", "original_filename", "varchar(255) NOT NULL DEFAULT ''")),
+                migrations.RunSQL(_add_column_sql("report_artifacts", "retention_expires_at", "timestamp with time zone NULL")),
+                migrations.RunSQL(_add_column_sql("report_deliveries", "recipient", "varchar(255) NOT NULL DEFAULT ''")),
+                migrations.RunSQL(_add_column_sql("report_deliveries", "schedule_recipient_id", "uuid NULL")),
+                migrations.RunSQL(_add_column_sql("report_deliveries", "started_at", "timestamp with time zone NULL")),
+                migrations.RunSQL(_add_column_sql("report_deliveries", "sent_at", "timestamp with time zone NULL")),
+                migrations.RunSQL(_add_column_sql("report_deliveries", "retry_count", "integer NOT NULL DEFAULT 0")),
+                migrations.RunSQL(_add_column_sql("report_schedule_recipients", "email_address", "varchar(254) NULL")),
+                migrations.RunSQL(_add_column_sql("report_schedule_recipients", "phone_number", "varchar(32) NULL")),
+            ],
+            state_operations=[],
         ),
         migrations.RemoveIndex(
             model_name='reportjob',
             name='report_jobs_status_f93e87_idx',
         ),
-        migrations.AddField(
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_jobs", "cancelled_at", "timestamp with time zone NULL")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportjob',
             name='cancelled_at',
             field=models.DateTimeField(blank=True, null=True),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_jobs", "error_code", "varchar(64) NOT NULL DEFAULT ''")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportjob',
             name='error_code',
             field=models.CharField(blank=True, default='', max_length=64),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_jobs", "failed_at", "timestamp with time zone NULL")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportjob',
             name='failed_at',
             field=models.DateTimeField(blank=True, null=True),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_jobs", "idempotency_key", "varchar(255) NULL")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportjob',
             name='idempotency_key',
             field=models.CharField(blank=True, db_index=True, max_length=255, null=True),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_jobs", "progress_message", "varchar(255) NOT NULL DEFAULT ''")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportjob',
             name='progress_message',
             field=models.CharField(blank=True, default='', max_length=255),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_jobs", "progress_percent", "smallint NOT NULL DEFAULT 0")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportjob',
             name='progress_percent',
             field=models.PositiveSmallIntegerField(default=0),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_jobs", "schedule_id", "uuid NULL")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportjob',
             name='schedule',
             field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='jobs', to='reports.reportschedule'),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_jobs", "source_event_snapshot", "jsonb NOT NULL DEFAULT '{}'::jsonb")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportjob',
             name='source_event_snapshot',
             field=models.JSONField(blank=True, default=dict),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_jobs", "template_snapshot", "jsonb NOT NULL DEFAULT '{}'::jsonb")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportjob',
             name='template_snapshot',
             field=models.JSONField(blank=True, default=dict),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_schedules", "day_of_month", "smallint NULL")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportschedule',
             name='day_of_month',
             field=models.PositiveSmallIntegerField(blank=True, null=True),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_schedules", "days_of_week", "jsonb NOT NULL DEFAULT '[]'::jsonb")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportschedule',
             name='days_of_week',
             field=models.JSONField(blank=True, default=list),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_schedules", "parameter_overrides", "jsonb NOT NULL DEFAULT '{}'::jsonb")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportschedule',
             name='parameter_overrides',
             field=models.JSONField(blank=True, default=dict),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_schedules", "template_id", "uuid NULL")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportschedule',
             name='template',
             field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='schedules', to='reports.reporttemplate'),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_schedules", "timezone", "varchar(64) NOT NULL DEFAULT 'Asia/Dhaka'")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportschedule',
             name='timezone',
             field=models.CharField(default='Asia/Dhaka', max_length=64),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_schedules", "updated_by_id", "uuid NULL")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportschedule',
             name='updated_by',
             field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='updated_report_schedules', to=settings.AUTH_USER_MODEL),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_schedule_runs", "job_id", "uuid NULL")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportschedulerun',
             name='job',
             field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to='reports.reportjob'),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_schedule_runs", "scheduled_for", "timestamp with time zone NULL")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportschedulerun',
             name='scheduled_for',
             field=models.DateTimeField(blank=True, null=True),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_templates", "attachment_formats", "jsonb NOT NULL DEFAULT '[]'::jsonb")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reporttemplate',
             name='attachment_formats',
             field=models.JSONField(blank=True, default=list),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_templates", "default_parameters", "jsonb NOT NULL DEFAULT '{}'::jsonb")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reporttemplate',
             name='default_parameters',
             field=models.JSONField(blank=True, default=dict),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_templates", "include_charts", "boolean NOT NULL DEFAULT false")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reporttemplate',
             name='include_charts',
             field=models.BooleanField(default=False),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_templates", "include_raw_data", "boolean NOT NULL DEFAULT false")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reporttemplate',
             name='include_raw_data',
             field=models.BooleanField(default=False),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_templates", "primary_format", "varchar(30) NULL")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reporttemplate',
             name='primary_format',
             field=models.CharField(blank=True, max_length=30, null=True),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_templates", "updated_by_id", "uuid NULL")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reporttemplate',
             name='updated_by',
             field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='updated_report_templates', to=settings.AUTH_USER_MODEL),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_templates", "version", "integer NOT NULL DEFAULT 1")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reporttemplate',
             name='version',
             field=models.PositiveIntegerField(default=1),
+        ),
+            ],
         ),
         migrations.AlterField(
             model_name='reportjob',
@@ -241,178 +581,472 @@ class Migration(migrations.Migration):
             name='trigger_source',
             field=models.CharField(choices=[('MANUAL', 'Manual'), ('SCHEDULED', 'Scheduled'), ('EVENT', 'Event')], default='SCHEDULED', max_length=32),
         ),
-        migrations.AddIndex(
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_sche_organiz_06b568_idx" ON "report_schedules" (organization_id, created_at);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportschedule',
             index=models.Index(fields=['organization', 'created_at'], name='report_sche_organiz_06b568_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_sche_data_ce_772ea3_idx" ON "report_schedules" (data_center_id, created_at);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportschedule',
             index=models.Index(fields=['data_center', 'created_at'], name='report_sche_data_ce_772ea3_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_sche_templat_75e449_idx" ON "report_schedules" (template_id);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportschedule',
             index=models.Index(fields=['template'], name='report_sche_templat_75e449_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_sche_status_bb62b9_idx" ON "report_schedules" (status);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportschedule',
             index=models.Index(fields=['status'], name='report_sche_status_bb62b9_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_sche_schedul_dbefbc_idx" ON "report_schedule_runs" (schedule_id, created_at);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportschedulerun',
             index=models.Index(fields=['schedule', 'created_at'], name='report_sche_schedul_dbefbc_idx'),
         ),
-        migrations.AddConstraint(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE UNIQUE INDEX IF NOT EXISTS "uq_report_schedule_run_scheduled_window" ON "report_schedule_runs" (schedule_id, scheduled_for, trigger_source) WHERE (scheduled_for IS NOT NULL AND trigger_source = \'SCHEDULED\');'),
+            ],
+            state_operations=[
+                migrations.AddConstraint(
             model_name='reportschedulerun',
             constraint=models.UniqueConstraint(condition=models.Q(('scheduled_for__isnull', False), ('trigger_source', 'SCHEDULED')), fields=('schedule', 'scheduled_for', 'trigger_source'), name='uq_report_schedule_run_scheduled_window'),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_artifacts", "job_id", "uuid NOT NULL")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportartifact',
             name='job',
             field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='artifacts', to='reports.reportjob'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_defi_categor_febb98_idx" ON "report_definitions" (category);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportdefinition',
             index=models.Index(fields=['category'], name='report_defi_categor_febb98_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_defi_generat_4f8660_idx" ON "report_definitions" (generator_key);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportdefinition',
             index=models.Index(fields=['generator_key'], name='report_defi_generat_4f8660_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_defi_is_acti_855a87_idx" ON "report_definitions" (is_active);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportdefinition',
             index=models.Index(fields=['is_active'], name='report_defi_is_acti_855a87_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_defi_created_a597e3_idx" ON "report_definitions" (created_at);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportdefinition',
             index=models.Index(fields=['created_at'], name='report_defi_created_a597e3_idx'),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_jobs", "definition_id", "uuid NULL")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportjob',
             name='definition',
             field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='jobs', to='reports.reportdefinition'),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_templates", "definition_id", "uuid NULL")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reporttemplate',
             name='definition',
             field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='templates', to='reports.reportdefinition'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_jobs_organiz_c95604_idx" ON "report_jobs" (organization_id, created_at);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportjob',
             index=models.Index(fields=['organization', 'created_at'], name='report_jobs_organiz_c95604_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_jobs_data_ce_62249a_idx" ON "report_jobs" (data_center_id, created_at);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportjob',
             index=models.Index(fields=['data_center', 'created_at'], name='report_jobs_data_ce_62249a_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_jobs_definit_4a3166_idx" ON "report_jobs" (definition_id);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportjob',
             index=models.Index(fields=['definition'], name='report_jobs_definit_4a3166_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_jobs_templat_025366_idx" ON "report_jobs" (template_id);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportjob',
             index=models.Index(fields=['template'], name='report_jobs_templat_025366_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_jobs_schedul_353f37_idx" ON "report_jobs" (schedule_id);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportjob',
             index=models.Index(fields=['schedule'], name='report_jobs_schedul_353f37_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_jobs_status_a52eae_idx" ON "report_jobs" (status, created_at);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportjob',
             index=models.Index(fields=['status', 'created_at'], name='report_jobs_status_a52eae_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_temp_organiz_948127_idx" ON "report_templates" (organization_id, created_at);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reporttemplate',
             index=models.Index(fields=['organization', 'created_at'], name='report_temp_organiz_948127_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_temp_definit_7657be_idx" ON "report_templates" (definition_id);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reporttemplate',
             index=models.Index(fields=['definition'], name='report_temp_definit_7657be_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_temp_is_acti_2cb562_idx" ON "report_templates" (is_active);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reporttemplate',
             index=models.Index(fields=['is_active'], name='report_temp_is_acti_2cb562_idx'),
         ),
-        migrations.AddConstraint(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE UNIQUE INDEX IF NOT EXISTS "uq_report_job_manual_idempotency" ON "report_jobs" (organization_id, requested_by_id, trigger_source, idempotency_key) WHERE (idempotency_key IS NOT NULL AND requested_by_id IS NOT NULL AND trigger_source = \'MANUAL\');'),
+            ],
+            state_operations=[
+                migrations.AddConstraint(
             model_name='reportjob',
             constraint=models.UniqueConstraint(condition=models.Q(('idempotency_key__isnull', False), ('requested_by__isnull', False), ('trigger_source', 'MANUAL')), fields=('organization', 'requested_by', 'trigger_source', 'idempotency_key'), name='uq_report_job_manual_idempotency'),
         ),
-        migrations.AddConstraint(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE UNIQUE INDEX IF NOT EXISTS "uq_report_job_event_definition_idempotency" ON "report_jobs" (organization_id, definition_id, trigger_source, idempotency_key) WHERE (definition_id IS NOT NULL AND idempotency_key IS NOT NULL AND trigger_source = \'EVENT\');'),
+            ],
+            state_operations=[
+                migrations.AddConstraint(
             model_name='reportjob',
             constraint=models.UniqueConstraint(condition=models.Q(('definition__isnull', False), ('idempotency_key__isnull', False), ('trigger_source', 'EVENT')), fields=('organization', 'definition', 'trigger_source', 'idempotency_key'), name='uq_report_job_event_definition_idempotency'),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_deliveries", "job_id", "uuid NOT NULL")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportdelivery',
             name='job',
             field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='deliveries', to='reports.reportjob'),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_schedule_recipients", "schedule_id", "uuid NOT NULL")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportschedulerecipient',
             name='schedule',
             field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='structured_recipients', to='reports.reportschedule'),
         ),
-        migrations.AddField(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(_add_column_sql("report_deliveries", "schedule_recipient_id", "uuid NULL")),
+            ],
+            state_operations=[
+                migrations.AddField(
             model_name='reportdelivery',
             name='schedule_recipient',
             field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='deliveries', to='reports.reportschedulerecipient'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_arti_job_id_e39755_idx" ON "report_artifacts" (job_id);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportartifact',
             index=models.Index(fields=['job'], name='report_arti_job_id_e39755_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_arti_format_9fd75a_idx" ON "report_artifacts" (format);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportartifact',
             index=models.Index(fields=['format'], name='report_arti_format_9fd75a_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_arti_created_79ac34_idx" ON "report_artifacts" (created_at);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportartifact',
             index=models.Index(fields=['created_at'], name='report_arti_created_79ac34_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_sche_schedul_721149_idx" ON "report_schedule_recipients" (schedule_id);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportschedulerecipient',
             index=models.Index(fields=['schedule'], name='report_sche_schedul_721149_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_sche_channel_5d649a_idx" ON "report_schedule_recipients" (channel);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportschedulerecipient',
             index=models.Index(fields=['channel'], name='report_sche_channel_5d649a_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_sche_is_acti_bd9d90_idx" ON "report_schedule_recipients" (is_active);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportschedulerecipient',
             index=models.Index(fields=['is_active'], name='report_sche_is_acti_bd9d90_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_sche_created_8d51a9_idx" ON "report_schedule_recipients" (created_at);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportschedulerecipient',
             index=models.Index(fields=['created_at'], name='report_sche_created_8d51a9_idx'),
         ),
-        migrations.AddConstraint(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL("""DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'report_schedule_recipient_channel_contact_check') THEN ALTER TABLE "report_schedule_recipients" ADD CONSTRAINT "report_schedule_recipient_channel_contact_check" CHECK ((channel = 'EMAIL' AND email_address IS NOT NULL AND email_address <> '') OR (channel = 'SMS' AND phone_number IS NOT NULL AND phone_number <> '')) NOT VALID; END IF; END $$;"""),
+            ],
+            state_operations=[
+                migrations.AddConstraint(
             model_name='reportschedulerecipient',
             constraint=models.CheckConstraint(check=models.Q(models.Q(('channel', 'EMAIL'), ('email_address__isnull', False), models.Q(('email_address', ''), _negated=True)), models.Q(('channel', 'SMS'), ('phone_number__isnull', False), models.Q(('phone_number', ''), _negated=True)), _connector='OR'), name='report_schedule_recipient_channel_contact_check'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_deli_job_id_e63ac9_idx" ON "report_deliveries" (job_id);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportdelivery',
             index=models.Index(fields=['job'], name='report_deli_job_id_e63ac9_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_deli_channel_f2e951_idx" ON "report_deliveries" (channel);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportdelivery',
             index=models.Index(fields=['channel'], name='report_deli_channel_f2e951_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_deli_status_d90beb_idx" ON "report_deliveries" (status);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportdelivery',
             index=models.Index(fields=['status'], name='report_deli_status_d90beb_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_deli_status_a369bf_idx" ON "report_deliveries" (status, created_at);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportdelivery',
             index=models.Index(fields=['status', 'created_at'], name='report_deli_status_a369bf_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_deli_created_0aa69e_idx" ON "report_deliveries" (created_at);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportdelivery',
             index=models.Index(fields=['created_at'], name='report_deli_created_0aa69e_idx'),
         ),
-        migrations.AddIndex(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL('CREATE INDEX IF NOT EXISTS "report_deli_sent_at_82f19a_idx" ON "report_deliveries" (sent_at);'),
+            ],
+            state_operations=[
+                migrations.AddIndex(
             model_name='reportdelivery',
             index=models.Index(fields=['sent_at'], name='report_deli_sent_at_82f19a_idx'),
         ),
-        migrations.AddConstraint(
+            ],
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL("""DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_report_delivery_job_channel_recipient') THEN CREATE UNIQUE INDEX IF NOT EXISTS "uq_report_delivery_job_channel_recipient" ON "report_deliveries" (job_id, channel, recipient) WHERE (recipient IS NOT NULL AND recipient <> ''); END IF; END $$;"""),
+            ],
+            state_operations=[
+                migrations.AddConstraint(
             model_name='reportdelivery',
             constraint=models.UniqueConstraint(fields=('job', 'channel', 'recipient'), name='uq_report_delivery_job_channel_recipient'),
+        ),
+            ],
         ),
     ]

@@ -18,6 +18,10 @@ def _scope_value(scope: dict, key: str) -> set:
     return set(value)
 
 
+def _normalized_scope_ids(scope: dict, key: str) -> set[str]:
+    return {str(value) for value in _scope_value(scope, key)}
+
+
 def user_can_access_organization(user, organization_id) -> bool:
     if not user or not getattr(user, "is_authenticated", False):
         return False
@@ -26,7 +30,7 @@ def user_can_access_organization(user, organization_id) -> bool:
     scope = get_access_scope(user)
     if scope.get("global_access"):
         return True
-    return organization_id in _scope_value(scope, "organization_ids")
+    return str(organization_id) in _normalized_scope_ids(scope, "organization_ids")
 
 
 def user_can_access_data_center(user, data_center_id) -> bool:
@@ -37,7 +41,7 @@ def user_can_access_data_center(user, data_center_id) -> bool:
     scope = get_access_scope(user)
     if scope.get("global_access"):
         return True
-    return data_center_id in _scope_value(scope, "data_center_ids")
+    return str(data_center_id) in _normalized_scope_ids(scope, "data_center_ids")
 
 
 def ensure_organization_access(user, organization):

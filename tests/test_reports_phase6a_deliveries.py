@@ -242,7 +242,7 @@ class ReportPhase6ADeliveryTestCase(TestCase):
 
         _, kwargs = send_mock.call_args
         self.assertEqual(kwargs["attachments"], [])
-        self.assertIn("/api/v1/reports/report-artifacts/", kwargs["body"])
+        self.assertIn("/api/v1/reports/artifacts/", kwargs["body"])
 
     def test_sms_delivery_respects_length_limit_and_uses_no_attachment(self):
         job = self._completed_job(recipient_snapshot={"sms_recipients": ["01329665857"], "send_sms": True})
@@ -393,6 +393,4 @@ class ReportPhase6ADeliveryTestCase(TestCase):
         ):
             execute_report_delivery(delivery_id=delivery.id)
 
-        legacy = ReportScheduleDelivery.objects.get(run__generated_job=job, channel="EMAIL")
-        self.assertEqual(legacy.status, ReportScheduleDeliveryStatus.SENT)
-        self.assertEqual(legacy.provider_message_id, "mail-legacy")
+        self.assertFalse(ReportScheduleDelivery.objects.filter(run__generated_job=job, channel="EMAIL").exists())

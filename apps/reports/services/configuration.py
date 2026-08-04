@@ -13,6 +13,24 @@ from apps.telemetry.models import MetricDefinition
 from ..constants import normalize_key, normalize_report_type, SUPPORTED_REPORT_TYPES
 
 
+DEFINITION_CODE_TO_REPORT_TYPE = {
+    "DEVICE_INVENTORY": "device_inventory",
+    "TELEMETRY_EXPORT": "telemetry_export",
+    "ALERT_SUMMARY": "alert_summary",
+    "ALERT_DETAIL": "alert_export",
+    "NOTIFICATION_DELIVERY": "notification_delivery",
+    "AUDIT_EXPORT": "audit_export",
+    "ENVIRONMENTAL_TREND": "room_environment",
+    "UPS_PERFORMANCE": "ups_performance",
+}
+
+
+def get_report_type_for_definition_code(definition_code: str | None) -> str | None:
+    if not definition_code:
+        return None
+    return DEFINITION_CODE_TO_REPORT_TYPE.get(str(definition_code).strip().upper())
+
+
 SUPPORTED_TEMPLATE_OUTPUT_FORMATS = ["csv", "xlsx", "pdf"]
 
 
@@ -312,7 +330,7 @@ def _normalize_positive_int(value, *, field_name: str, default: int | None = Non
     return parsed
 
 
-def validate_report_template_config(config, *, existing_config: dict | None = None) -> dict:
+def validate_report_template_config(config, *, existing_config: dict | None = None, definition_code: str | None = None) -> dict:
     if not isinstance(config, dict):
         raise ValidationError({"config": "Config must be a dictionary/object."})
 
@@ -320,6 +338,8 @@ def validate_report_template_config(config, *, existing_config: dict | None = No
     normalized.update(config)
 
     report_type = normalize_report_type(normalized.get("report_type"))
+    if not report_type:
+        report_type = get_report_type_for_definition_code(definition_code)
     if not report_type or report_type not in SUPPORTED_REPORT_TYPES:
         raise ValidationError({"report_type": "Unsupported report type."})
     normalized["report_type"] = report_type
@@ -385,7 +405,11 @@ def validate_report_template_config(config, *, existing_config: dict | None = No
 
 
 def build_report_template_options(template) -> dict:
-    report_type = normalize_report_type(getattr(template, "report_type", None) or getattr(template, "config", {}).get("report_type"))
+    report_type = normalize_report_type(
+        getattr(getattr(template, "definition", None), "code", None)
+        or getattr(template, "report_type", None)
+        or getattr(template, "config", {}).get("report_type")
+    )
     if not report_type:
         raise ValidationError({"report_type": "Unsupported report type."})
 

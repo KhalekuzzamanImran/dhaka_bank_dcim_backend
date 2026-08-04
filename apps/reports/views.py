@@ -321,6 +321,7 @@ class ReportDashboardAPIView(APIView):
                 start_at=serializer.validated_data.get("start_at"),
                 end_at=serializer.validated_data.get("end_at"),
                 timezone_name=serializer.validated_data.get("timezone"),
+                request=request,
             )
         except ValidationError as exc:
             if hasattr(exc, "message_dict"):

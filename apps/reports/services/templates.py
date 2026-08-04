@@ -15,6 +15,25 @@ from .definitions import (
 from .permissions import ensure_organization_access, ensure_data_center_access
 
 
+def _definition_code_to_report_type(definition_code: str | None) -> str | None:
+    code = str(definition_code or "").strip().upper()
+    if not code:
+        return None
+    for report_type, mapped_code in {
+        "device_inventory": "DEVICE_INVENTORY",
+        "telemetry_export": "TELEMETRY_EXPORT",
+        "alert_summary": "ALERT_SUMMARY",
+        "alert_export": "ALERT_DETAIL",
+        "notification_delivery": "NOTIFICATION_DELIVERY",
+        "audit_export": "AUDIT_EXPORT",
+        "room_environment": "ENVIRONMENTAL_TREND",
+        "ups_performance": "UPS_PERFORMANCE",
+    }.items():
+        if mapped_code == code:
+            return report_type
+    return None
+
+
 def build_report_template_snapshot(template) -> dict:
     return {
         "id": str(template.pk),
@@ -70,18 +89,18 @@ def create_report_template(*, actor=None, organization, data_center=None, defini
         if data_center.organization_id != organization.id:
             raise ValidationError({"data_center": "Data center must belong to the selected organization."})
 
-    config = validate_report_template_config(config or {}, existing_config={})
-    report_type = config.get("report_type")
-    expected_definition_code = get_definition_code_for_report_type(report_type)
-    if definition_code and expected_definition_code and definition_code != expected_definition_code:
-        raise ValidationError({"definition": "Definition must match the report type."})
-    definition_code = definition_code or expected_definition_code
     definition = get_active_definition_by_code(definition_code) if definition_code else None
-
-    if report_type and not definition:
-        raise ValidationError({"definition": "A matching active report definition is required."})
     if definition_code and not definition:
         raise ValidationError({"definition": "Selected report definition is inactive or unknown."})
+
+    config = dict(config or {})
+    config = validate_report_template_config(config, existing_config={}, definition_code=definition.code if definition else None)
+    report_type = config.get("report_type")
+    if definition is None and report_type:
+        expected_definition_code = get_definition_code_for_report_type(report_type)
+        definition = get_active_definition_by_code(expected_definition_code) if expected_definition_code else None
+        if not definition:
+            raise ValidationError({"definition": "A matching active report definition is required."})
 
     if definition:
         validate_definition_request(
@@ -126,18 +145,18 @@ def update_report_template(template, *, actor=None, organization=None, data_cent
 
     existing_signature = _template_signature(template)
 
-    config = validate_report_template_config(config if config is not None else template.config, existing_config=template.config or {})
-    report_type = config.get("report_type")
-    expected_definition_code = get_definition_code_for_report_type(report_type)
-    if definition_code and expected_definition_code and definition_code != expected_definition_code:
-        raise ValidationError({"definition": "Definition must match the report type."})
-    definition_code = definition_code or expected_definition_code
     definition = get_active_definition_by_code(definition_code) if definition_code else template.definition
-
-    if report_type and not definition:
-        raise ValidationError({"definition": "A matching active report definition is required."})
     if definition_code and not definition:
         raise ValidationError({"definition": "Selected report definition is inactive or unknown."})
+
+    config = dict(config if config is not None else template.config)
+    config = validate_report_template_config(config, existing_config=template.config or {}, definition_code=definition.code if definition else None)
+    report_type = config.get("report_type")
+    if definition is None and report_type:
+        expected_definition_code = get_definition_code_for_report_type(report_type)
+        definition = get_active_definition_by_code(expected_definition_code) if expected_definition_code else None
+        if not definition:
+            raise ValidationError({"definition": "A matching active report definition is required."})
     if definition:
         validate_definition_request(
             definition,

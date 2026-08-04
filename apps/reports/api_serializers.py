@@ -50,6 +50,7 @@ from .services.permissions import (
     report_schedule_run_allowed_actions,
     report_template_allowed_actions,
 )
+from .constants import normalize_report_type
 from .services.templates import create_report_template, update_report_template
 
 
@@ -459,7 +460,11 @@ class ReportTemplateWriteSerializer(serializers.Serializer):
         attrs["name"] = name
         attrs["code"] = code
         attrs["description"] = description
-        attrs["configuration"] = validate_report_template_config(configuration, existing_config={})
+        attrs["configuration"] = validate_report_template_config(
+            configuration,
+            existing_config={},
+            definition_code=definition.code if definition else None,
+        )
         attrs["default_parameters"] = validated["parameters"]
         attrs["primary_format"] = validated["primary_format"]
         attrs["attachment_formats"] = validated["attachment_formats"]
@@ -639,7 +644,7 @@ class ReportScheduleReadSerializer(serializers.ModelSerializer):
         return obj.last_delivery_status
 
     def get_last_failure_at(self, obj):
-        if obj.last_job_id and getattr(obj.last_job, "status", None) == ReportJobStatus.FAILED:
+        if obj.last_job_id and getattr(obj.last_job, "status", None) == ReportJobStatusV2.FAILED:
             failed_at = getattr(obj.last_job, "failed_at", None) or getattr(obj.last_job, "completed_at", None)
             return failed_at.isoformat() if failed_at else None
         return None
@@ -875,7 +880,7 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
             "data_center": data_center,
             "template": template,
             "name": validated_data["name"],
-            "report_type": template.report_type,
+            "report_type": normalize_report_type(template.definition.code) if template.definition_id else None,
             "frequency": validated_data["frequency"],
             "timezone": validated_data["timezone"],
             "delivery_time": _parse_time_value(validated_data.get("delivery_time") or template.config.get("delivery_time")) or time_cls(6, 0),
@@ -953,10 +958,10 @@ class ReportScheduleRunSerializer(serializers.ModelSerializer):
         return _schedule_summary(obj.schedule)
 
     def get_job(self, obj):
-        return _job_summary(obj.generated_job or obj.job)
+        return _job_summary(obj.job)
 
     def get_artifact_formats(self, obj):
-        job = obj.generated_job or obj.job
+        job = obj.job
         if not job:
             return []
         artifacts = getattr(job, "_prefetched_artifacts", None)
@@ -965,7 +970,7 @@ class ReportScheduleRunSerializer(serializers.ModelSerializer):
         return [artifact.format for artifact in artifacts]
 
     def get_delivery_summary(self, obj):
-        job = obj.generated_job or obj.job
+        job = obj.job
         if not job:
             return {}
         return report_delivery_summary(job)

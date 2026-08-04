@@ -298,8 +298,10 @@ class ReportPhase6CApiTestCase(TestCase):
         self.assertIn("definitions", options.json())
         self.assertIn("supported_formats", options.json())
 
+        canonical_templates = self.client.get("/api/v1/reports/templates/")
+        self.assertEqual(canonical_templates.status_code, 200)
         legacy_templates = self.client.get("/api/v1/reports/report-templates/")
-        self.assertEqual(legacy_templates.status_code, 200)
+        self.assertEqual(legacy_templates.status_code, 404)
 
         template = ReportTemplate.objects.create(
             organization=self.org,
@@ -339,5 +341,5 @@ class ReportPhase6CApiTestCase(TestCase):
 
         with self.captureOnCommitCallbacks(execute=True):
             with patch("apps.reports.tasks.deliver_report_schedule_task.delay") as mocked_delay:
-                legacy_run_now = self.client.post(f"/api/v1/reports/report-schedules/{schedule.id}/run_now/", {}, format="json")
+                legacy_run_now = self.client.post(f"/api/v1/reports/schedules/{schedule.id}/run-now/", {}, format="json")
                 self.assertEqual(legacy_run_now.status_code, 202)

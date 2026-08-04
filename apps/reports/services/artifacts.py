@@ -72,9 +72,6 @@ def _allowed_output_formats(job: ReportJob) -> set[str]:
         candidate = str(value or "").strip().upper()
         if not candidate:
             continue
-        if candidate == "PDF_CSV":
-            normalized.update({"PDF", "CSV"})
-            continue
         normalized.add(candidate)
     return normalized
 
@@ -88,7 +85,7 @@ def _safe_filename_base(job: ReportJob) -> str:
     if not template_name and getattr(job.definition, "name", None):
         template_name = job.definition.name
     if not template_name:
-        template_name = job.report_type or "report"
+        template_name = getattr(job.definition, "code", None) or getattr(job.template, "code", None) or "report"
     base = slugify(str(template_name)) or "report"
     return re.sub(r"[^a-z0-9_-]+", "-", base).strip("-_") or "report"
 
