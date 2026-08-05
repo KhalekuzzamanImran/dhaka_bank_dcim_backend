@@ -461,11 +461,15 @@ def _upcoming_schedules(scope: DashboardScope) -> list[dict]:
         if next_run_at is None or next_run_at < now:
             continue
         structured = list(getattr(schedule, "_prefetched_objects_cache", {}).get("structured_recipients", []))
-        emails = {value for value in schedule.normalize_recipients()}
+        emails = {
+            str(row.email_address).strip().lower()
+            for row in structured
+            if row.is_active and row.channel == "EMAIL" and row.email_address
+        }
         sms_values = {
-            str(value).strip()
-            for value in (schedule.sms_recipients if isinstance(schedule.sms_recipients, list) else [])
-            if str(value).strip()
+            str(row.phone_number).strip()
+            for row in structured
+            if row.is_active and row.channel == "SMS" and row.phone_number
         }
         for row in structured:
             if not row.is_active:

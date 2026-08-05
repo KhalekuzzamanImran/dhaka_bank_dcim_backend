@@ -33,8 +33,13 @@ from .models import (
     ReportTemplate,
 )
 from .services.configuration import build_report_template_options, validate_report_template_config
-from .services.definitions import build_definition_capabilities, get_active_definition_by_code, validate_definition_request
-from .services.deliveries import report_delivery_summary
+from .services.definitions import (
+    build_definition_capabilities,
+    get_active_definition_by_code,
+    get_definition_by_code,
+    validate_definition_request,
+)
+from .services.deliveries import build_report_delivery_summary, report_delivery_summary
 from .services.factory import build_output_config_snapshot, build_parameters_snapshot, build_recipient_snapshot, build_scope_snapshot, build_source_event_snapshot, build_template_snapshot, create_report_job
 from .services.permissions import (
     ensure_data_center_access,
@@ -283,6 +288,29 @@ class ReportDefinitionSchemaSerializer(serializers.Serializer):
     version = serializers.IntegerField(read_only=True)
 
 
+class ReportDashboardQuerySerializer(serializers.Serializer):
+    organization = serializers.UUIDField(required=False)
+    data_center = serializers.UUIDField(required=False)
+    start_at = serializers.DateTimeField(required=False)
+    end_at = serializers.DateTimeField(required=False)
+    timezone = serializers.CharField(required=False, allow_blank=True)
+
+
+class ReportDashboardResponseSerializer(serializers.Serializer):
+    range = serializers.JSONField(read_only=True)
+    summary = serializers.JSONField(read_only=True)
+    generation_trend = serializers.JSONField(read_only=True)
+    by_definition = serializers.JSONField(read_only=True)
+    by_format = serializers.JSONField(read_only=True)
+    delivery_summary = serializers.JSONField(read_only=True)
+    recent_jobs = serializers.JSONField(read_only=True)
+    upcoming_schedules = serializers.JSONField(read_only=True)
+    recent_failures = serializers.JSONField(read_only=True)
+    frequent_templates = serializers.JSONField(read_only=True)
+    schedule_health = serializers.JSONField(read_only=True)
+    operational_health = serializers.JSONField(read_only=True)
+
+
 class ReportTemplateReadSerializer(serializers.ModelSerializer):
     organization = serializers.SerializerMethodField(read_only=True)
     data_center = serializers.SerializerMethodField(read_only=True)
@@ -417,7 +445,7 @@ class ReportTemplateWriteSerializer(serializers.Serializer):
             if isinstance(definition_code, ReportDefinition):
                 definition = definition_code
             else:
-                definition = ReportDefinition.objects.filter(code=definition_code).first()
+                definition = get_definition_by_code(definition_code)
         else:
             definition = None
 
@@ -515,6 +543,8 @@ class ReportTemplateWriteSerializer(serializers.Serializer):
 
 class ReportScheduleRecipientSerializer(serializers.Serializer):
     channel = serializers.ChoiceField(choices=ReportRecipientChannel.choices)
+    recipient_type = serializers.CharField(required=False, allow_blank=True, allow_null=True, default="")
+    destination = serializers.CharField(required=False, allow_blank=True, allow_null=True, default="")
     display_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, default="")
     email_address = serializers.EmailField(required=False, allow_null=True, allow_blank=True)
     phone_number = serializers.CharField(required=False, allow_null=True, allow_blank=True)
@@ -530,11 +560,15 @@ class ReportScheduleRecipientSerializer(serializers.Serializer):
                 raise serializers.ValidationError({"email_address": "Email recipients require an email address."})
             attrs["email_address"] = email_address.lower()
             attrs["phone_number"] = None
+            attrs["recipient_type"] = ReportRecipientChannel.EMAIL
+            attrs["destination"] = attrs["email_address"]
         elif channel == ReportRecipientChannel.SMS:
             if not phone_number:
                 raise serializers.ValidationError({"phone_number": "SMS recipients require a phone number."})
             attrs["phone_number"] = phone_number
             attrs["email_address"] = None
+            attrs["recipient_type"] = ReportRecipientChannel.SMS
+            attrs["destination"] = attrs["phone_number"]
         attrs["display_name"] = (attrs.get("display_name") or "").strip()
         attrs["is_active"] = bool(attrs.get("is_active", True))
         return attrs
@@ -545,7 +579,10 @@ class ReportScheduleReadSerializer(serializers.ModelSerializer):
     data_center = serializers.SerializerMethodField(read_only=True)
     template = serializers.SerializerMethodField(read_only=True)
     definition = serializers.SerializerMethodField(read_only=True)
+    recent_runs = serializers.SerializerMethodField(read_only=True)
     recipients = serializers.SerializerMethodField(read_only=True)
+    sms_recipients = serializers.SerializerMethodField(read_only=True)
+    send_sms = serializers.SerializerMethodField(read_only=True)
     created_by = serializers.SerializerMethodField(read_only=True)
     updated_by = serializers.SerializerMethodField(read_only=True)
     last_result = serializers.SerializerMethodField(read_only=True)
@@ -575,7 +612,10 @@ class ReportScheduleReadSerializer(serializers.ModelSerializer):
             "last_success_at",
             "last_failure_at",
             "parameter_overrides",
+            "recent_runs",
             "recipients",
+            "sms_recipients",
+            "send_sms",
             "primary_format",
             "attachment_formats",
             "last_result",
@@ -601,10 +641,30 @@ class ReportScheduleReadSerializer(serializers.ModelSerializer):
     def get_definition(self, obj):
         return _definition_summary(obj.template.definition if obj.template_id and obj.template and obj.template.definition_id else None)
 
+    def get_recent_runs(self, obj):
+        runs = getattr(obj, "_prefetched_recent_runs", None)
+        if runs is None:
+            runs = (
+                obj.runs.select_related("schedule", "job", "requested_by")
+                .prefetch_related("deliveries", "job__artifacts")
+                .order_by("-created_at")[:3]
+            )
+        else:
+            runs = list(runs)[:3]
+        return [ReportScheduleRunSerializer(run, context=self.context).data for run in runs]
+
     def get_recipients(self, obj):
         structured = getattr(obj, "structured_recipients", None)
         rows = structured.all() if structured is not None else []
-        return [_schedule_recipient_summary(row) for row in rows]
+        return [_schedule_recipient_summary(row) for row in rows if row.channel == ReportRecipientChannel.EMAIL]
+
+    def get_sms_recipients(self, obj):
+        structured = getattr(obj, "structured_recipients", None)
+        rows = structured.all() if structured is not None else []
+        return [_schedule_recipient_summary(row) for row in rows if row.channel == ReportRecipientChannel.SMS]
+
+    def get_send_sms(self, obj):
+        return bool(getattr(obj, "send_sms", False))
 
     def get_created_by(self, obj):
         return _user_summary(getattr(obj, "created_by", None))
@@ -625,8 +685,23 @@ class ReportScheduleReadSerializer(serializers.ModelSerializer):
 
     def get_delivery_summary(self, obj):
         if obj.last_job_id:
-            return report_delivery_summary(obj.last_job)
-        return obj.last_delivery_status or "PENDING"
+            return build_report_delivery_summary(obj.last_job)
+        status = obj.last_delivery_status or "PENDING"
+        label = "No runs yet" if not obj.last_run_at and not obj.last_job_id else status
+        return {
+            "status": status,
+            "label": label,
+            "totals": {
+                "total": 0,
+                "sent": 0,
+                "failed": 0,
+                "pending": 0,
+                "queued": 0,
+                "delivering": 0,
+                "cancelled": 0,
+            },
+            "channels": {},
+        }
 
     def get_allowed_actions(self, obj):
         request = self.context.get("request")
@@ -648,6 +723,8 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
     end_at = serializers.DateTimeField(required=False, allow_null=True)
     parameter_overrides = serializers.JSONField(required=False, default=dict)
     recipients = serializers.ListField(child=serializers.JSONField(), required=False, default=list)
+    sms_recipients = serializers.ListField(child=serializers.JSONField(), required=False, default=list)
+    send_sms = serializers.BooleanField(required=False, default=False)
     primary_format = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     attachment_formats = serializers.ListField(child=serializers.CharField(), required=False, default=list)
 
@@ -666,6 +743,8 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
         end_at = attrs.get("end_at")
         parameter_overrides = attrs.get("parameter_overrides")
         recipients = attrs.get("recipients")
+        sms_recipients = attrs.get("sms_recipients")
+        send_sms = attrs.get("send_sms")
         primary_format = attrs.get("primary_format")
         attachment_formats = attrs.get("attachment_formats")
 
@@ -699,16 +778,37 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
             if "recipients" not in self.initial_data:
                 structured = list(self.instance.structured_recipients.all())
                 recipients = [
-                    {
-                        "channel": row.channel,
-                        "display_name": row.display_name,
-                        "email_address": row.email_address,
-                        "phone_number": row.phone_number,
-                        "is_active": row.is_active,
+                {
+                    "channel": row.channel,
+                    "recipient_type": row.recipient_type,
+                    "destination": row.destination,
+                    "display_name": row.display_name,
+                    "email_address": row.email_address,
+                    "phone_number": row.phone_number,
+                    "is_active": row.is_active,
                     }
                     for row in structured
+                    if row.channel == ReportRecipientChannel.EMAIL
                 ]
                 attrs["recipients"] = recipients
+            if "sms_recipients" not in self.initial_data:
+                structured = list(self.instance.structured_recipients.all())
+                sms_recipients = [
+                {
+                    "channel": row.channel,
+                    "recipient_type": row.recipient_type,
+                    "destination": row.destination,
+                    "display_name": row.display_name,
+                    "email_address": row.email_address,
+                    "phone_number": row.phone_number,
+                    "is_active": row.is_active,
+                    }
+                    for row in structured
+                    if row.channel == ReportRecipientChannel.SMS
+                ]
+                attrs["sms_recipients"] = sms_recipients
+            if "send_sms" not in self.initial_data:
+                send_sms = self.instance.send_sms
             if "primary_format" not in self.initial_data:
                 primary_format = self.instance.primary_format
             if "attachment_formats" not in self.initial_data:
@@ -746,30 +846,74 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
             raise serializers.ValidationError({"definition": "Selected report definition is inactive or unavailable."})
 
         raw_recipients = attrs.get("recipients") or []
+        raw_sms_recipients = attrs.get("sms_recipients") or []
         normalized_recipients = []
-        seen = set()
+        normalized_sms_recipients = []
+        email_seen = set()
+        sms_seen = set()
+
+        email_field = serializers.EmailField()
+
         for item in raw_recipients:
             if isinstance(item, str):
+                email_address = email_field.run_validation(item.strip())
+                key = str(email_address).lower()
+                if key in email_seen:
+                    continue
+                email_seen.add(key)
                 normalized_recipients.append(
                     {
                         "channel": ReportRecipientChannel.EMAIL,
                         "display_name": "",
-                        "email_address": item.strip().lower(),
+                        "email_address": key,
                         "phone_number": None,
                         "is_active": True,
                     }
                 )
                 continue
             if not isinstance(item, dict):
-                raise serializers.ValidationError({"recipients": "Recipients must be objects."})
+                raise serializers.ValidationError({"recipients": "Recipient emails must be strings or objects."})
             recipient_serializer = ReportScheduleRecipientSerializer(data=item)
             recipient_serializer.is_valid(raise_exception=True)
             cleaned = recipient_serializer.validated_data
-            key = (cleaned["channel"], cleaned.get("email_address") or cleaned.get("phone_number"))
-            if key in seen:
+            if cleaned["channel"] != ReportRecipientChannel.EMAIL:
+                raise serializers.ValidationError({"recipients": "Recipient Email entries must be email addresses."})
+            key = cleaned.get("email_address")
+            if key in email_seen:
                 continue
-            seen.add(key)
+            email_seen.add(key)
             normalized_recipients.append(cleaned)
+
+        for item in raw_sms_recipients:
+            if isinstance(item, str):
+                phone_number = str(item).strip()
+                if not phone_number:
+                    continue
+                if phone_number in sms_seen:
+                    continue
+                sms_seen.add(phone_number)
+                normalized_sms_recipients.append(
+                    {
+                        "channel": ReportRecipientChannel.SMS,
+                        "display_name": "",
+                        "email_address": None,
+                        "phone_number": phone_number,
+                        "is_active": True,
+                    }
+                )
+                continue
+            if not isinstance(item, dict):
+                raise serializers.ValidationError({"sms_recipients": "SMS recipients must be strings or objects."})
+            recipient_serializer = ReportScheduleRecipientSerializer(data=item)
+            recipient_serializer.is_valid(raise_exception=True)
+            cleaned = recipient_serializer.validated_data
+            if cleaned["channel"] != ReportRecipientChannel.SMS:
+                raise serializers.ValidationError({"sms_recipients": "SMS recipient entries must use the SMS channel."})
+            key = cleaned.get("phone_number")
+            if key in sms_seen:
+                continue
+            sms_seen.add(key)
+            normalized_sms_recipients.append(cleaned)
 
         attrs["organization"] = organization
         attrs["data_center"] = data_center
@@ -780,6 +924,8 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
         attrs["frequency"] = frequency
         attrs["parameter_overrides"] = parameter_overrides or {}
         attrs["recipients"] = normalized_recipients if recipients is not None else recipients
+        attrs["sms_recipients"] = normalized_sms_recipients if sms_recipients is not None else sms_recipients
+        attrs["send_sms"] = bool(send_sms)
         attrs["primary_format"] = (primary_format or template.primary_format or template.config.get("output_format") or "CSV").upper()
         attrs["attachment_formats"] = _normalize_string_list(attachment_formats or template.attachment_formats or [])
         attrs["days_of_week"] = days_of_week or []
@@ -795,7 +941,7 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
                 attrs["parameter_overrides"],
                 attrs["primary_format"],
                 attrs["attachment_formats"],
-                [recipient["channel"] for recipient in normalized_recipients],
+                [recipient["channel"] for recipient in normalized_recipients + (normalized_sms_recipients if attrs["send_sms"] else [])],
             )
         except ValidationError as exc:
             if hasattr(exc, "message_dict"):
@@ -804,7 +950,7 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
 
         return attrs
 
-    def _sync_recipients(self, schedule, recipients):
+    def _sync_recipients(self, schedule, recipients, sms_recipients):
         existing = list(schedule.structured_recipients.all())
         if existing:
             schedule.structured_recipients.all().delete()
@@ -814,6 +960,21 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
                 ReportScheduleRecipient(
                     schedule=schedule,
                     channel=recipient["channel"],
+                    recipient_type=recipient.get("recipient_type") or recipient["channel"],
+                    destination=recipient.get("destination") or recipient.get("email_address") or recipient.get("phone_number") or "",
+                    display_name=recipient.get("display_name") or "",
+                    email_address=recipient.get("email_address"),
+                    phone_number=recipient.get("phone_number"),
+                    is_active=recipient.get("is_active", True),
+                )
+            )
+        for recipient in sms_recipients:
+            rows.append(
+                ReportScheduleRecipient(
+                    schedule=schedule,
+                    channel=recipient["channel"],
+                    recipient_type=recipient.get("recipient_type") or recipient["channel"],
+                    destination=recipient.get("destination") or recipient.get("email_address") or recipient.get("phone_number") or "",
                     display_name=recipient.get("display_name") or "",
                     email_address=recipient.get("email_address"),
                     phone_number=recipient.get("phone_number"),
@@ -829,6 +990,7 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
         data_center = validated_data.get("data_center")
         template = validated_data["template"]
         recipients = validated_data.get("recipients") or []
+        sms_recipients = validated_data.get("sms_recipients") or []
         status_value = validated_data.get("status", ReportScheduleStatus.ACTIVE)
         defaults = {
             "organization": organization,
@@ -845,6 +1007,7 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
             "parameter_overrides": validated_data.get("parameter_overrides") or {},
             "primary_format": validated_data.get("primary_format"),
             "attachment_formats": validated_data.get("attachment_formats") or [],
+            "send_sms": bool(validated_data.get("send_sms", False)),
             "status": status_value,
             "created_by": actor if instance is None else getattr(instance, "created_by", None),
             "updated_by": actor,
@@ -863,7 +1026,7 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
             instance.save()
             schedule = instance
 
-        self._sync_recipients(schedule, recipients)
+        self._sync_recipients(schedule, recipients, sms_recipients)
         return schedule
 
     def create(self, validated_data):
@@ -924,7 +1087,7 @@ class ReportScheduleRunSerializer(serializers.ModelSerializer):
         job = obj.job
         if not job:
             return {}
-        return report_delivery_summary(job)
+        return build_report_delivery_summary(job)
 
     def get_allowed_actions(self, obj):
         request = self.context.get("request")

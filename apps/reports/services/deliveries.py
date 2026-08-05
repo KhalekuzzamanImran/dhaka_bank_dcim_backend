@@ -94,6 +94,18 @@ def _masked_recipient(recipient: str) -> str:
     return f"{recipient[:3]}***{recipient[-2:]}"
 
 
+def _map_notification_status(status: str) -> str:
+    if status == NotificationStatus.PENDING:
+        return ReportDeliveryStatus.PENDING
+    if status == NotificationStatus.DELIVERING:
+        return ReportDeliveryStatus.DELIVERING
+    if status == NotificationStatus.SENT:
+        return ReportDeliveryStatus.SENT
+    if status == NotificationStatus.FAILED:
+        return ReportDeliveryStatus.FAILED
+    return ReportDeliveryStatus.QUEUED if status == NotificationStatus.DELIVERING else ReportDeliveryStatus.PENDING
+
+
 def _artifact_download_url(artifact: ReportArtifact) -> str:
     return f"/api/v1/reports/artifacts/{artifact.pk}/download/"
 
@@ -332,24 +344,132 @@ def _create_notification_delivery(report_delivery: ReportDelivery) -> Notificati
     return notification_delivery
 
 
-def report_delivery_summary(job: ReportJob) -> str:
+def _delivery_channel_label(channel: str) -> str:
+    if channel == NotificationChannel.EMAIL:
+        return "Email"
+    if channel == NotificationChannel.SMS:
+        return "SMS"
+    return str(channel or "Delivery").strip().title() or "Delivery"
+
+
+def _summarize_delivery_channel(deliveries: list[ReportDelivery], channel: str) -> dict:
+    counts = {
+        "total": 0,
+        "sent": 0,
+        "failed": 0,
+        "pending": 0,
+        "queued": 0,
+        "delivering": 0,
+        "cancelled": 0,
+    }
+    for delivery in deliveries:
+        if delivery.channel != channel:
+            continue
+        counts["total"] += 1
+        if delivery.status == ReportDeliveryStatus.SENT:
+            counts["sent"] += 1
+        elif delivery.status == ReportDeliveryStatus.FAILED:
+            counts["failed"] += 1
+        elif delivery.status == ReportDeliveryStatus.CANCELLED:
+            counts["cancelled"] += 1
+        elif delivery.status == ReportDeliveryStatus.DELIVERING:
+            counts["delivering"] += 1
+        elif delivery.status == ReportDeliveryStatus.QUEUED:
+            counts["queued"] += 1
+        else:
+            counts["pending"] += 1
+
+    channel_label = _delivery_channel_label(channel)
+    if counts["total"] == 0:
+        status = "NONE"
+        label = None
+    elif counts["sent"] == counts["total"]:
+        status = "SENT"
+        label = f"{channel_label} Sent"
+    elif counts["sent"] > 0:
+        status = "PARTIAL"
+        label = f"Partially {channel_label} Sent"
+    elif counts["queued"] or counts["pending"] or counts["delivering"]:
+        status = "PENDING"
+        label = f"{channel_label} Pending"
+    elif counts["cancelled"] == counts["total"]:
+        status = "CANCELLED"
+        label = f"{channel_label} Cancelled"
+    elif counts["failed"] == counts["total"]:
+        status = "FAILED"
+        label = f"{channel_label} Failed"
+    else:
+        status = "FAILED"
+        label = f"{channel_label} Failed"
+
+    return {
+        "channel": channel,
+        "label": label,
+        "status": status,
+        **counts,
+    }
+
+
+def build_report_delivery_summary(job: ReportJob) -> dict:
     deliveries = list(job.deliveries.all())
-    if not deliveries:
-        return "NONE"
-    statuses = [delivery.status for delivery in deliveries]
-    if any(status == ReportDeliveryStatus.DELIVERING for status in statuses):
-        return "IN_PROGRESS"
-    if any(status in {ReportDeliveryStatus.PENDING, ReportDeliveryStatus.QUEUED} for status in statuses):
-        return "PENDING"
-    if all(status == ReportDeliveryStatus.SENT for status in statuses):
-        return "SENT"
-    if any(status == ReportDeliveryStatus.SENT for status in statuses) and any(status == ReportDeliveryStatus.FAILED for status in statuses):
-        return "PARTIAL"
-    if all(status == ReportDeliveryStatus.FAILED for status in statuses):
-        return "FAILED"
-    if any(status == ReportDeliveryStatus.FAILED for status in statuses):
-        return "PARTIAL"
-    return "NONE"
+    channel_order = [NotificationChannel.EMAIL, NotificationChannel.SMS]
+    channels = [_summarize_delivery_channel(deliveries, channel) for channel in channel_order]
+    present_channels = [item for item in channels if item["total"] > 0]
+
+    totals = {
+        "total": len(deliveries),
+        "sent": sum(1 for delivery in deliveries if delivery.status == ReportDeliveryStatus.SENT),
+        "failed": sum(1 for delivery in deliveries if delivery.status == ReportDeliveryStatus.FAILED),
+        "pending": sum(1 for delivery in deliveries if delivery.status == ReportDeliveryStatus.PENDING),
+        "queued": sum(1 for delivery in deliveries if delivery.status == ReportDeliveryStatus.QUEUED),
+        "delivering": sum(1 for delivery in deliveries if delivery.status == ReportDeliveryStatus.DELIVERING),
+        "cancelled": sum(1 for delivery in deliveries if delivery.status == ReportDeliveryStatus.CANCELLED),
+    }
+
+    if not present_channels:
+        return {
+            "status": "NONE",
+            "label": "No deliveries yet",
+            "totals": totals,
+            "channels": {
+                NotificationChannel.EMAIL: channels[0],
+                NotificationChannel.SMS: channels[1],
+            },
+        }
+
+    present_labels = [channel["label"] for channel in present_channels if channel["label"]]
+    if len(present_channels) == 1:
+        overall_status = present_channels[0]["status"]
+        overall_label = present_labels[0] if present_labels else "No deliveries yet"
+    elif any(channel["status"] == "PENDING" for channel in present_channels):
+        overall_status = "PENDING" if all(channel["status"] == "PENDING" for channel in present_channels) else "PARTIAL"
+        overall_label = " + ".join(present_labels) if present_labels else "Pending"
+    elif all(channel["status"] == "SENT" for channel in present_channels):
+        overall_status = "SENT"
+        overall_label = " + ".join(present_labels)
+    elif all(channel["status"] == "FAILED" for channel in present_channels):
+        overall_status = "FAILED"
+        overall_label = " + ".join(present_labels)
+    elif all(channel["status"] == "CANCELLED" for channel in present_channels):
+        overall_status = "CANCELLED"
+        overall_label = " + ".join(present_labels)
+    else:
+        overall_status = "PARTIAL"
+        overall_label = " + ".join(present_labels)
+
+    return {
+        "status": overall_status,
+        "label": overall_label or overall_status,
+        "totals": totals,
+        "channels": {
+            NotificationChannel.EMAIL: channels[0],
+            NotificationChannel.SMS: channels[1],
+        },
+    }
+
+
+def report_delivery_summary(job: ReportJob) -> str:
+    return build_report_delivery_summary(job)["status"]
 
 
 def _sync_job_schedule_summary(job: ReportJob):
@@ -413,7 +533,7 @@ def sync_report_delivery_from_notification_delivery(notification_delivery: Notif
         return locked
 
 
-def create_report_deliveries_for_job(*, job, recipients=None):
+def create_report_deliveries_for_job(*, job, recipients=None, queue_deliveries: bool = True):
     if not job:
         raise ValidationError({"job": "Job is required."})
     if str(job.status) != ReportJobStatus.COMPLETED:
@@ -441,6 +561,9 @@ def create_report_deliveries_for_job(*, job, recipients=None):
                 "status": ReportDeliveryStatus.PENDING,
                 "queued_at": timezone.now(),
                 "schedule_recipient": recipient.schedule_recipient,
+                "recipient_type": recipient.channel,
+                "destination_snapshot": recipient.recipient,
+                "attempt_number": 0,
             }
             delivery, created = ReportDelivery.objects.get_or_create(
                 job=locked_job,
@@ -487,10 +610,11 @@ def create_report_deliveries_for_job(*, job, recipients=None):
             delivery.save(update_fields=["schedule_recipient", "status", "queued_at", "updated_at"])
             created_deliveries.append(delivery)
 
-    for delivery in created_deliveries:
-        queued = queue_report_delivery(delivery)
-        if queued:
-            queued_count += 1
+    if queue_deliveries:
+        for delivery in created_deliveries:
+            queued = queue_report_delivery(delivery=delivery)
+            if queued:
+                queued_count += 1
 
     return ReportDeliveryBatchResult(
         deliveries=created_deliveries,

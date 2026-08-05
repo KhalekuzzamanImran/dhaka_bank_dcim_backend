@@ -221,7 +221,7 @@ def _queue_report_deliveries(job_id):
         logger.exception("Failed to queue report deliveries job_id=%s", job_id)
 
 
-def _finalize_success(job: ReportJob, artifacts: list[RenderedArtifact]):
+def _finalize_success(job: ReportJob, artifacts: list[RenderedArtifact], *, queue_deliveries: bool = True):
     if not artifacts:
         raise ValueError("No generated artifact was produced.")
     job.status = ReportJobStatus.COMPLETED
@@ -246,7 +246,8 @@ def _finalize_success(job: ReportJob, artifacts: list[RenderedArtifact]):
         artifact_count=len(artifacts),
         artifact_size_bytes=sum(getattr(artifact, "size_bytes", 0) or 0 for artifact in job.artifacts.all()),
     )
-    transaction.on_commit(lambda job_id=job.pk: _queue_report_deliveries(job_id))
+    if queue_deliveries:
+        transaction.on_commit(lambda job_id=job.pk: _queue_report_deliveries(job_id))
     return job
 
 
@@ -277,7 +278,7 @@ def _finalize_failure(job: ReportJob, exc: Exception):
         return locked
 
 
-def generate_report_job(report_job_id):
+def generate_report_job(report_job_id, *, queue_deliveries: bool = True):
     started = perf_counter()
     job = _claim_job(report_job_id)
     if not getattr(job, "_generation_claimed", False):
@@ -318,7 +319,7 @@ def generate_report_job(report_job_id):
                 )
                 persisted_artifacts.append(persisted)
 
-            final_job = _finalize_success(locked, artifacts)
+            final_job = _finalize_success(locked, artifacts, queue_deliveries=queue_deliveries)
             _cleanup_artifacts(artifacts)
             log_report_event(
                 logger,

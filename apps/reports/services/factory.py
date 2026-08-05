@@ -128,9 +128,27 @@ def build_output_config_snapshot(*, definition, template=None, schedule=None, pr
 
 def build_recipient_snapshot(*, schedule=None, recipients=None) -> dict:
     if schedule is not None:
+        structured_recipients = [
+            {
+                "channel": row.channel,
+                "display_name": row.display_name,
+                "email_address": row.email_address,
+                "phone_number": row.phone_number,
+                "is_active": row.is_active,
+            }
+            for row in schedule.structured_recipients.filter(is_active=True).order_by("created_at", "pk")
+        ]
         return {
-            "email_recipients": deepcopy(schedule.normalize_recipients()),
-            "sms_recipients": deepcopy(schedule.sms_recipients if isinstance(schedule.sms_recipients, list) else []),
+            "email_recipients": [
+                deepcopy(row)
+                for row in structured_recipients
+                if row["channel"] == "EMAIL"
+            ],
+            "sms_recipients": [
+                deepcopy(row)
+                for row in structured_recipients
+                if row["channel"] == "SMS"
+            ],
             "send_sms": schedule.send_sms,
         }
     return {"recipients": deepcopy(recipients or [])}
@@ -191,6 +209,8 @@ def create_report_job(
         raise ValidationError({"definition": "A report definition is required."})
     if resolved_definition is not None and not resolved_definition.is_active:
         raise ValidationError({"definition": "Selected report definition is inactive."})
+    if resolved_definition is not None and not str(getattr(resolved_definition, "generator_key", "") or "").strip():
+        raise ValidationError({"definition": "Selected report definition is missing a generator key."})
     if actor is not None:
         ensure_organization_access(actor, organization)
         if data_center is not None:
@@ -290,23 +310,29 @@ def create_report_job(
                 "parameters": deepcopy(merged_parameters),
             },
         }
-        try:
-            schedule_run, created_run = ReportScheduleRun.objects.get_or_create(
+        if trigger_source == ReportTriggerSource.SCHEDULED:
+            try:
+                schedule_run, created_run = ReportScheduleRun.objects.get_or_create(
+                    schedule=schedule,
+                    scheduled_for=scheduled_for,
+                    trigger_source=trigger_source,
+                    defaults=run_defaults,
+                )
+            except IntegrityError:
+                schedule_run = (
+                    ReportScheduleRun.objects.select_related("job")
+                    .filter(schedule=schedule, scheduled_for=scheduled_for, trigger_source=trigger_source)
+                    .first()
+                )
+            if schedule_run and schedule_run.job_id:
+                existing = schedule_run.job
+                if existing:
+                    return ReportJobFactoryResult(job=existing, schedule_run=schedule_run, created=False, duplicate=True, queued=False)
+        else:
+            schedule_run = ReportScheduleRun.objects.create(
                 schedule=schedule,
-                scheduled_for=scheduled_for if trigger_source == ReportTriggerSource.SCHEDULED else None,
-                trigger_source=trigger_source,
-                defaults=run_defaults,
+                **run_defaults,
             )
-        except IntegrityError:
-            schedule_run = (
-                ReportScheduleRun.objects.select_related("job")
-                .filter(schedule=schedule, scheduled_for=scheduled_for if trigger_source == ReportTriggerSource.SCHEDULED else None, trigger_source=trigger_source)
-                .first()
-            )
-        if schedule_run and schedule_run.job_id:
-            existing = schedule_run.job
-            if existing:
-                return ReportJobFactoryResult(job=existing, schedule_run=schedule_run, created=False, duplicate=True, queued=False)
 
     job_kwargs = {
         "organization": organization,

@@ -159,6 +159,10 @@ def report_definition_allowed_actions(user, definition=None):
 
 def report_template_allowed_actions(user, template):
     actions = ["view"]
+    if not user_can_access_organization(user, template.organization_id):
+        return actions
+    if getattr(template, "data_center_id", None) and not user_can_access_data_center(user, template.data_center_id):
+        return actions
     if user_has_permission(user, "report.update"):
         actions.append("edit")
         if getattr(template, "is_active", False):
@@ -170,6 +174,10 @@ def report_template_allowed_actions(user, template):
 
 def report_schedule_allowed_actions(user, schedule):
     actions = ["view"]
+    if not user_can_access_organization(user, schedule.organization_id):
+        return actions
+    if getattr(schedule, "data_center_id", None) and not user_can_access_data_center(user, schedule.data_center_id):
+        return actions
     if user_has_permission(user, "report.update"):
         actions.append("edit")
         if getattr(schedule, "status", None) == "ACTIVE":
@@ -191,6 +199,10 @@ def report_schedule_run_allowed_actions(user, run=None):
 
 def report_job_allowed_actions(user, job):
     actions = ["view"]
+    if not user_can_access_organization(user, job.organization_id):
+        return actions
+    if getattr(job, "data_center_id", None) and not user_can_access_data_center(user, job.data_center_id):
+        return actions
     if getattr(job, "can_cancel", False) and user_has_permission(user, "report.update"):
         actions.append("cancel")
     if getattr(job, "can_retry", False) and (user_has_permission(user, "report.generate") or user_has_permission(user, "report.update")):

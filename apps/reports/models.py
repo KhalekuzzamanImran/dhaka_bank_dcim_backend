@@ -467,6 +467,11 @@ class ReportSchedule(TimeStampedModel):
         except Exception:
             return timezone.get_current_timezone()
 
+    def clean_fields(self, exclude=None):
+        if str(self.output_format or "").strip().upper() == "PDF_CSV":
+            self.output_format = "PDF"
+        super().clean_fields(exclude=exclude)
+
     @staticmethod
     def _add_months(value: datetime, months: int) -> datetime:
         month_index = value.month - 1 + months
@@ -516,7 +521,6 @@ class ReportSchedule(TimeStampedModel):
             start_time = self._shift_by_frequency(end_time, -1)
         return start_time, end_time
 
-    @property
     def clean(self):
         super().clean()
 
@@ -705,6 +709,8 @@ class ReportScheduleDelivery(TimeStampedModel):
 class ReportScheduleRecipient(TimeStampedModel):
     schedule = models.ForeignKey(ReportSchedule, on_delete=models.CASCADE, related_name="structured_recipients")
     channel = models.CharField(max_length=30, choices=ReportRecipientChannel.choices)
+    recipient_type = models.CharField(max_length=30, blank=True, default="")
+    destination = models.CharField(max_length=255, blank=True, default="")
     display_name = models.CharField(max_length=255, blank=True, default="")
     email_address = models.EmailField(blank=True, null=True)
     phone_number = models.CharField(max_length=32, blank=True, null=True)
@@ -739,17 +745,20 @@ class ReportScheduleRecipient(TimeStampedModel):
         self.display_name = _normalize_optional_text(self.display_name) or ""
         self.email_address = _normalize_optional_text(self.email_address)
         self.phone_number = _normalize_optional_text(self.phone_number)
+        self.recipient_type = (self.recipient_type or self.channel or "").strip().upper()
 
         if self.channel == ReportRecipientChannel.EMAIL:
             if not self.email_address:
                 errors.setdefault("email_address", []).append("Email recipients require an email address.")
             if self.phone_number:
                 self.phone_number = None
+            self.destination = self.email_address or ""
         elif self.channel == ReportRecipientChannel.SMS:
             if not self.phone_number:
                 errors.setdefault("phone_number", []).append("SMS recipients require a phone number.")
             if self.email_address:
                 self.email_address = None
+            self.destination = self.phone_number or ""
         else:
             errors.setdefault("channel", []).append("Unsupported recipient channel.")
 
@@ -763,12 +772,16 @@ class ReportScheduleRecipient(TimeStampedModel):
 
 class ReportArtifact(TimeStampedModel):
     job = models.ForeignKey(ReportJob, on_delete=models.CASCADE, related_name="artifacts")
+    artifact_type = models.CharField(max_length=30, default="PRIMARY")
     format = models.CharField(max_length=30, choices=ReportArtifactFormat.choices)
     file = models.FileField(upload_to="reports/artifacts/", max_length=500)
+    file_name = models.CharField(max_length=255, blank=True, null=True)
     original_filename = models.CharField(max_length=255)
     content_type = models.CharField(max_length=100, blank=True, default="")
     size_bytes = models.PositiveBigIntegerField(default=0)
     checksum_sha256 = models.CharField(max_length=64, blank=True, default="")
+    status = models.CharField(max_length=30, default="AVAILABLE")
+    expires_at = models.DateTimeField(blank=True, null=True)
     retention_expires_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
@@ -791,6 +804,8 @@ class ReportArtifact(TimeStampedModel):
         errors = {}
         if not self.job_id:
             errors.setdefault("job", []).append("Job is required.")
+        if not self.artifact_type:
+            errors.setdefault("artifact_type", []).append("Artifact type is required.")
         if not self.original_filename:
             errors.setdefault("original_filename", []).append("Original filename is required.")
         if self.size_bytes < 0:
@@ -800,6 +815,8 @@ class ReportArtifact(TimeStampedModel):
             if len(checksum) != 64 or any(char not in "0123456789abcdef" for char in checksum):
                 errors.setdefault("checksum_sha256", []).append("Checksum must be a SHA-256 hex digest.")
             self.checksum_sha256 = checksum
+        if not self.status:
+            errors.setdefault("status", []).append("Status is required.")
         if errors:
             raise ValidationError(errors)
 
@@ -812,6 +829,9 @@ class ReportDelivery(TimeStampedModel):
     job = models.ForeignKey(ReportJob, on_delete=models.CASCADE, related_name="deliveries")
     schedule_recipient = models.ForeignKey(ReportScheduleRecipient, on_delete=models.SET_NULL, blank=True, null=True, related_name="deliveries")
     channel = models.CharField(max_length=30, choices=NotificationChannel.choices)
+    recipient_type = models.CharField(max_length=30, blank=True, default="")
+    destination_snapshot = models.CharField(max_length=255, blank=True, default="")
+    attempt_number = models.PositiveIntegerField(default=0)
     recipient = models.CharField(max_length=255)
     status = models.CharField(max_length=30, choices=ReportDeliveryStatus.choices, default=ReportDeliveryStatus.PENDING, db_index=True)
     queued_at = models.DateTimeField(blank=True, null=True)

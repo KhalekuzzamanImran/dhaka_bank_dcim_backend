@@ -20,6 +20,8 @@ from apps.notifications.models import NotificationChannel
 
 from .api_serializers import (
     ReportArtifactSerializer,
+    ReportDashboardQuerySerializer,
+    ReportDashboardResponseSerializer,
     ReportDefinitionSchemaSerializer,
     ReportDefinitionSerializer,
     ReportDeliverySerializer,
@@ -53,6 +55,8 @@ from .models import (
     ReportTemplate,
 )
 from .services.definitions import build_definition_capabilities
+from .services.configuration import build_report_template_options
+from .services.dashboard import get_reporting_dashboard
 from .services.deliveries import report_delivery_summary, retry_report_delivery
 from .services.downloads import download_report_artifact
 from .services.factory import create_report_job
@@ -88,7 +92,17 @@ def _refresh_schedule(schedule):
             "updated_by",
             "last_job",
         )
-        .prefetch_related("structured_recipients")
+        .prefetch_related(
+            "structured_recipients",
+            Prefetch(
+                "runs",
+                queryset=ReportScheduleRun.objects.select_related("schedule", "job", "requested_by").prefetch_related(
+                    "deliveries",
+                    "job__artifacts",
+                ).order_by("-created_at"),
+                to_attr="_prefetched_recent_runs",
+            ),
+        )
         .filter(pk=schedule.pk)
         .first()
     )
@@ -218,6 +232,15 @@ class ReportTemplateViewSet(ScopedModelViewSet):
         )
         return super().destroy(request, *args, **kwargs)
 
+    @action(detail=True, methods=["get"], url_path="options")
+    def options(self, request, pk=None):
+        template = self.get_object()
+        try:
+            data = build_report_template_options(template)
+        except ValidationError as exc:
+            raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages)
+        return Response(data)
+
     @action(detail=True, methods=["post"])
     def generate(self, request, pk=None):
         template = self.get_object()
@@ -267,7 +290,17 @@ class ReportScheduleViewSet(ScopedModelViewSet):
         "created_by",
         "updated_by",
         "last_job",
-    ).prefetch_related("structured_recipients").all().order_by("-created_at")
+    ).prefetch_related(
+        "structured_recipients",
+        Prefetch(
+            "runs",
+            queryset=ReportScheduleRun.objects.select_related("schedule", "job", "requested_by").prefetch_related(
+                "deliveries",
+                "job__artifacts",
+            ).order_by("-created_at"),
+            to_attr="_prefetched_recent_runs",
+        ),
+    ).all().order_by("-created_at")
     permission_classes = [DCIMRBACPermission]
     permission_module = "report"
     serializer_class = ReportScheduleReadSerializer
@@ -345,25 +378,23 @@ class ReportScheduleViewSet(ScopedModelViewSet):
         schedule.last_error_message = ""
         schedule.save(update_fields=["last_delivery_status", "last_error_message", "updated_at"])
 
-        from .tasks import deliver_report_schedule_task
-
-        def _queue_delivery():
-            deliver_report_schedule_task.delay(str(schedule.pk), None, None, "MANUAL")
-            _safe_write_audit(
-                "REPORT_SCHEDULE_RUN_NOW_QUEUED",
-                "ReportSchedule",
-                schedule.pk,
-                organization=schedule.organization,
-                actor=request.user,
-                message=f"Manual report delivery queued for {getattr(getattr(schedule.template, 'definition', None), 'name', None) or getattr(schedule.template, 'name', None) or schedule.name}.",
-            )
-
-        transaction.on_commit(_queue_delivery)
-        refreshed = _refresh_schedule(schedule) or schedule
+        refreshed = execute_report_schedule(
+            str(schedule.pk),
+            trigger_source="MANUAL",
+        )
+        _safe_write_audit(
+            "REPORT_SCHEDULE_RUN_NOW_QUEUED",
+            "ReportSchedule",
+            schedule.pk,
+            organization=schedule.organization,
+            actor=request.user,
+            message=f"Manual report delivery executed for {getattr(getattr(schedule.template, 'definition', None), 'name', None) or getattr(schedule.template, 'name', None) or schedule.name}.",
+        )
+        refreshed = _refresh_schedule(refreshed) or refreshed
         serializer = self.get_serializer(refreshed)
         payload = serializer.data
-        payload["detail"] = "Report delivery queued."
-        return Response(payload, status=status.HTTP_202_ACCEPTED)
+        payload["detail"] = "Report delivery executed."
+        return Response(payload, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"])
     def pause(self, request, pk=None):

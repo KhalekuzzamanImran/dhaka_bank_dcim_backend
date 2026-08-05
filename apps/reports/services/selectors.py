@@ -19,13 +19,19 @@ def get_active_definitions_queryset():
 def get_active_definition_by_code(code: str | None):
     if not code:
         return None
-    return get_active_definitions_queryset().filter(code=code).first()
+    normalized = str(code).strip()
+    if not normalized:
+        return None
+    return get_active_definitions_queryset().filter(code__iexact=normalized).first()
 
 
 def get_definition_by_code(code: str | None):
     if not code:
         return None
-    return ReportDefinition.objects.filter(code=code).first()
+    normalized = str(code).strip()
+    if not normalized:
+        return None
+    return ReportDefinition.objects.filter(code__iexact=normalized).first()
 
 
 def _visible_queryset(user, model, *, organization_field="organization", data_center_field=None):

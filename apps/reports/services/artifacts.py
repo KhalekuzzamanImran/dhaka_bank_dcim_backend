@@ -187,11 +187,15 @@ def create_report_artifact(*, job, generated_file, format, filename, content_typ
                     saved_name = default_storage.save(storage_name, File(source_handle))
 
                 artifact = existing or ReportArtifact(job=locked_job, format=normalized_format)
+                artifact.artifact_type = getattr(artifact, "artifact_type", None) or "PRIMARY"
                 artifact.file.name = saved_name
+                artifact.file_name = saved_name
                 artifact.original_filename = original_filename
                 artifact.content_type = normalized_content_type
                 artifact.size_bytes = source_size
                 artifact.checksum_sha256 = source_checksum
+                artifact.status = getattr(artifact, "status", None) or "AVAILABLE"
+                artifact.expires_at = retention_expires_at
                 artifact.retention_expires_at = retention_expires_at
                 artifact.save()
             except Exception:

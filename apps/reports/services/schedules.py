@@ -5,6 +5,8 @@ import os
 from dataclasses import dataclass
 from copy import deepcopy
 
+from django.conf import settings
+from django.core.mail import EmailMessage
 from django.db import IntegrityError, transaction
 
 from django.utils import timezone
@@ -12,7 +14,8 @@ from django.utils.dateparse import parse_datetime
 
 from apps.common.audit import write_audit
 from apps.accounts.models import User
-from apps.notifications.models import NotificationChannel
+from apps.notifications.models import NotificationChannel, Notification, NotificationDelivery, NotificationStatus
+from apps.notifications.services.delivery import deliver_notification_delivery
 from .observability import log_report_event, log_report_metric
 
 from ..models import (
@@ -22,11 +25,13 @@ from ..models import (
     ReportScheduleRun,
     ReportScheduleRunStatus,
     ReportScheduleStatus,
+    ReportRecipientChannel,
 )
-from .deliveries import report_delivery_summary
+from .deliveries import create_report_deliveries_for_job, execute_report_delivery, report_delivery_summary
 from .definitions import get_active_definition_by_code
 from .factory import create_report_job
 from .execution import generate_report_job
+from .deliveries import create_report_deliveries_for_job, execute_report_delivery
 
 logger = logging.getLogger(__name__)
 
@@ -328,8 +333,17 @@ def execute_report_schedule(
         log_report_event(logger, "Skipping inactive report schedule", schedule=schedule, trigger_source=trigger_source)
         return schedule
 
-    email_recipients = schedule.normalize_recipients()
-    sms_recipients = schedule.sms_recipients if isinstance(schedule.sms_recipients, list) else []
+    structured_recipients = list(schedule.structured_recipients.filter(is_active=True).order_by("created_at", "pk"))
+    email_recipients = [
+        row.email_address
+        for row in structured_recipients
+        if row.channel == ReportRecipientChannel.EMAIL and row.email_address
+    ]
+    sms_recipients = [
+        row.phone_number
+        for row in structured_recipients
+        if row.channel == ReportRecipientChannel.SMS and row.phone_number
+    ]
     if not email_recipients and not (schedule.send_sms and sms_recipients):
         message = "Report schedule has no email or SMS recipients configured."
         ReportSchedule.objects.filter(pk=schedule.pk).update(
@@ -410,7 +424,7 @@ def execute_report_schedule(
                 "phone_number": row.phone_number,
                 "is_active": row.is_active,
             }
-            for row in schedule.structured_recipients.filter(is_active=True).order_by("created_at", "pk")
+            for row in structured_recipients
             if row.channel == ReportRecipientChannel.EMAIL
         ],
         "sms_recipients": [
@@ -421,7 +435,7 @@ def execute_report_schedule(
                 "phone_number": row.phone_number,
                 "is_active": row.is_active,
             }
-            for row in schedule.structured_recipients.filter(is_active=True).order_by("created_at", "pk")
+            for row in structured_recipients
             if row.channel == ReportRecipientChannel.SMS
         ],
         "send_sms": schedule.send_sms,
@@ -485,7 +499,7 @@ def execute_report_schedule(
             return schedule
 
     try:
-        completed_job = generate_report_job(job.id)
+        completed_job = generate_report_job(job.id, queue_deliveries=trigger_source != "MANUAL")
         run.job = completed_job
         run.started_at = completed_job.started_at or timezone.now()
         run.completed_at = completed_job.completed_at or timezone.now()
@@ -511,6 +525,10 @@ def execute_report_schedule(
         run.error_message = ""
         run.save(update_fields=["job", "started_at", "completed_at", "status", "error_message", "updated_at"])
 
+        if trigger_source == "MANUAL":
+            create_report_deliveries_for_job(job=completed_job, queue_deliveries=False)
+            for delivery in completed_job.deliveries.order_by("created_at", "pk"):
+                execute_report_delivery(delivery_id=str(delivery.pk))
         delivery_summary = report_delivery_summary(completed_job)
         schedule.last_sent_at = timezone.now() if delivery_summary in {"SENT", "PARTIAL", "FAILED"} else schedule.last_sent_at
         schedule.last_delivery_status = delivery_summary

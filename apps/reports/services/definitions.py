@@ -15,6 +15,7 @@ RESERVED_RUNTIME_PARAMETER_KEYS = {
     "output_format",
     "primary_format",
     "attachment_formats",
+    "max_date_range_days",
     "schedule_id",
     "schedule_name",
     "delivery_time",
@@ -63,13 +64,19 @@ def seed_report_definitions(ReportDefinitionModel=None, *, seeds=None):
 def get_active_definition_by_code(code: str | None):
     if not code:
         return None
-    return ReportDefinition.objects.filter(code=code, is_active=True).first()
+    normalized = str(code).strip()
+    if not normalized:
+        return None
+    return ReportDefinition.objects.filter(code__iexact=normalized, is_active=True).first()
 
 
 def get_definition_by_code(code: str | None):
     if not code:
         return None
-    return ReportDefinition.objects.filter(code=code).first()
+    normalized = str(code).strip()
+    if not normalized:
+        return None
+    return ReportDefinition.objects.filter(code__iexact=normalized).first()
 
 
 def build_definition_capabilities(definition: ReportDefinition) -> dict:
