@@ -2,9 +2,9 @@ from __future__ import annotations
 
 REPORT_TEMPLATE_SEEDS = [
     {
-        "name": "Alert Summary",
+        "name": "Daily alert summary",
         "code": "ALERT_SUMMARY",
-        "description": "Summary of alert activity, severity breakdown, and resolution counts.",
+        "description": "Summary of alert activity, severity breakdown, and resolution counts for the day.",
         "config": {
             "report_type": "alert_summary",
             "output_format": "csv",

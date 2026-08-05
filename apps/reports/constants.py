@@ -8,7 +8,7 @@ def normalize_key(value: object) -> str:
 
 
 REPORT_TYPE_LABELS = {
-    "alert_summary": "Alert Summary",
+    "alert_summary": "Daily alert summary",
     "notification_delivery": "Notification Delivery",
     "device_inventory": "Device Inventory",
     "alert_export": "Alert Export",
@@ -21,6 +21,8 @@ REPORT_TYPE_LABELS = {
 REPORT_TYPE_ALIASES = {
     normalize_key("alert summary"): "alert_summary",
     normalize_key("alert summary report"): "alert_summary",
+    normalize_key("daily alert summary"): "alert_summary",
+    normalize_key("daily alert summary report"): "alert_summary",
     normalize_key("notification delivery"): "notification_delivery",
     normalize_key("notification delivery report"): "notification_delivery",
     normalize_key("device inventory"): "device_inventory",

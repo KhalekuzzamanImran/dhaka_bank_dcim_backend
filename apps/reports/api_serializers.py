@@ -137,8 +137,11 @@ def _schedule_summary(schedule):
         "name": schedule.name,
         "status": schedule.status,
         "frequency": schedule.frequency,
+        "frequency_label": getattr(schedule, "get_frequency_label", lambda: schedule.get_frequency_display())(),
         "timezone": schedule.timezone,
         "delivery_time": schedule.delivery_time.isoformat() if schedule.delivery_time else None,
+        "days_of_week": list(schedule.days_of_week or []),
+        "day_of_month": schedule.day_of_month,
         "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
         "primary_format": schedule.primary_format or schedule.output_format,
         "attachment_formats": list(schedule.attachment_formats or []),
@@ -579,6 +582,7 @@ class ReportScheduleReadSerializer(serializers.ModelSerializer):
     data_center = serializers.SerializerMethodField(read_only=True)
     template = serializers.SerializerMethodField(read_only=True)
     definition = serializers.SerializerMethodField(read_only=True)
+    frequency_label = serializers.SerializerMethodField(read_only=True)
     recent_runs = serializers.SerializerMethodField(read_only=True)
     recipients = serializers.SerializerMethodField(read_only=True)
     sms_recipients = serializers.SerializerMethodField(read_only=True)
@@ -601,6 +605,7 @@ class ReportScheduleReadSerializer(serializers.ModelSerializer):
             "definition",
             "status",
             "frequency",
+            "frequency_label",
             "timezone",
             "delivery_time",
             "days_of_week",
@@ -640,6 +645,9 @@ class ReportScheduleReadSerializer(serializers.ModelSerializer):
 
     def get_definition(self, obj):
         return _definition_summary(obj.template.definition if obj.template_id and obj.template and obj.template.definition_id else None)
+
+    def get_frequency_label(self, obj):
+        return getattr(obj, "get_frequency_label", lambda: obj.get_frequency_display())()
 
     def get_recent_runs(self, obj):
         runs = getattr(obj, "_prefetched_recent_runs", None)

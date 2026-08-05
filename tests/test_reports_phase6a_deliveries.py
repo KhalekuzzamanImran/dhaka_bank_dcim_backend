@@ -297,10 +297,11 @@ class ReportPhase6ADeliveryTestCase(TestCase):
         with patch(
             "apps.notifications.services.delivery.send_email_notification",
             side_effect=ValueError("invalid email provider response"),
-        ):
-            with self.assertRaises(ValueError):
-                execute_report_delivery(delivery_id=delivery.id)
+        ) as send_mock:
+            failed = execute_report_delivery(delivery_id=delivery.id)
 
+        self.assertEqual(failed.status, ReportDeliveryStatus.FAILED)
+        self.assertEqual(send_mock.call_count, 1)
         delivery.refresh_from_db()
         self.assertEqual(delivery.status, ReportDeliveryStatus.FAILED)
         self.assertEqual(delivery.retry_count, 0)
@@ -308,6 +309,25 @@ class ReportPhase6ADeliveryTestCase(TestCase):
         retried = retry_report_delivery(delivery=delivery, requested_by=self.user)
         self.assertEqual(retried.status, ReportDeliveryStatus.QUEUED)
         self.assertEqual(retried.retry_count, 1)
+
+    def test_retry_exhausted_sms_timeout_returns_failed_without_raising(self):
+        job = self._completed_job(recipient_snapshot={"sms_recipients": ["01329665857"], "send_sms": True})
+        with patch("apps.reports.services.deliveries.queue_report_delivery", side_effect=lambda delivery: delivery):
+            create_report_deliveries_for_job(job=job)
+        delivery = ReportDelivery.objects.get(job=job, channel="SMS")
+        delivery.retry_count = 3
+        delivery.save(update_fields=["retry_count", "updated_at"])
+
+        with patch(
+            "apps.notifications.services.delivery.send_sms_notification",
+            side_effect=requests.ConnectionError("temporary network problem"),
+        ) as send_mock:
+            failed = execute_report_delivery(delivery_id=delivery.id)
+
+        self.assertEqual(send_mock.call_count, 1)
+        self.assertEqual(failed.status, ReportDeliveryStatus.FAILED)
+        self.assertEqual(ReportDelivery.objects.get(pk=delivery.pk).status, ReportDeliveryStatus.FAILED)
+        self.assertEqual(ReportDelivery.objects.get(pk=delivery.pk).retry_count, 3)
 
     def test_duplicate_delivery_execution_does_not_resend(self):
         job = self._completed_job(recipient_snapshot={"email_recipients": ["ops@example.com"], "send_sms": False})

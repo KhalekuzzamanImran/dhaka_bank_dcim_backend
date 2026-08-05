@@ -844,7 +844,7 @@ def execute_report_delivery(*, delivery_id):
         if final_delivery.status == ReportDeliveryStatus.QUEUED:
             log_report_event(logger, "Retrying report delivery later", job=delivery.job, retry_count=delivery.retry_count)
             raise exc
-        raise
+        return final_delivery
 
 
 def retry_report_delivery(*, delivery, requested_by=None):

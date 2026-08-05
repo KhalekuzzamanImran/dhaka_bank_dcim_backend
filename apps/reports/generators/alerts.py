@@ -65,7 +65,7 @@ class AlertSummaryGenerator(BaseReportGenerator):
         for status in AlertStatus.values:
             rows.append({"section": "status", "label": status, "value": status_counts.get(status, 0)})
         return ReportDataset(
-            title="Alert Summary",
+            title="Daily alert summary",
             subtitle="Aggregated alert status",
             metadata={"report_type": context.definition.code},
             tables=[

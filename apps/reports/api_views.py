@@ -665,6 +665,11 @@ class ReportOptionsAPIView(APIView):
             "definitions": definitions,
             "supported_formats": [{"code": value, "label": value} for value in ReportArtifactFormat.values],
             "schedule_frequencies": [{"code": value, "label": label} for value, label in REPORT_SCHEDULE_FREQUENCY_CHOICES],
+            "schedule_weekdays": [
+                {"code": value, "label": value.title()}
+                for value in ("MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY")
+            ],
+            "schedule_month_days": [{"code": str(day), "label": f"{day:02d}"} for day in range(1, 32)],
             "schedule_statuses": [{"code": value, "label": label} for value, label in ReportScheduleStatus.choices],
             "trigger_sources": [{"code": value, "label": label} for value, label in ReportTriggerSource.choices],
             "job_statuses": [{"code": value, "label": label} for value, label in ReportJobStatusV2.choices],

@@ -77,10 +77,12 @@ def _build_email_body(schedule: ReportSchedule, report_job: ReportJob) -> str:
     window_end = report_job.parameters.get("date_to") if isinstance(report_job.parameters, dict) else None
     report_name = getattr(getattr(schedule, "template", None), "definition", None)
     report_name = getattr(report_name, "name", None) or getattr(schedule.template, "name", None) or schedule.name
+    frequency_label = getattr(schedule, "get_frequency_label", None)
+    frequency_text = frequency_label() if callable(frequency_label) else schedule.get_frequency_display()
     lines = [
         f"Scheduled report: {schedule.name}",
         f"Report type: {report_name}",
-        f"Frequency: {schedule.get_frequency_display()} at {schedule.delivery_time.strftime('%I:%M %p')}",
+        f"Frequency: {frequency_text} at {schedule.delivery_time.strftime('%I:%M %p')}",
         f"Requested format: {schedule.primary_format or getattr(schedule.template, 'primary_format', None) or 'CSV'}",
     ]
     if window_start or window_end:
@@ -529,11 +531,21 @@ def execute_report_schedule(
             create_report_deliveries_for_job(job=completed_job, queue_deliveries=False)
             for delivery in completed_job.deliveries.order_by("created_at", "pk"):
                 execute_report_delivery(delivery_id=str(delivery.pk))
-        delivery_summary = report_delivery_summary(completed_job)
-        schedule.last_sent_at = timezone.now() if delivery_summary in {"SENT", "PARTIAL", "FAILED"} else schedule.last_sent_at
-        schedule.last_delivery_status = delivery_summary
-        schedule.last_error_message = ""
-        schedule.save(update_fields=["last_job", "last_run_at", "next_run_at", "last_sent_at", "last_delivery_status", "last_error_message", "updated_at"])
+
+            # Run Now performs delivery synchronously, so its aggregate result
+            # is authoritative at this point. Scheduled deliveries are queued
+            # asynchronously and update the schedule from the delivery worker.
+            delivery_summary = report_delivery_summary(completed_job)
+            schedule.last_sent_at = timezone.now() if delivery_summary in {"SENT", "PARTIAL", "FAILED"} else schedule.last_sent_at
+            schedule.last_delivery_status = delivery_summary
+            schedule.last_error_message = ""
+            schedule.save(update_fields=["last_job", "last_run_at", "next_run_at", "last_sent_at", "last_delivery_status", "last_error_message", "updated_at"])
+        else:
+            # Do not write a stale last_sent_at value after queuing scheduled
+            # deliveries; the delivery worker owns the final timestamp/status.
+            schedule.last_delivery_status = "PENDING"
+            schedule.last_error_message = ""
+            schedule.save(update_fields=["last_job", "last_run_at", "next_run_at", "last_delivery_status", "last_error_message", "updated_at"])
         _safe_write_audit(
             "REPORT_GENERATED",
             "ReportSchedule",

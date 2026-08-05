@@ -146,6 +146,9 @@ services:
     build: .
     command: celery -A config worker -l info -Q reports --concurrency=1 --hostname=reports@%h
     env_file: .env
+    # Scheduled report deliveries can send SMS through the private UAT gateway.
+    extra_hosts:
+      - "uatapi.dhakabank.com.bd:172.25.204.128"
     environment:
       EMAIL_BACKEND: django.core.mail.backends.smtp.EmailBackend
       EMAIL_HOST: mailpit

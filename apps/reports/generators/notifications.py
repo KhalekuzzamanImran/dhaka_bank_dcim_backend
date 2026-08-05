@@ -35,7 +35,9 @@ class NotificationDeliveryGenerator(BaseReportGenerator):
         rows = [
             {"section": "summary", "label": "total", "value": qs.count()},
             {"section": "summary", "label": "pending", "value": qs.filter(status=NotificationStatus.PENDING).count()},
-            {"section": "summary", "label": "queued", "value": qs.filter(status=NotificationStatus.QUEUED).count()},
+            # NotificationStatus uses PENDING for deliveries waiting to be
+            # processed; it has no separate QUEUED enum value.
+            {"section": "summary", "label": "queued", "value": qs.filter(status=NotificationStatus.PENDING).count()},
             {"section": "summary", "label": "delivering", "value": qs.filter(status=NotificationStatus.DELIVERING).count()},
             {"section": "summary", "label": "sent", "value": qs.filter(status=NotificationStatus.SENT).count()},
             {"section": "summary", "label": "failed", "value": qs.filter(status=NotificationStatus.FAILED).count()},

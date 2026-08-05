@@ -492,6 +492,110 @@ class ReportSchedule(TimeStampedModel):
             return self._add_months(value, steps * 3)
         return value + timedelta(days=steps)
 
+    WEEKDAY_INDEX = {
+        "MONDAY": 0,
+        "TUESDAY": 1,
+        "WEDNESDAY": 2,
+        "THURSDAY": 3,
+        "FRIDAY": 4,
+        "SATURDAY": 5,
+        "SUNDAY": 6,
+    }
+
+    def _normalized_days_of_week(self) -> list[str]:
+        values = []
+        seen = set()
+        for value in self.days_of_week if isinstance(self.days_of_week, list) else []:
+            candidate = str(value).strip().upper()
+            if not candidate or candidate in seen or candidate not in self.WEEKDAY_INDEX:
+                continue
+            seen.add(candidate)
+            values.append(candidate)
+        return values
+
+    def _normalized_day_of_month(self) -> int | None:
+        if self.day_of_month is None:
+            return None
+        try:
+            value = int(self.day_of_month)
+        except (TypeError, ValueError):
+            return None
+        return value if 1 <= value <= 31 else None
+
+    def _next_weekly_run_time(self, reference_time: datetime) -> datetime:
+        schedule_days = self._normalized_days_of_week()
+        if not schedule_days:
+            schedule_days = [list(self.WEEKDAY_INDEX.keys())[reference_time.weekday()]]
+
+        candidates = []
+        for day_name in schedule_days:
+            day_index = self.WEEKDAY_INDEX.get(day_name)
+            if day_index is None:
+                continue
+            days_ahead = (day_index - reference_time.weekday()) % 7
+            candidate = reference_time + timedelta(days=days_ahead)
+            candidate = candidate.replace(
+                hour=self.delivery_time.hour,
+                minute=self.delivery_time.minute,
+                second=self.delivery_time.second,
+                microsecond=0,
+            )
+            if candidate <= reference_time:
+                candidate += timedelta(days=7)
+            candidates.append(candidate)
+
+        if not candidates:
+            return reference_time + timedelta(days=7)
+        return min(candidates)
+
+    def _next_monthly_run_time(self, reference_time: datetime, months: int = 1) -> datetime:
+        day_of_month = self._normalized_day_of_month() or reference_time.day
+        base = self._add_months(reference_time.replace(day=1), months)
+        month_last_day = calendar.monthrange(base.year, base.month)[1]
+        candidate_day = min(day_of_month, month_last_day)
+        candidate = base.replace(
+            day=candidate_day,
+            hour=self.delivery_time.hour,
+            minute=self.delivery_time.minute,
+            second=self.delivery_time.second,
+            microsecond=0,
+        )
+        if candidate <= reference_time:
+            base = self._add_months(base, 1)
+            month_last_day = calendar.monthrange(base.year, base.month)[1]
+            candidate_day = min(day_of_month, month_last_day)
+            candidate = base.replace(
+                day=candidate_day,
+                hour=self.delivery_time.hour,
+                minute=self.delivery_time.minute,
+                second=self.delivery_time.second,
+                microsecond=0,
+            )
+        return candidate
+
+    def _next_run_for_frequency(self, reference_time: datetime) -> datetime:
+        frequency = self.frequency
+        if frequency == "WEEKLY":
+            return self._next_weekly_run_time(reference_time)
+        if frequency == "MONTHLY":
+            return self._next_monthly_run_time(reference_time, months=1)
+        if frequency == "QUARTERLY":
+            return self._next_monthly_run_time(reference_time, months=3)
+        return self.calculate_next_run_at(reference_time)
+
+    def get_frequency_label(self) -> str:
+        base = self.get_frequency_display()
+        if self.frequency == "WEEKLY":
+            days = self._normalized_days_of_week()
+            if days:
+                labels = [day.title() for day in days]
+                return f"{base} - {', '.join(labels)}"
+        if self.frequency == "MONTHLY":
+            day_of_month = self._normalized_day_of_month()
+            if day_of_month is not None:
+                return f"{base} - {day_of_month:02d}"
+        return base
+
     def calculate_next_run_at(self, reference_time=None):
         reference_time = reference_time or timezone.now()
         schedule_tz = self._schedule_timezone()
@@ -500,7 +604,13 @@ class ReportSchedule(TimeStampedModel):
         else:
             reference_time = reference_time.astimezone(schedule_tz)
         run_time = datetime.combine(reference_time.date(), self.delivery_time, tzinfo=schedule_tz)
-        if run_time <= reference_time:
+        if self.frequency == "WEEKLY":
+            run_time = self._next_weekly_run_time(reference_time)
+        elif self.frequency == "MONTHLY":
+            run_time = self._next_monthly_run_time(reference_time, months=1)
+        elif self.frequency == "QUARTERLY":
+            run_time = self._next_monthly_run_time(reference_time, months=3)
+        elif run_time <= reference_time:
             run_time = self._shift_by_frequency(run_time, 1)
         return run_time
 
@@ -562,8 +672,28 @@ class ReportSchedule(TimeStampedModel):
             errors.setdefault("recurrence_rule", []).append("Recurrence rule must be a dictionary/object.")
         if not isinstance(self.days_of_week, list):
             errors.setdefault("days_of_week", []).append("Days of week must be a list.")
+        else:
+            normalized_days = []
+            seen_days = set()
+            for value in self.days_of_week:
+                candidate = str(value).strip().upper()
+                if not candidate or candidate in seen_days:
+                    continue
+                if candidate not in self.WEEKDAY_INDEX:
+                    errors.setdefault("days_of_week", []).append(
+                        f"Unsupported day of week: {value}."
+                    )
+                    continue
+                seen_days.add(candidate)
+                normalized_days.append(candidate)
+            self.days_of_week = normalized_days
         if self.day_of_month is not None and (self.day_of_month < 1 or self.day_of_month > 31):
             errors.setdefault("day_of_month", []).append("Day of month must be between 1 and 31.")
+        if self.day_of_month is not None:
+            try:
+                self.day_of_month = int(self.day_of_month)
+            except (TypeError, ValueError):
+                errors.setdefault("day_of_month", []).append("Day of month must be an integer.")
         if self.status not in ReportScheduleStatus.values:
             errors.setdefault("status", []).append("Unsupported schedule status.")
         if self.status == ReportScheduleStatus.ACTIVE and not self.next_run_at:
