@@ -30,7 +30,7 @@ from apps.reports.models import (
 )
 from apps.reports.services.definitions import seed_report_definitions
 from apps.reports.services.factory import create_report_job
-from apps.reports.services.generator import generate_report_job
+from apps.reports.services.execution import generate_report_job
 from apps.reports.services.schedules import execute_report_schedule
 
 

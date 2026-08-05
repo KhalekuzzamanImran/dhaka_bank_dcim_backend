@@ -18,7 +18,7 @@ from apps.reports.enums import ReportTriggerSource
 from apps.reports.generators import BaseReportGenerator, GeneratorContext, ReportDataset, ReportTable, get_generator_class, get_supported_formats, register_generator
 from apps.reports.models import ReportDefinition, ReportJob, ReportJobStatus, ReportTemplate
 from apps.reports.services.factory import build_report_template_snapshot, build_scope_snapshot, create_report_job
-from apps.reports.services.generator import generate_report_job
+from apps.reports.services.execution import generate_report_job
 from apps.reports.services.definitions import get_active_definition_by_code
 from apps.telemetry.models import MetricCategory, MetricDataType, MetricDefinition, TelemetryPoint
 

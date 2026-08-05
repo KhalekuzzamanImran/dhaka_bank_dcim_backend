@@ -15,7 +15,6 @@ from apps.accounts.models import User
 from apps.notifications.models import NotificationChannel
 from .observability import log_report_event, log_report_metric
 
-from ..constants import normalize_report_type
 from ..models import (
     ReportJob,
     ReportJobStatus,
@@ -77,7 +76,7 @@ def _build_email_body(schedule: ReportSchedule, report_job: ReportJob) -> str:
         f"Scheduled report: {schedule.name}",
         f"Report type: {report_name}",
         f"Frequency: {schedule.get_frequency_display()} at {schedule.delivery_time.strftime('%I:%M %p')}",
-        f"Requested format: {schedule.get_output_format_display()}",
+        f"Requested format: {schedule.primary_format or getattr(schedule.template, 'primary_format', None) or 'CSV'}",
     ]
     if window_start or window_end:
         lines.append(f"Window: {window_start or '--'} to {window_end or '--'}")
@@ -87,7 +86,11 @@ def _build_email_body(schedule: ReportSchedule, report_job: ReportJob) -> str:
 
 
 def _send_report_email(schedule: ReportSchedule, report_job: ReportJob, recipient: str | None = None):
-    recipients = [recipient] if recipient else schedule.normalize_recipients()
+    recipients = [recipient] if recipient else [
+        row.email_address
+        for row in schedule.structured_recipients.filter(channel=ReportRecipientChannel.EMAIL, is_active=True).order_by("created_at", "pk")
+        if row.email_address
+    ]
     if not recipients:
         raise ValueError("Report schedule does not have any recipients.")
 
@@ -136,9 +139,18 @@ def _create_schedule_run(
         "definition_code": template_definition.code if template_definition else None,
         "frequency": schedule.frequency,
         "delivery_time": schedule.delivery_time.strftime("%H:%M:%S"),
-        "output_format": schedule.output_format,
-        "recipients": schedule.normalize_recipients(),
-        "sms_recipients": list(schedule.sms_recipients or []) if isinstance(schedule.sms_recipients, list) else [],
+        "primary_format": schedule.primary_format,
+        "attachment_formats": list(schedule.attachment_formats or []),
+        "recipients": [
+            {
+                "channel": row.channel,
+                "display_name": row.display_name,
+                "email_address": row.email_address,
+                "phone_number": row.phone_number,
+                "is_active": row.is_active,
+            }
+            for row in schedule.structured_recipients.filter(is_active=True).order_by("created_at", "pk")
+        ],
         "attach_raw_data": schedule.attach_raw_data,
         "parameters": parameters,
         "scheduled_for": scheduled_for.isoformat() if scheduled_for else None,
@@ -163,12 +175,17 @@ def _create_schedule_run(
 def _queue_report_sms_notifications(schedule: ReportSchedule, report_job: ReportJob, run: ReportScheduleRun):
     if not schedule.send_sms:
         return []
-    recipients = schedule.sms_recipients if isinstance(schedule.sms_recipients, list) else []
+    recipients = [
+        row.phone_number
+        for row in schedule.structured_recipients.filter(channel=ReportRecipientChannel.SMS, is_active=True).order_by("created_at", "pk")
+        if row.phone_number
+    ]
     if not recipients:
         raise ValueError("SMS delivery is enabled but no SMS recipients were configured.")
 
     queued_notifications = []
     message = _build_report_sms_message(schedule, report_job)
+    template_definition = getattr(getattr(schedule, "template", None), "definition", None)
     report_schedule_id = str(schedule.pk)
     report_job_id = str(report_job.pk)
     now = timezone.now()
@@ -188,7 +205,7 @@ def _queue_report_sms_notifications(schedule: ReportSchedule, report_job: Report
                     "report_schedule_id": report_schedule_id,
                     "report_job_id": report_job_id,
                     "report_schedule_name": schedule.name,
-                    "report_type": template_definition.code if template_definition else schedule.name,
+                    "definition_code": template_definition.code if template_definition else None,
                     "phone": normalized_phone,
                 },
             },
@@ -201,7 +218,7 @@ def _queue_report_sms_notifications(schedule: ReportSchedule, report_job: Report
                     "report_schedule_id": report_schedule_id,
                     "report_job_id": report_job_id,
                     "report_schedule_name": schedule.name,
-                    "report_type": template_definition.code if template_definition else schedule.name,
+                    "definition_code": template_definition.code if template_definition else None,
                     "phone": normalized_phone,
                 }
             )
@@ -226,7 +243,7 @@ def _queue_report_sms_notifications(schedule: ReportSchedule, report_job: Report
                     "report_schedule_id": report_schedule_id,
                     "report_job_id": report_job_id,
                     "report_schedule_name": schedule.name,
-                    "report_type": template_definition.code if template_definition else schedule.name,
+                    "definition_code": template_definition.code if template_definition else None,
                     "phone": normalized_phone,
                     "channel": NotificationChannel.SMS,
                 },
@@ -345,14 +362,12 @@ def execute_report_schedule(
 
     template_defaults = deepcopy(template.default_parameters) if template and isinstance(template.default_parameters, dict) else {}
     schedule_overrides = deepcopy(schedule.parameter_overrides) if isinstance(schedule.parameter_overrides, dict) else {}
-    legacy_report_type = normalize_report_type(definition.code) if definition is not None else normalize_report_type(schedule.report_type)
     runtime_parameters = {
-        "report_type": legacy_report_type,
         "definition_code": getattr(definition, "code", None),
         "schedule_id": str(schedule.pk),
         "schedule_name": schedule.name,
         "delivery_time": schedule.delivery_time.strftime("%H:%M:%S"),
-        "primary_format": schedule.primary_format or schedule.output_format,
+        "primary_format": schedule.primary_format or getattr(template, "primary_format", None),
         "attachment_formats": schedule.attachment_formats,
         "attach_raw_data": schedule.attach_raw_data,
     }
@@ -376,7 +391,7 @@ def execute_report_schedule(
     template_snapshot = {}
     output_config_snapshot = {
         "definition_code": getattr(definition, "code", None),
-        "primary_format": template.primary_format if template and template.primary_format else schedule.output_format,
+        "primary_format": template.primary_format if template and template.primary_format else schedule.primary_format,
         "attachment_formats": deepcopy(template.attachment_formats if template and isinstance(template.attachment_formats, list) else []),
         "attach_raw_data": schedule.attach_raw_data,
     }
@@ -387,8 +402,28 @@ def execute_report_schedule(
         "data_center_name": getattr(schedule.data_center, "name", None),
     }
     recipient_snapshot = {
-        "email_recipients": deepcopy(schedule.normalize_recipients()),
-        "sms_recipients": deepcopy(schedule.sms_recipients if isinstance(schedule.sms_recipients, list) else []),
+        "email_recipients": [
+            {
+                "channel": row.channel,
+                "display_name": row.display_name,
+                "email_address": row.email_address,
+                "phone_number": row.phone_number,
+                "is_active": row.is_active,
+            }
+            for row in schedule.structured_recipients.filter(is_active=True).order_by("created_at", "pk")
+            if row.channel == ReportRecipientChannel.EMAIL
+        ],
+        "sms_recipients": [
+            {
+                "channel": row.channel,
+                "display_name": row.display_name,
+                "email_address": row.email_address,
+                "phone_number": row.phone_number,
+                "is_active": row.is_active,
+            }
+            for row in schedule.structured_recipients.filter(is_active=True).order_by("created_at", "pk")
+            if row.channel == ReportRecipientChannel.SMS
+        ],
         "send_sms": schedule.send_sms,
     }
     if template:

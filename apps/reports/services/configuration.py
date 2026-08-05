@@ -10,32 +10,14 @@ from apps.devices.models import DeviceStatus, DeviceType
 from apps.notifications.models import NotificationChannel, NotificationStatus
 from apps.telemetry.models import MetricDefinition
 
-from ..constants import normalize_key, normalize_report_type, SUPPORTED_REPORT_TYPES
-
-
-DEFINITION_CODE_TO_REPORT_TYPE = {
-    "DEVICE_INVENTORY": "device_inventory",
-    "TELEMETRY_EXPORT": "telemetry_export",
-    "ALERT_SUMMARY": "alert_summary",
-    "ALERT_DETAIL": "alert_export",
-    "NOTIFICATION_DELIVERY": "notification_delivery",
-    "AUDIT_EXPORT": "audit_export",
-    "ENVIRONMENTAL_TREND": "room_environment",
-    "UPS_PERFORMANCE": "ups_performance",
-}
-
-
-def get_report_type_for_definition_code(definition_code: str | None) -> str | None:
-    if not definition_code:
-        return None
-    return DEFINITION_CODE_TO_REPORT_TYPE.get(str(definition_code).strip().upper())
+from ..constants import normalize_key
 
 
 SUPPORTED_TEMPLATE_OUTPUT_FORMATS = ["csv", "xlsx", "pdf"]
 
 
 REPORT_TEMPLATE_OPTIONS = {
-    "alert_summary": {
+    "ALERT_SUMMARY": {
         "available_columns": ["section", "label", "value"],
         "optional_fields": [
             "default_columns",
@@ -58,7 +40,7 @@ REPORT_TEMPLATE_OPTIONS = {
         },
         "maximum_date_range_days": 90,
     },
-    "notification_delivery": {
+    "NOTIFICATION_DELIVERY": {
         "available_columns": [
             "section",
             "label",
@@ -91,7 +73,7 @@ REPORT_TEMPLATE_OPTIONS = {
         },
         "maximum_date_range_days": 90,
     },
-    "device_inventory": {
+    "DEVICE_INVENTORY": {
         "available_columns": [
             "organization",
             "data_center",
@@ -125,7 +107,7 @@ REPORT_TEMPLATE_OPTIONS = {
         },
         "maximum_date_range_days": None,
     },
-    "alert_export": {
+    "ALERT_DETAIL": {
         "available_columns": [
             "triggered_at",
             "resolved_at",
@@ -165,7 +147,7 @@ REPORT_TEMPLATE_OPTIONS = {
         },
         "maximum_date_range_days": 90,
     },
-    "audit_export": {
+    "AUDIT_EXPORT": {
         "available_columns": [
             "created_at",
             "actor",
@@ -193,7 +175,7 @@ REPORT_TEMPLATE_OPTIONS = {
         },
         "maximum_date_range_days": 90,
     },
-    "telemetry_export": {
+    "TELEMETRY_EXPORT": {
         "available_columns": [
             "timestamp",
             "organization",
@@ -229,7 +211,7 @@ REPORT_TEMPLATE_OPTIONS = {
         },
         "maximum_date_range_days": 31,
     },
-    "room_environment": {
+    "ENVIRONMENTAL_TREND": {
         "available_columns": [
             "timestamp",
             "room_name",
@@ -336,14 +318,6 @@ def validate_report_template_config(config, *, existing_config: dict | None = No
 
     normalized = deepcopy(existing_config or {})
     normalized.update(config)
-
-    report_type = normalize_report_type(normalized.get("report_type"))
-    if not report_type:
-        report_type = get_report_type_for_definition_code(definition_code)
-    if not report_type or report_type not in SUPPORTED_REPORT_TYPES:
-        raise ValidationError({"report_type": "Unsupported report type."})
-    normalized["report_type"] = report_type
-
     output_format = str(normalized.get("output_format", "csv")).strip()
     normalized_output_format = normalize_key(output_format).upper()
     if normalized_output_format not in {"CSV", "XLSX", "PDF"}:
@@ -358,7 +332,8 @@ def validate_report_template_config(config, *, existing_config: dict | None = No
         })
     normalized["allowed_output_formats"] = [value.lower() for value in normalized_allowed_output_formats] or [normalized["output_format"]]
 
-    options = REPORT_TEMPLATE_OPTIONS.get(report_type, {})
+    resolved_definition_code = str(definition_code or "").strip().upper()
+    options = REPORT_TEMPLATE_OPTIONS.get(resolved_definition_code, {})
     if "default_columns" in normalized:
         normalized["default_columns"] = _normalize_columns(
             normalized.get("default_columns"),
@@ -380,7 +355,7 @@ def validate_report_template_config(config, *, existing_config: dict | None = No
             field_name="default_metric_codes",
         )
 
-    if report_type == "telemetry_export" and isinstance(normalized.get("default_parameters"), dict):
+    if resolved_definition_code == "TELEMETRY_EXPORT" and isinstance(normalized.get("default_parameters"), dict):
         default_parameters = dict(normalized["default_parameters"])
         if "metric_codes" in default_parameters:
             default_parameters["metric_codes"] = _normalize_metric_codes(
@@ -405,17 +380,13 @@ def validate_report_template_config(config, *, existing_config: dict | None = No
 
 
 def build_report_template_options(template) -> dict:
-    report_type = normalize_report_type(
-        getattr(getattr(template, "definition", None), "code", None)
-        or getattr(template, "report_type", None)
-        or getattr(template, "config", {}).get("report_type")
-    )
-    if not report_type:
-        raise ValidationError({"report_type": "Unsupported report type."})
+    definition_code = str(getattr(getattr(template, "definition", None), "code", None) or "").strip().upper()
+    if not definition_code:
+        raise ValidationError({"definition": "Unsupported report definition."})
 
     template_config = getattr(template, "config", None)
     template_config = template_config if isinstance(template_config, dict) else {}
-    options = REPORT_TEMPLATE_OPTIONS.get(report_type, {})
+    options = REPORT_TEMPLATE_OPTIONS.get(definition_code, {})
     definition_supported_formats = []
     if getattr(template, "definition_id", None) and getattr(template, "definition", None):
         definition_supported_formats = [
@@ -430,7 +401,7 @@ def build_report_template_options(template) -> dict:
         maximum_date_range_days = options.get("maximum_date_range_days")
 
     response = {
-        "report_type": report_type,
+        "definition_code": definition_code,
         "supported_output_formats": definition_supported_formats or list(SUPPORTED_TEMPLATE_OUTPUT_FORMATS),
         "available_columns": list(options.get("available_columns", [])),
         "required_fields": list(options.get("required_fields", [])),
@@ -443,7 +414,7 @@ def build_report_template_options(template) -> dict:
     for field_name, values in options.get("field_options", {}).items():
         field_options[field_name] = list(values)
 
-    if report_type == "device_inventory":
+    if definition_code == "DEVICE_INVENTORY":
         field_options["device_type_ids"] = [
             {
                 "id": str(device_type.pk),

@@ -20,7 +20,7 @@ from apps.datacenters.models import DataCenter
 from apps.devices.models import Device, DeviceModel, DeviceType, Vendor
 from apps.organizations.models import Organization
 from apps.reports.models import ReportJob, ReportJobStatus, ReportTemplate
-from apps.reports.services.generator import generate_report_job
+from apps.reports.services.execution import generate_report_job
 from apps.telemetry.models import LatestTelemetry, MetricCategory, MetricDataType, MetricDefinition
 
 

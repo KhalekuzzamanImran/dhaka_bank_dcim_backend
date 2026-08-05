@@ -65,7 +65,6 @@ REPORT_SCHEDULE_FORMAT_LABELS = {
     "CSV": "CSV",
     "XLSX": "XLSX",
     "PDF": "PDF",
-    "PDF_CSV": "PDF / CSV",
 }
 
 REPORT_SCHEDULE_FORMAT_ALIASES = {
@@ -73,24 +72,9 @@ REPORT_SCHEDULE_FORMAT_ALIASES = {
     normalize_key("xlsx"): "XLSX",
     normalize_key("excel"): "XLSX",
     normalize_key("pdf"): "PDF",
-    normalize_key("pdf csv"): "PDF_CSV",
-    normalize_key("pdf / csv"): "PDF_CSV",
-    normalize_key("pdf and csv"): "PDF_CSV",
-    normalize_key("pdf + csv"): "PDF_CSV",
 }
 
 REPORT_SCHEDULE_FORMAT_CHOICES = tuple((code, label) for code, label in REPORT_SCHEDULE_FORMAT_LABELS.items())
-
-
-def normalize_report_type(value: object) -> str | None:
-    key = normalize_key(value)
-    if not key:
-        return None
-    if key in REPORT_TYPE_ALIASES:
-        return REPORT_TYPE_ALIASES[key]
-    if key in REPORT_TYPE_LABELS:
-        return key
-    return None
 
 
 def normalize_report_frequency(value: object) -> str | None:

@@ -25,7 +25,7 @@ from apps.reports.enums import ReportTriggerSource
 from apps.reports.models import ReportArtifact, ReportDefinition, ReportJob, ReportJobStatus, ReportTemplate
 from apps.reports.services.artifacts import create_report_artifact, get_default_artifact_retention_expires_at
 from apps.reports.services.factory import create_report_job
-from apps.reports.services.generator import generate_report_job
+from apps.reports.services.execution import generate_report_job
 from apps.reports.services.retention import cleanup_expired_report_artifacts
 from apps.reports.tasks import cleanup_expired_report_artifacts_task
 

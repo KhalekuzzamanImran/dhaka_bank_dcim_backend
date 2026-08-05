@@ -13,10 +13,10 @@ from django.utils import timezone
 
 from apps.common.audit import write_audit
 
-from ..constants import normalize_report_format, normalize_report_type
+from ..constants import normalize_report_format
 from ..enums import ReportTriggerSource
 from ..models import ReportArtifact, ReportJob, ReportJobStatus
-from .definitions import get_active_definition_by_code, get_definition_by_code, get_definition_code_for_report_type
+from .definitions import get_active_definition_by_code, get_definition_by_code
 from .observability import log_report_event, log_report_metric
 from ..generators import GeneratorContext, RenderedArtifact, get_generator_class
 from .artifacts import ReportArtifactPersistenceResult, create_report_artifact
@@ -63,13 +63,6 @@ def _resolve_definition_for_job(job: ReportJob):
     definition_code = template_snapshot.get("definition_code")
     if definition_code:
         definition = get_definition_by_code(definition_code)
-        if definition:
-            return definition
-    parameters = job.parameters if isinstance(job.parameters, dict) else {}
-    legacy_report_type = normalize_report_type(parameters.get("report_type") or job.report_type)
-    legacy_definition_code = get_definition_code_for_report_type(legacy_report_type)
-    if legacy_definition_code:
-        definition = get_definition_by_code(legacy_definition_code)
         if definition:
             return definition
     return None

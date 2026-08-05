@@ -35,7 +35,7 @@ from apps.reports.services.deliveries import (
     retry_report_delivery,
 )
 from apps.reports.services.factory import create_report_job
-from apps.reports.services.generator import generate_report_job
+from apps.reports.services.execution import generate_report_job
 
 
 @override_settings(

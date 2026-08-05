@@ -25,7 +25,7 @@ from apps.reports.models import ReportArtifact, ReportDefinition, ReportJob, Rep
 from apps.reports.services.artifacts import create_report_artifact
 from apps.reports.services.definitions import get_active_definition_by_code
 from apps.reports.services.factory import create_report_job
-from apps.reports.services.generator import generate_report_job
+from apps.reports.services.execution import generate_report_job
 
 
 @override_settings(REPORT_ARTIFACT_RETENTION_DAYS=14)

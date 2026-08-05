@@ -17,7 +17,7 @@ from apps.organizations.models import Organization
 from apps.reports.enums import ReportTriggerSource
 from apps.reports.models import ReportDefinition, ReportJobStatus, ReportTemplate
 from apps.reports.services.factory import create_report_job
-from apps.reports.services.generator import generate_report_job
+from apps.reports.services.execution import generate_report_job
 
 
 @override_settings(REPORT_ARTIFACT_RETENTION_DAYS=14)

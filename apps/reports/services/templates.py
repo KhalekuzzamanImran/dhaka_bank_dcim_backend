@@ -6,32 +6,8 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from .configuration import validate_report_template_config
-from .definitions import (
-    build_definition_capabilities,
-    get_active_definition_by_code,
-    get_definition_code_for_report_type,
-    validate_definition_request,
-)
+from .definitions import build_definition_capabilities, get_active_definition_by_code, validate_definition_request
 from .permissions import ensure_organization_access, ensure_data_center_access
-
-
-def _definition_code_to_report_type(definition_code: str | None) -> str | None:
-    code = str(definition_code or "").strip().upper()
-    if not code:
-        return None
-    for report_type, mapped_code in {
-        "device_inventory": "DEVICE_INVENTORY",
-        "telemetry_export": "TELEMETRY_EXPORT",
-        "alert_summary": "ALERT_SUMMARY",
-        "alert_export": "ALERT_DETAIL",
-        "notification_delivery": "NOTIFICATION_DELIVERY",
-        "audit_export": "AUDIT_EXPORT",
-        "room_environment": "ENVIRONMENTAL_TREND",
-        "ups_performance": "UPS_PERFORMANCE",
-    }.items():
-        if mapped_code == code:
-            return report_type
-    return None
 
 
 def build_report_template_snapshot(template) -> dict:
@@ -95,12 +71,6 @@ def create_report_template(*, actor=None, organization, data_center=None, defini
 
     config = dict(config or {})
     config = validate_report_template_config(config, existing_config={}, definition_code=definition.code if definition else None)
-    report_type = config.get("report_type")
-    if definition is None and report_type:
-        expected_definition_code = get_definition_code_for_report_type(report_type)
-        definition = get_active_definition_by_code(expected_definition_code) if expected_definition_code else None
-        if not definition:
-            raise ValidationError({"definition": "A matching active report definition is required."})
 
     if definition:
         validate_definition_request(
@@ -151,12 +121,6 @@ def update_report_template(template, *, actor=None, organization=None, data_cent
 
     config = dict(config if config is not None else template.config)
     config = validate_report_template_config(config, existing_config=template.config or {}, definition_code=definition.code if definition else None)
-    report_type = config.get("report_type")
-    if definition is None and report_type:
-        expected_definition_code = get_definition_code_for_report_type(report_type)
-        definition = get_active_definition_by_code(expected_definition_code) if expected_definition_code else None
-        if not definition:
-            raise ValidationError({"definition": "A matching active report definition is required."})
     if definition:
         validate_definition_request(
             definition,

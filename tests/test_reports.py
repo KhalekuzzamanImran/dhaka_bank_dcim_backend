@@ -21,7 +21,7 @@ from apps.devices.models import Device, DeviceModel, DeviceType, Vendor
 from apps.notifications.models import Notification, NotificationChannel, NotificationStatus
 from apps.organizations.models import Organization
 from apps.reports.models import ReportJob, ReportJobStatus, ReportSchedule, ReportTemplate
-from apps.reports.services.generator import generate_report_job
+from apps.reports.services.execution import generate_report_job
 from apps.reports.services.schedules import execute_report_schedule
 from apps.telemetry.models import MetricCategory, MetricDataType, MetricDefinition, TelemetryPoint
 from apps.datacenters.models import Room

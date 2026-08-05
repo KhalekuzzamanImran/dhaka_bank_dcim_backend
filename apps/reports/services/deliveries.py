@@ -23,9 +23,6 @@ from ..models import (
     ReportDelivery,
     ReportJob,
     ReportJobStatus,
-    ReportScheduleDelivery,
-    ReportScheduleDeliveryStatus,
-    ReportScheduleRun,
 )
 from .artifacts import MIME_TYPES
 
@@ -101,14 +98,6 @@ def _artifact_download_url(artifact: ReportArtifact) -> str:
     return f"/api/v1/reports/artifacts/{artifact.pk}/download/"
 
 
-def _resolve_schedule_run(job: ReportJob) -> ReportScheduleRun | None:
-    if not job.schedule_id:
-        return None
-    return (
-        job.schedule.runs.filter(job=job).order_by("-created_at").first()
-    )
-
-
 def _collect_snapshot_recipients(job: ReportJob) -> list[DeliveryRecipient]:
     snapshot = job.recipient_snapshot if isinstance(job.recipient_snapshot, dict) else {}
     recipients: list[DeliveryRecipient] = []
@@ -182,33 +171,6 @@ def _collect_structured_recipients(job: ReportJob) -> list[DeliveryRecipient]:
     return unique
 
 
-def _collect_legacy_schedule_recipients(job: ReportJob) -> list[DeliveryRecipient]:
-    schedule = job.schedule
-    if not schedule:
-        return []
-
-    recipients: list[DeliveryRecipient] = []
-    for value in schedule.normalize_recipients():
-        normalized = _normalize_email(value)
-        if normalized:
-            recipients.append(DeliveryRecipient(channel=NotificationChannel.EMAIL, recipient=normalized, source="legacy"))
-    if schedule.send_sms:
-        for value in schedule.sms_recipients if isinstance(schedule.sms_recipients, list) else []:
-            normalized = _normalize_sms(value)
-            if normalized:
-                recipients.append(DeliveryRecipient(channel=NotificationChannel.SMS, recipient=normalized, source="legacy"))
-
-    unique: list[DeliveryRecipient] = []
-    seen: set[tuple[str, str]] = set()
-    for item in recipients:
-        key = (item.channel, item.recipient)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(item)
-    return unique
-
-
 def resolve_report_recipients(job: ReportJob, recipients=None) -> list[DeliveryRecipient]:
     if recipients is not None:
         normalized: list[DeliveryRecipient] = []
@@ -239,11 +201,7 @@ def resolve_report_recipients(job: ReportJob, recipients=None) -> list[DeliveryR
     if snapshot_recipients:
         return snapshot_recipients
 
-    structured_recipients = _collect_structured_recipients(job)
-    if structured_recipients:
-        return structured_recipients
-
-    return _collect_legacy_schedule_recipients(job)
+    return _collect_structured_recipients(job)
 
 
 def _attachment_payload(artifact: ReportArtifact) -> dict:
@@ -372,91 +330,6 @@ def _create_notification_delivery(report_delivery: ReportDelivery) -> Notificati
         }
         notification_delivery.save(update_fields=["report_delivery", "recipient_address", "metadata", "updated_at"])
     return notification_delivery
-
-
-def _ensure_legacy_schedule_delivery(report_delivery: ReportDelivery):
-    schedule = report_delivery.job.schedule
-    if not schedule:
-        return None
-    schedule_run = _resolve_schedule_run(report_delivery.job)
-    if not schedule_run:
-        return None
-    now = timezone.now()
-    legacy, created = ReportScheduleDelivery.objects.get_or_create(
-        run=schedule_run,
-        channel=report_delivery.channel,
-        recipient_address=report_delivery.recipient,
-        defaults={
-            "status": ReportScheduleDeliveryStatus.PENDING,
-            "attempt_count": 0,
-            "max_attempts": int(getattr(settings, "REPORT_DELIVERY_MAX_RETRIES", 3)),
-            "queued_at": now,
-            "metadata": {
-                "report_job_id": str(report_delivery.job_id),
-                "report_delivery_id": str(report_delivery.pk),
-                "recipient": report_delivery.recipient,
-                "channel": report_delivery.channel,
-            },
-        },
-    )
-    if not created and legacy.status == ReportScheduleDeliveryStatus.SENT:
-        return legacy
-    return legacy
-
-
-def _map_notification_status(status: str) -> str:
-    if status == NotificationStatus.SENT:
-        return ReportDeliveryStatus.SENT
-    if status == NotificationStatus.FAILED:
-        return ReportDeliveryStatus.FAILED
-    if status == NotificationStatus.DELIVERING:
-        return ReportDeliveryStatus.DELIVERING
-    return ReportDeliveryStatus.PENDING
-
-
-def _sync_legacy_schedule_delivery(report_delivery: ReportDelivery):
-    schedule = report_delivery.job.schedule
-    if not schedule:
-        return None
-    schedule_run = _resolve_schedule_run(report_delivery.job)
-    if not schedule_run:
-        return None
-    legacy = schedule_run.deliveries.filter(channel=report_delivery.channel, recipient_address=report_delivery.recipient).first()
-    if not legacy:
-        legacy = ReportScheduleDelivery.objects.filter(run=schedule_run, channel=report_delivery.channel, recipient_address=report_delivery.recipient).first()
-    if not legacy:
-        legacy = _ensure_legacy_schedule_delivery(report_delivery)
-    if not legacy:
-        return None
-
-    legacy.status = {
-        ReportDeliveryStatus.SENT: ReportScheduleDeliveryStatus.SENT,
-        ReportDeliveryStatus.FAILED: ReportScheduleDeliveryStatus.FAILED,
-        ReportDeliveryStatus.DELIVERING: ReportScheduleDeliveryStatus.DELIVERING,
-        ReportDeliveryStatus.QUEUED: ReportScheduleDeliveryStatus.PENDING,
-        ReportDeliveryStatus.PENDING: ReportScheduleDeliveryStatus.PENDING,
-    }.get(report_delivery.status, ReportScheduleDeliveryStatus.PENDING)
-    legacy.queued_at = legacy.queued_at or report_delivery.queued_at
-    legacy.delivering_at = report_delivery.started_at if report_delivery.status == ReportDeliveryStatus.DELIVERING else legacy.delivering_at
-    legacy.sent_at = report_delivery.sent_at or legacy.sent_at
-    legacy.failed_at = report_delivery.failed_at or legacy.failed_at
-    legacy.provider_message_id = report_delivery.provider_message_id or legacy.provider_message_id
-    legacy.provider_response = report_delivery.provider_response if isinstance(report_delivery.provider_response, dict) else legacy.provider_response
-    legacy.error_message = report_delivery.error_message or legacy.error_message
-    legacy.save(
-        update_fields=[
-            "status",
-            "queued_at",
-            "delivering_at",
-            "sent_at",
-            "failed_at",
-            "provider_message_id",
-            "provider_response",
-            "error_message",
-            "updated_at",
-        ]
-    )
-    return legacy
 
 
 def report_delivery_summary(job: ReportJob) -> str:

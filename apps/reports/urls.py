@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .api_views import (
     ReportArtifactViewSet as NormalizedReportArtifactViewSet,
+    ReportDashboardAPIView,
     ReportDefinitionViewSet,
     ReportDeliveryViewSet as NormalizedReportDeliveryViewSet,
     ReportJobViewSet as NormalizedReportJobViewSet,
@@ -11,7 +12,6 @@ from .api_views import (
     ReportScheduleViewSet as NormalizedReportScheduleViewSet,
     ReportTemplateViewSet as NormalizedReportTemplateViewSet,
 )
-from .views import ReportDashboardAPIView
 
 
 canonical_router = DefaultRouter()

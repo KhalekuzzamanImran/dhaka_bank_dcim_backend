@@ -602,6 +602,27 @@ class ReportDeliveryViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(ReportDeliverySerializer(result, context=self.get_serializer_context()).data)
 
 
+class ReportDashboardAPIView(APIView):
+    permission_classes = [DCIMRBACPermission]
+    permission_module = "report"
+
+    def get(self, request):
+        query_serializer = ReportDashboardQuerySerializer(data=request.query_params)
+        query_serializer.is_valid(raise_exception=True)
+        params = query_serializer.validated_data
+        payload = get_reporting_dashboard(
+            user=request.user,
+            organization=params.get("organization"),
+            data_center=params.get("data_center"),
+            start_at=params.get("start_at"),
+            end_at=params.get("end_at"),
+            timezone_name=params.get("timezone") or "Asia/Dhaka",
+            request=request,
+        )
+        response_serializer = ReportDashboardResponseSerializer(instance=payload, context={"request": request})
+        return Response(response_serializer.data)
+
+
 class ReportOptionsAPIView(APIView):
     permission_classes = [DCIMRBACPermission]
     permission_module = "report"

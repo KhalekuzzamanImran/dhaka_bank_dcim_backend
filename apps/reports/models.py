@@ -25,7 +25,6 @@ from .constants import (
     REPORT_TYPE_CHOICES,
     normalize_report_format,
     normalize_report_frequency,
-    normalize_report_type,
 )
 from .services.configuration import validate_report_template_config
 
@@ -162,12 +161,6 @@ class ReportTemplate(TimeStampedModel):
     def __str__(self):
         return self.name
 
-    @property
-    def report_type(self):
-        if isinstance(self.config, dict):
-            return self.config.get("report_type")
-        return None
-
     def clean(self):
         super().clean()
 
@@ -194,13 +187,8 @@ class ReportTemplate(TimeStampedModel):
         else:
             errors.setdefault("config", []).append("Config must be a dictionary/object.")
 
-        if self.definition_id and self.definition and self.definition.code:
-            report_type = self.report_type or self.definition.code
-            if report_type and self.definition.generator_key:
-                # Keep compatibility: report_type and definition may diverge during transition,
-                # but a populated definition should still be active and internally consistent.
-                if not self.definition.is_active:
-                    errors.setdefault("definition", []).append("Report definition must be active.")
+        if self.definition_id and self.definition and not self.definition.is_active:
+            errors.setdefault("definition", []).append("Report definition must be active.")
 
         if not isinstance(self.default_parameters, dict):
             errors.setdefault("default_parameters", []).append("Default parameters must be a dictionary/object.")
@@ -306,14 +294,6 @@ class ReportJob(TimeStampedModel):
         return f"ReportJob {self.id}"
 
     @property
-    def report_type(self):
-        if self.template_id and isinstance(self.template.config, dict):
-            return self.template.config.get("report_type")
-        if isinstance(self.parameters, dict):
-            return self.parameters.get("report_type")
-        return None
-
-    @property
     def duration_seconds(self):
         if not self.started_at:
             return None
@@ -326,7 +306,7 @@ class ReportJob(TimeStampedModel):
 
     @property
     def is_downloadable(self):
-        return self.status == ReportJobStatus.COMPLETED and bool(self.file)
+        return self.status == ReportJobStatus.COMPLETED and self.artifacts.exists()
 
     @property
     def can_retry(self):
@@ -426,10 +406,10 @@ class ReportSchedule(TimeStampedModel):
     data_center = models.ForeignKey("datacenters.DataCenter", on_delete=models.CASCADE, related_name="report_schedules", blank=True, null=True)
     template = models.ForeignKey(ReportTemplate, on_delete=models.SET_NULL, blank=True, null=True, related_name="schedules")
     name = models.CharField(max_length=255)
-    report_type = models.CharField(max_length=100, choices=REPORT_TYPE_CHOICES)
+    report_type = models.CharField(max_length=100, choices=REPORT_TYPE_CHOICES, blank=True, default="")
     frequency = models.CharField(max_length=30, choices=REPORT_SCHEDULE_FREQUENCY_CHOICES, default="DAILY")
     delivery_time = models.TimeField(default=time(6, 0))
-    output_format = models.CharField(max_length=30, choices=REPORT_SCHEDULE_FORMAT_CHOICES, default="PDF_CSV")
+    output_format = models.CharField(max_length=30, choices=REPORT_SCHEDULE_FORMAT_CHOICES, default="PDF")
     parameters = models.JSONField(default=dict, blank=True)
     parameter_overrides = models.JSONField(default=dict, blank=True)
     recipients = models.JSONField(default=list, blank=True)
@@ -507,23 +487,6 @@ class ReportSchedule(TimeStampedModel):
             return self._add_months(value, steps * 3)
         return value + timedelta(days=steps)
 
-    def normalize_recipients(self) -> list[str]:
-        recipients = self.recipients if isinstance(self.recipients, list) else []
-        normalized = []
-        for recipient in recipients:
-            candidate = str(recipient).strip().lower()
-            if not candidate:
-                continue
-            normalized.append(candidate)
-        seen = set()
-        unique = []
-        for recipient in normalized:
-            if recipient in seen:
-                continue
-            seen.add(recipient)
-            unique.append(recipient)
-        return unique
-
     def calculate_next_run_at(self, reference_time=None):
         reference_time = reference_time or timezone.now()
         schedule_tz = self._schedule_timezone()
@@ -554,12 +517,6 @@ class ReportSchedule(TimeStampedModel):
         return start_time, end_time
 
     @property
-    def report_type_label(self):
-        for code, label in REPORT_TYPE_CHOICES:
-            if code == self.report_type:
-                return label
-        return self.report_type
-
     def clean(self):
         super().clean()
 
@@ -574,17 +531,6 @@ class ReportSchedule(TimeStampedModel):
             ZoneInfo(self.timezone)
         except Exception:
             errors.setdefault("timezone", []).append("Unsupported timezone.")
-
-        if not self.report_type and self.template_id and self.template and self.template.definition_id:
-            normalized_report_type = normalize_report_type(self.template.definition.code)
-            if normalized_report_type:
-                self.report_type = normalized_report_type
-
-        report_type = normalize_report_type(self.report_type)
-        if not report_type:
-            errors.setdefault("report_type", []).append("Unsupported report type.")
-        else:
-            self.report_type = report_type
 
         frequency = normalize_report_frequency(self.frequency)
         if not frequency:
@@ -601,13 +547,6 @@ class ReportSchedule(TimeStampedModel):
         if self.template_id and self.organization_id and self.template.organization_id != self.organization_id:
             errors.setdefault("template", []).append("Template must belong to the selected organization.")
 
-        if self.template_id and self.template and self.template.definition_id:
-            template_definition_code = self.template.definition.code if self.template.definition else None
-            if template_definition_code:
-                normalized_report_type = normalize_report_type(template_definition_code)
-                if normalized_report_type:
-                    self.report_type = normalized_report_type
-
         if self.data_center_id and self.organization_id and self.data_center.organization_id != self.organization_id:
             errors.setdefault("data_center", []).append("Data center must belong to the selected organization.")
 
@@ -623,28 +562,7 @@ class ReportSchedule(TimeStampedModel):
             errors.setdefault("day_of_month", []).append("Day of month must be between 1 and 31.")
         if self.status not in ReportScheduleStatus.values:
             errors.setdefault("status", []).append("Unsupported schedule status.")
-        if not isinstance(self.recipients, list):
-            errors.setdefault("recipients", []).append("Recipients must be a list of email addresses.")
-        else:
-            normalized_recipients = self.normalize_recipients()
-            sms_recipients = self.sms_recipients if isinstance(self.sms_recipients, list) else []
-            normalized_sms_recipients = list(dict.fromkeys(str(value).strip() for value in sms_recipients if str(value).strip()))
-            if not normalized_recipients and not (self.send_sms and normalized_sms_recipients):
-                errors.setdefault("recipients", []).append("At least one recipient email is required.")
-            for recipient in normalized_recipients:
-                if recipient.count("@") != 1:
-                    errors.setdefault("recipients", []).append(f"Invalid recipient email: {recipient}")
-                    continue
-                local_part, domain_part = recipient.split("@", 1)
-                if not local_part or not domain_part:
-                    errors.setdefault("recipients", []).append(f"Invalid recipient email: {recipient}")
-            self.recipients = normalized_recipients
-            self.sms_recipients = normalized_sms_recipients
-
-        if self.send_sms and not self.sms_recipients:
-            errors.setdefault("sms_recipients", []).append("At least one SMS recipient is required when SMS is enabled.")
-
-        if self.is_active and not self.next_run_at:
+        if self.status == ReportScheduleStatus.ACTIVE and not self.next_run_at:
             self.next_run_at = self.calculate_next_run_at()
 
         if self.last_run_at and self.next_run_at and self.last_run_at > self.next_run_at:

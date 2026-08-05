@@ -28,13 +28,12 @@ from .models import (
     ReportDelivery,
     ReportJob,
     ReportSchedule,
-    ReportScheduleDelivery,
     ReportScheduleRecipient,
     ReportScheduleRun,
     ReportTemplate,
 )
 from .services.configuration import build_report_template_options, validate_report_template_config
-from .services.definitions import build_definition_capabilities, get_active_definition_by_code, get_definition_code_for_report_type, validate_definition_request
+from .services.definitions import build_definition_capabilities, get_active_definition_by_code, validate_definition_request
 from .services.deliveries import report_delivery_summary
 from .services.factory import build_output_config_snapshot, build_parameters_snapshot, build_recipient_snapshot, build_scope_snapshot, build_source_event_snapshot, build_template_snapshot, create_report_job
 from .services.permissions import (
@@ -50,7 +49,6 @@ from .services.permissions import (
     report_schedule_run_allowed_actions,
     report_template_allowed_actions,
 )
-from .constants import normalize_report_type
 from .services.templates import create_report_template, update_report_template
 
 
@@ -393,8 +391,6 @@ class ReportTemplateWriteSerializer(serializers.Serializer):
                 attrs["include_charts"] = self.instance.include_charts
             if "include_raw_data" not in self.initial_data:
                 attrs["include_raw_data"] = self.instance.include_raw_data
-            if "is_active" not in self.initial_data:
-                attrs["is_active"] = self.instance.is_active
         if not isinstance(configuration, dict):
             raise serializers.ValidationError({"configuration": "Configuration must be a dictionary/object."})
         if data_center in ("", None):
@@ -424,17 +420,6 @@ class ReportTemplateWriteSerializer(serializers.Serializer):
                 definition = ReportDefinition.objects.filter(code=definition_code).first()
         else:
             definition = None
-
-        report_type = configuration.get("report_type")
-        if report_type:
-            expected_code = get_definition_code_for_report_type(report_type)
-            expected_definition = get_active_definition_by_code(expected_code) if expected_code else None
-            if expected_definition is None:
-                raise serializers.ValidationError({"definition": "A matching active report definition is required."})
-            if definition is None:
-                definition = expected_definition
-            elif definition.code != expected_definition.code:
-                raise serializers.ValidationError({"definition": "Definition must match the selected report type."})
 
         if definition is None:
             raise serializers.ValidationError({"definition": "A matching active report definition is required."})
@@ -470,7 +455,6 @@ class ReportTemplateWriteSerializer(serializers.Serializer):
         attrs["attachment_formats"] = validated["attachment_formats"]
         attrs["include_charts"] = bool(attrs.get("include_charts", False))
         attrs["include_raw_data"] = bool(attrs.get("include_raw_data", False))
-        attrs["is_active"] = bool(attrs.get("is_active", True))
         return attrs
 
     def _save(self, instance, validated_data):
@@ -484,7 +468,6 @@ class ReportTemplateWriteSerializer(serializers.Serializer):
         attachment_formats = validated_data.get("attachment_formats") or []
         include_charts = validated_data.get("include_charts", False)
         include_raw_data = validated_data.get("include_raw_data", False)
-        is_active = validated_data.get("is_active", True)
         name = validated_data.get("name")
         code = validated_data.get("code")
         description = validated_data.get("description")
@@ -504,7 +487,6 @@ class ReportTemplateWriteSerializer(serializers.Serializer):
                 attachment_formats=attachment_formats,
                 include_charts=include_charts,
                 include_raw_data=include_raw_data,
-                is_active=is_active,
                 updated_by=actor,
             )
         return update_report_template(
@@ -521,7 +503,6 @@ class ReportTemplateWriteSerializer(serializers.Serializer):
             attachment_formats=attachment_formats,
             include_charts=include_charts,
             include_raw_data=include_raw_data,
-            is_active=is_active,
             updated_by=actor,
         )
 
@@ -622,15 +603,8 @@ class ReportScheduleReadSerializer(serializers.ModelSerializer):
 
     def get_recipients(self, obj):
         structured = getattr(obj, "structured_recipients", None)
-        if structured is not None:
-            rows = structured.all()
-            return [_schedule_recipient_summary(row) for row in rows]
-        result = []
-        for email in obj.normalize_recipients():
-            result.append({"channel": ReportRecipientChannel.EMAIL, "email_address": email, "phone_number": None, "display_name": "", "is_active": True})
-        for phone in obj.sms_recipients if isinstance(obj.sms_recipients, list) else []:
-            result.append({"channel": ReportRecipientChannel.SMS, "email_address": None, "phone_number": phone, "display_name": "", "is_active": True})
-        return result
+        rows = structured.all() if structured is not None else []
+        return [_schedule_recipient_summary(row) for row in rows]
 
     def get_created_by(self, obj):
         return _user_summary(getattr(obj, "created_by", None))
@@ -724,33 +698,16 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
                 parameter_overrides = deepcopy(self.instance.parameter_overrides if isinstance(self.instance.parameter_overrides, dict) else {})
             if "recipients" not in self.initial_data:
                 structured = list(self.instance.structured_recipients.all())
-                if structured:
-                    recipients = [
-                        {
-                            "channel": row.channel,
-                            "display_name": row.display_name,
-                            "email_address": row.email_address,
-                            "phone_number": row.phone_number,
-                            "is_active": row.is_active,
-                        }
-                        for row in structured
-                    ]
-                else:
-                    recipients = [
-                        {"channel": ReportRecipientChannel.EMAIL, "display_name": "", "email_address": value, "phone_number": None, "is_active": True}
-                        for value in self.instance.normalize_recipients()
-                    ]
-                    recipients.extend(
-                        {
-                            "channel": ReportRecipientChannel.SMS,
-                            "display_name": "",
-                            "email_address": None,
-                            "phone_number": value,
-                            "is_active": True,
-                        }
-                        for value in (self.instance.sms_recipients if isinstance(self.instance.sms_recipients, list) else [])
-                        if str(value).strip()
-                    )
+                recipients = [
+                    {
+                        "channel": row.channel,
+                        "display_name": row.display_name,
+                        "email_address": row.email_address,
+                        "phone_number": row.phone_number,
+                        "is_active": row.is_active,
+                    }
+                    for row in structured
+                ]
                 attrs["recipients"] = recipients
             if "primary_format" not in self.initial_data:
                 primary_format = self.instance.primary_format
@@ -873,14 +830,11 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
         template = validated_data["template"]
         recipients = validated_data.get("recipients") or []
         status_value = validated_data.get("status", ReportScheduleStatus.ACTIVE)
-        raw_email_recipients = [recipient["email_address"] for recipient in recipients if recipient["channel"] == ReportRecipientChannel.EMAIL and recipient.get("email_address")]
-        raw_sms_recipients = [recipient["phone_number"] for recipient in recipients if recipient["channel"] == ReportRecipientChannel.SMS and recipient.get("phone_number")]
         defaults = {
             "organization": organization,
             "data_center": data_center,
             "template": template,
             "name": validated_data["name"],
-            "report_type": normalize_report_type(template.definition.code) if template.definition_id else None,
             "frequency": validated_data["frequency"],
             "timezone": validated_data["timezone"],
             "delivery_time": _parse_time_value(validated_data.get("delivery_time") or template.config.get("delivery_time")) or time_cls(6, 0),
@@ -889,9 +843,6 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
             "start_at": validated_data.get("start_at"),
             "end_at": validated_data.get("end_at"),
             "parameter_overrides": validated_data.get("parameter_overrides") or {},
-            "recipients": raw_email_recipients,
-            "send_sms": bool(raw_sms_recipients),
-            "sms_recipients": raw_sms_recipients,
             "primary_format": validated_data.get("primary_format"),
             "attachment_formats": validated_data.get("attachment_formats") or [],
             "status": status_value,

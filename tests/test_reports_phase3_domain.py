@@ -16,7 +16,6 @@ from apps.reports.enums import ReportDefinitionCategory, ReportTriggerSource
 from apps.reports.models import ReportDefinition, ReportJob, ReportSchedule, ReportScheduleStatus
 from apps.reports.services.definitions import (
     get_active_definition_by_code,
-    get_definition_code_for_report_type,
     seed_report_definitions,
     validate_definition_request,
 )
