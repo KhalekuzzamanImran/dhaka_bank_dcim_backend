@@ -164,10 +164,17 @@ def poll_snmp_device(device_id: str, evaluate_alerts: bool = True) -> PollOutcom
     try:
         protocol_config, credential, mappings = get_device_snmp_runtime(device)
         client = SNMPClient(protocol_config, credential)
+        results = client.get_many(mapping.oid for mapping in mappings)
         with transaction.atomic():
             for mapping in mappings:
                 try:
-                    result: SNMPResult = client.get(mapping.oid)
+                    result = results.get(mapping.oid)
+                    if result is None:
+                        raise SNMPResponseError(f"No SNMP result returned for OID {mapping.oid}")
+                    if isinstance(result, Exception):
+                        raise result
+                    if not isinstance(result, SNMPResult):
+                        raise SNMPResponseError(f"Invalid SNMP result returned for OID {mapping.oid}")
                     parsed_raw_value = parse_snmp_raw_value(result.raw_value, mapping.data_type)
                     final_value = apply_scale_offset(parsed_raw_value, mapping.scale_factor, mapping.offset_value)
                     payload = _value_payload(mapping.metric.data_type, final_value)
@@ -202,7 +209,12 @@ def poll_snmp_device(device_id: str, evaluate_alerts: bool = True) -> PollOutcom
                     success_count += 1
                 except Exception as exc:
                     failure_count += 1
-                    logger.warning("SNMP OID poll failed device=%s oid=%s error=%s", device.pk, mapping.oid, exc)
+                    logger.warning(
+                        "SNMP OID poll failed device=%s oid=%s error=%s",
+                        device.pk,
+                        mapping.oid,
+                        str(exc).splitlines()[0],
+                    )
             if success_count == 0:
                 raise SNMPResponseError("All configured SNMP OIDs failed")
             _mark_success(device, polling_config, started_at)

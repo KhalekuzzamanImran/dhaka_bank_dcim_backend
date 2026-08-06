@@ -1,6 +1,8 @@
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Union
+
+from celery.exceptions import SoftTimeLimitExceeded
 
 from pysnmp.hlapi import (
     CommunityData,
@@ -30,6 +32,8 @@ from .exceptions import SNMPCredentialError, SNMPResponseError, SNMPTimeoutError
 from .security import decrypt_secret
 
 logger = logging.getLogger(__name__)
+
+SNMP_BATCH_SIZE = 10
 
 _AUTH_PROTOCOLS = {
     None: usmNoAuthProtocol,
@@ -64,11 +68,7 @@ class SNMPResult:
 
 
 class SNMPClient:
-    """Small synchronous SNMP client for Celery worker usage.
-
-    The worker calls one OID at a time to keep error reporting precise. For very large fleets,
-    shard workers by data center and reduce OID count through vendor-specific batching later.
-    """
+    """Synchronous SNMP client with one engine and bounded OID batches per poll."""
 
     def __init__(self, protocol_config: DeviceProtocolConfig, credential: DeviceCredential):
         self.protocol_config = protocol_config
@@ -77,6 +77,14 @@ class SNMPClient:
         self.port = protocol_config.port or 161
         self.timeout = int(protocol_config.timeout_seconds or 5)
         self.retries = int(protocol_config.retry_count or 1)
+        self.engine = SnmpEngine()
+        self.auth_data = self._auth_data()
+        self.transport = UdpTransportTarget(
+            (self.host, self.port),
+            timeout=self.timeout,
+            retries=self.retries,
+        )
+        self.context = ContextData()
 
     def _auth_data(self):
         version = self.credential.snmp_version or SNMPVersion.V2C
@@ -112,29 +120,57 @@ class SNMPClient:
         raise SNMPCredentialError(f"Unsupported SNMP version: {version}")
 
     def get(self, oid: str) -> SNMPResult:
+        results = self._request([oid])
+        result = results[0]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def _request(self, oids: List[str]) -> List[Union[SNMPResult, Exception]]:
         iterator = getCmd(
-            SnmpEngine(),
-            self._auth_data(),
-            UdpTransportTarget((self.host, self.port), timeout=self.timeout, retries=self.retries),
-            ContextData(),
-            ObjectType(ObjectIdentity(oid)),
+            self.engine,
+            self.auth_data,
+            self.transport,
+            self.context,
+            *[ObjectType(ObjectIdentity(oid)) for oid in oids],
         )
-        error_indication, error_status, error_index, var_binds = next(iterator)
+        try:
+            error_indication, error_status, error_index, var_binds = next(iterator)
+        except SoftTimeLimitExceeded:
+            raise
+        except Exception as exc:
+            # PySNMP may wrap the Celery signal while it is importing a MIB.
+            if "SoftTimeLimitExceeded" in repr(exc):
+                raise SNMPTimeoutError("SNMP request interrupted by the worker time limit") from exc
+            raise
+
         if error_indication:
             msg = str(error_indication)
             if "timed out" in msg.lower() or "timeout" in msg.lower():
-                raise SNMPTimeoutError(msg)
-            raise SNMPResponseError(msg)
+                error = SNMPTimeoutError("SNMP device request timed out")
+            else:
+                error = SNMPResponseError(msg)
+            return [error for _ in oids]
         if error_status:
-            failing = var_binds[int(error_index) - 1][0] if error_index else oid
-            raise SNMPResponseError(f"{error_status.prettyPrint()} at {failing}")
-        if not var_binds:
-            raise SNMPResponseError(f"No SNMP response for OID {oid}")
-        name, value = var_binds[0]
-        return SNMPResult(oid=str(name), value=value, raw_value=value.prettyPrint())
+            failing_index = int(error_index) - 1 if error_index else 0
+            failing_oid = oids[failing_index] if 0 <= failing_index < len(oids) else oids[0]
+            error = SNMPResponseError(f"{error_status.prettyPrint()} at {failing_oid}")
+            return [error for _ in oids]
+        if len(var_binds) != len(oids):
+            error = SNMPResponseError("SNMP response did not contain all requested OIDs")
+            return [error for _ in oids]
 
-    def get_many(self, oids: Iterable[str]) -> Dict[str, SNMPResult]:
-        results: Dict[str, SNMPResult] = {}
-        for oid in oids:
-            results[oid] = self.get(oid)
+        return [
+            SNMPResult(oid=str(name), value=value, raw_value=value.prettyPrint())
+            for name, value in var_binds
+        ]
+
+    def get_many(self, oids: Iterable[str], batch_size: int = SNMP_BATCH_SIZE) -> Dict[str, Union[SNMPResult, Exception]]:
+        requested = [str(oid).strip() for oid in oids if str(oid).strip()]
+        results: Dict[str, Union[SNMPResult, Exception]] = {}
+        batch_size = max(1, int(batch_size or SNMP_BATCH_SIZE))
+        for start in range(0, len(requested), batch_size):
+            batch = requested[start:start + batch_size]
+            batch_results = self._request(batch)
+            results.update(dict(zip(batch, batch_results)))
         return results

@@ -9,7 +9,7 @@ from .services import get_enabled_snmp_devices_due, poll_snmp_device
 logger = logging.getLogger(__name__)
 
 
-@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_jitter=True, max_retries=2, soft_time_limit=45, time_limit=60)
+@shared_task(bind=True, soft_time_limit=45, time_limit=60)
 def poll_snmp_device_task(self, device_id: str):
     outcome = poll_snmp_device(device_id)
     return outcome.__dict__

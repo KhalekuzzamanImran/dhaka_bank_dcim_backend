@@ -75,8 +75,11 @@ class SnmpTelemetryIngestionTestCase(TestCase):
 
     def _poll_with_raw_value(self, device, raw_value, raw_text=None):
         raw_text = raw_text if raw_text is not None else str(raw_value)
-        with patch("collectors.snmp_collector.services.SNMPClient.get") as get_mock:
-            get_mock.return_value = SNMPResult(oid="1.3.6.1.4.1.99999.1.1", value=raw_value, raw_value=raw_text)
+        with patch("collectors.snmp_collector.services.SNMPClient.get_many") as get_many_mock:
+            get_many_mock.side_effect = lambda oids: {
+                oid: SNMPResult(oid=oid, value=raw_value, raw_value=raw_text)
+                for oid in oids
+            }
             return poll_snmp_device(str(device.pk), evaluate_alerts=False)
 
     def test_snmp_integer_raw_scaled_to_float_metric_stores_value_float(self):
