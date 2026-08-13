@@ -1,4 +1,6 @@
 from .delivery import (
+    _legacy_pending_queryset,
+    _pending_delivery_queryset,
     claim_notification_for_delivery,
     claim_delivery_for_processing,
     deliver_notification,
@@ -17,6 +19,8 @@ from .sms import send_sms_notification
 
 __all__ = [
     "claim_notification_for_delivery",
+    "_legacy_pending_queryset",
+    "_pending_delivery_queryset",
     "claim_delivery_for_processing",
     "deliver_notification",
     "deliver_notification_delivery",

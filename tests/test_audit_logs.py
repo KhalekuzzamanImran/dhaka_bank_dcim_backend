@@ -19,7 +19,7 @@ from apps.common.audit import write_audit
 from apps.datacenters.models import DataCenter
 from apps.devices.models import Device, DeviceModel, DeviceType, Vendor
 from apps.organizations.models import Organization
-from apps.reports.models import ReportJob, ReportJobStatus, ReportTemplate
+from apps.reports.models import ReportJob, ReportJobStatus, ReportTemplate, ReportDefinition
 from apps.reports.services.execution import generate_report_job
 from apps.telemetry.models import LatestTelemetry, MetricCategory, MetricDataType, MetricDefinition
 
@@ -148,8 +148,10 @@ class AuditLogTestCase(TestCase):
         return alert
 
     def _create_report(self, organization, data_center, requested_by):
+        definition = ReportDefinition.objects.get(code="DEVICE_INVENTORY")
         template = ReportTemplate.objects.create(
             organization=organization,
+            definition=definition,
             name="Device Inventory",
             code=f"REPORT-{organization.code}",
             description="Test template",
@@ -160,6 +162,7 @@ class AuditLogTestCase(TestCase):
             organization=organization,
             data_center=data_center,
             template=template,
+            definition=definition,
             requested_by=requested_by,
             parameters={"report_type": "device_inventory"},
             status=ReportJobStatus.PENDING,
@@ -294,14 +297,15 @@ class AuditLogTestCase(TestCase):
         job = self._create_report(self.org_a, self.dc_a, self.user_a)
         self.client.force_authenticate(user=self.user_a)
 
-        with patch("apps.reports.tasks.generate_report_job_task.delay", side_effect=lambda job_id: generate_report_job(job_id)):
-            generate_response = self.client.post(f"/api/v1/reports/report-jobs/{job.id}/generate/", {}, format="json")
-        self.assertEqual(generate_response.status_code, 200)
+        generate_response = self.client.post(f"/api/v1/reports/templates/{job.template_id}/generate/", {}, format="json")
+        self.assertEqual(generate_response.status_code, 201)
+        generated_job = ReportJob.objects.get(pk=generate_response.data["id"])
+        generated_job = generate_report_job(generated_job.id)
         self.assertTrue(
             AuditLog.objects.filter(
                 action="REPORT_GENERATION_REQUESTED",
-                resource_type="ReportJob",
-                resource_id=str(job.id),
+                resource_type="ReportTemplate",
+                resource_id=str(job.template_id),
                 organization=self.org_a,
             ).exists()
         )
@@ -309,18 +313,19 @@ class AuditLogTestCase(TestCase):
             AuditLog.objects.filter(
                 action="REPORT_GENERATED",
                 resource_type="ReportJob",
-                resource_id=str(job.id),
+                resource_id=str(generated_job.id),
                 organization=self.org_a,
             ).exists()
         )
 
-        download_response = self.client.get(f"/api/v1/reports/report-jobs/{job.id}/download/")
+        artifact = generated_job.artifacts.order_by("created_at", "pk").first()
+        download_response = self.client.get(f"/api/v1/reports/artifacts/{artifact.id}/download/")
         self.assertEqual(download_response.status_code, 200)
         self.assertTrue(
             AuditLog.objects.filter(
-                action="REPORT_DOWNLOADED",
-                resource_type="ReportJob",
-                resource_id=str(job.id),
+                action="REPORT_ARTIFACT_DOWNLOADED",
+                resource_type="ReportArtifact",
+                resource_id=str(artifact.id),
                 organization=self.org_a,
             ).exists()
         )

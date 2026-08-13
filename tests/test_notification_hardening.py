@@ -384,11 +384,12 @@ class NotificationHardeningTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(len(payload), 1)
-        self.assertEqual(payload[0]["subject"], "Alert Opened: UPS 01")
-        self.assertEqual(payload[0]["delivery_summary"]["WEB"], NotificationStatus.SENT)
-        self.assertEqual(payload[0]["delivery_summary"]["EMAIL"], NotificationStatus.SENT)
-        self.assertEqual(payload[0]["delivery_summary"]["SMS"], NotificationStatus.FAILED)
+        rows = payload.get("results", payload)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["subject"], "Alert Opened: UPS 01")
+        self.assertEqual(rows[0]["delivery_summary"]["WEB"], NotificationStatus.SENT)
+        self.assertEqual(rows[0]["delivery_summary"]["EMAIL"], NotificationStatus.SENT)
+        self.assertEqual(rows[0]["delivery_summary"]["SMS"], NotificationStatus.FAILED)
 
     def test_mark_read_marks_only_own_notification(self):
         org = self._org()

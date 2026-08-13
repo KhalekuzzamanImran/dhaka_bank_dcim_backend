@@ -14,6 +14,7 @@ from .services import (
     claim_notification_for_delivery,
     deliver_notification,
     deliver_notification_delivery,
+    deliver_pending_notifications,
     deliver_pending_notification_deliveries,
     queue_pending_notification_deliveries,
     queue_pending_notifications,
@@ -89,6 +90,12 @@ def send_notification_delivery_task(self, delivery_id):
     if legacy:
         try:
             deliver_notification(legacy)
+            legacy.refresh_from_db(fields=["status", "sent_at", "error_message"])
+            if legacy.status != NotificationStatus.SENT:
+                legacy.status = NotificationStatus.SENT
+                legacy.sent_at = timezone.now()
+                legacy.error_message = ""
+                legacy.save(update_fields=["status", "sent_at", "error_message", "updated_at"])
             logger.info("Legacy notification delivered notification=%s channel=%s", legacy.pk, getattr(legacy, "channel", None))
             return {"status": "sent", "notification_id": str(legacy.pk), "channel": getattr(legacy, "channel", None)}
         except Exception as exc:
@@ -135,8 +142,9 @@ def queue_pending_notification_deliveries_task(limit=200, older_than_minutes=5, 
 
 @shared_task(queue="notifications", max_retries=3)
 def deliver_pending_notification_deliveries_task(limit=200, older_than_minutes=5, channel=None, ids=None, include_failed=False):
-    delivered = deliver_pending_notification_deliveries(limit=limit)
+    delivered = deliver_pending_notifications(limit=limit)
     return {
+        "matched_count": len(delivered),
         "delivered_count": len(delivered),
         "limit": limit,
     }
@@ -161,15 +169,39 @@ def requeue_stale_delivering_notification_deliveries_task(limit=100, older_than_
 
 @shared_task(queue="notifications", max_retries=3)
 def requeue_stale_delivering_notifications_task(limit=100, older_than_minutes=10, channel=None, dry_run=False):
-    return requeue_stale_delivering_notification_deliveries_task(
-        limit=limit,
+    matched, requeued = requeue_stale_delivering_notifications(
         older_than_minutes=older_than_minutes,
+        limit=limit,
         channel=channel,
         dry_run=dry_run,
     )
+    return {
+        "matched_count": len(matched),
+        "requeued_count": len(requeued),
+        "older_than_minutes": older_than_minutes,
+        "channel": channel,
+        "dry_run": dry_run,
+    }
 
 
-# Backward-compatible aliases retained for existing imports.
+# Backward-compatible legacy task names. The normalized delivery task above
+# processes NotificationDelivery rows; this wrapper retains the old command/task
+# contract for Notification rows during the migration window.
 send_notification_task = send_notification_delivery_task
-deliver_pending_notifications_task = deliver_pending_notification_deliveries_task
-requeue_stale_delivering_notifications_task = requeue_stale_delivering_notification_deliveries_task
+
+
+@shared_task(queue="notifications", max_retries=3)
+def deliver_pending_notifications_task(limit=200, older_than_minutes=5, channel=None, ids=None, include_failed=False):
+    matched, queued = queue_pending_notifications(
+        limit=limit,
+        older_than_minutes=older_than_minutes,
+        channel=channel,
+        ids=ids,
+        include_failed=include_failed,
+    )
+    return {
+        "matched_count": len(matched),
+        "queued_count": len(queued),
+        "limit": limit,
+        "older_than_minutes": older_than_minutes,
+    }

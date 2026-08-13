@@ -26,6 +26,12 @@ def _device_scopes(device) -> list[str]:
     if not device_id:
         return ["overview"]
     scopes = ["overview", f"device:{device_id}"]
+    organization_id = getattr(device, "organization_id", None)
+    data_center_id = getattr(device, "data_center_id", None)
+    if organization_id:
+        scopes.append(f"organization:{organization_id}")
+    if data_center_id:
+        scopes.append(f"data_center:{data_center_id}")
     device_type = getattr(device, "device_type", None)
     device_type_code = str(getattr(device_type, "code", "") or "").strip().upper()
     if device_type_code:

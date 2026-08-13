@@ -110,7 +110,7 @@ class ReportPhase5BDownloadTestCase(TestCase):
             template=template,
             requested_by=self.user,
             trigger_source=ReportTriggerSource.MANUAL,
-            parameters={"report_type": "device_inventory"},
+            parameters={},
             queue_job=False,
         )
         job = result.job

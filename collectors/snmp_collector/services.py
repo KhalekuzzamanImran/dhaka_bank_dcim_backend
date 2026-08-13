@@ -17,7 +17,7 @@ from apps.devices.models import (
     ProtocolType,
     SNMPOIDMapping,
 )
-from apps.live_updates.services import publish_live_update
+from apps.live_updates.services import publish_live_update, telemetry_delta_from_latest
 from apps.telemetry.models import LatestTelemetry, TelemetryIngestLog, TelemetryPoint, TelemetryQuality
 from .client import SNMPClient, SNMPResult
 from .exceptions import SNMPConfigurationError, SNMPCredentialError, SNMPResponseError, SNMPTimeoutError, SNMPWorkerError
@@ -38,7 +38,12 @@ class PollOutcome:
 
 def _refresh_scopes(device: Device) -> List[str]:
     device_type_code = str(getattr(getattr(device, "device_type", None), "code", "") or "").strip().upper()
-    scopes = ["overview", f"device:{device.pk}"]
+    scopes = [
+        "overview",
+        f"device:{device.pk}",
+        f"organization:{device.organization_id}",
+        f"data_center:{device.data_center_id}",
+    ]
     if device_type_code:
         scopes.append(f"device_type:{device_type_code}")
     return scopes
@@ -158,6 +163,7 @@ def poll_snmp_device(device_id: str, evaluate_alerts: bool = True) -> PollOutcom
     success_count = 0
     failure_count = 0
     error_message = None
+    telemetry_deltas = []
     device = Device.objects.select_related("organization", "data_center", "device_type", "device_model").get(pk=device_id)
     polling_config = getattr(device, "polling_config", None)
 
@@ -206,6 +212,7 @@ def poll_snmp_device(device_id: str, evaluate_alerts: bool = True) -> PollOutcom
                     )
                     if evaluate_alerts:
                         evaluate_latest(latest)
+                    telemetry_deltas.append(telemetry_delta_from_latest(latest, observed_at=started_at))
                     success_count += 1
                 except Exception as exc:
                     failure_count += 1
@@ -258,7 +265,13 @@ def poll_snmp_device(device_id: str, evaluate_alerts: bool = True) -> PollOutcom
                 "status": status,
                 "success_count": success_count,
                 "failure_count": failure_count,
+                "metrics": telemetry_deltas,
             },
+            delivery_scopes=[
+                f"organization:{device.organization_id}",
+                f"data_center:{device.data_center_id}",
+                f"device:{device.pk}",
+            ],
         )
     )
     return PollOutcome(str(device.pk), str(ingest_id), status, success_count, failure_count, error_message)

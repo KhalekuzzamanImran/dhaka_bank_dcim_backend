@@ -10,7 +10,7 @@ import uuid
 from django.db import transaction
 from django.utils import timezone
 
-from apps.live_updates.services import publish_live_update
+from apps.live_updates.services import publish_live_update, telemetry_delta_from_latest
 from apps.devices.models import Device, DeviceStatus
 from apps.telemetry.models import (
     LatestTelemetry,
@@ -23,7 +23,12 @@ from .ingestion import store_telemetry_point
 
 def _refresh_scopes(device):
     device_type_code = str(getattr(getattr(device, "device_type", None), "code", "") or "").strip().upper()
-    scopes = ["overview", f"device:{device.pk}"]
+    scopes = [
+        "overview",
+        f"device:{device.pk}",
+        f"organization:{device.organization_id}",
+        f"data_center:{device.data_center_id}",
+    ]
     if device_type_code:
         scopes.append(f"device_type:{device_type_code}")
     return scopes
@@ -49,6 +54,7 @@ def ingest_points(points, source="api"):
     ingest_id = uuid.uuid4()
     now = timezone.now()
     created = []
+    telemetry_deltas = []
 
     for item in points:
         device = Device.objects.select_related("organization", "data_center").get(id=item["device"])
@@ -72,11 +78,12 @@ def ingest_points(points, source="api"):
         }
 
         point = TelemetryPoint.objects.create(time=ts, ingest_id=ingest_id, **common)
-        LatestTelemetry.objects.update_or_create(
+        latest, _ = LatestTelemetry.objects.update_or_create(
             device=device,
             metric=metric,
             defaults={**common, "last_seen_at": ts},
         )
+        telemetry_deltas.append(telemetry_delta_from_latest(latest, observed_at=ts))
         Device.objects.filter(pk=device.pk).update(last_seen_at=ts, status=DeviceStatus.ONLINE)
         created.append(point)
 
@@ -105,7 +112,14 @@ def ingest_points(points, source="api"):
                     "source": source,
                     "ingest_id": str(ingest_id),
                     "point_count": len(created),
+                    "metrics": telemetry_deltas,
                 },
+                delivery_scopes=[
+                    "global",
+                    f"organization:{first_device.organization_id}",
+                    f"data_center:{first_device.data_center_id}",
+                    f"device:{first_device.pk}",
+                ],
             )
         )
     return ingest_id, created

@@ -99,7 +99,7 @@ class ReportPhase6ADeliveryTestCase(TestCase):
             schedule=schedule,
             requested_by=self.user,
             trigger_source=ReportTriggerSource.SCHEDULED if schedule else ReportTriggerSource.MANUAL,
-            parameters={"report_type": "device_inventory"},
+            parameters={},
             queue_job=False,
         )
         job = result.job
@@ -171,6 +171,22 @@ class ReportPhase6ADeliveryTestCase(TestCase):
             send_sms=True,
             sms_recipients=["01329665857", " 01329665857 "],
             status="ACTIVE",
+            is_active=True,
+        )
+        ReportScheduleRecipient.objects.create(
+            schedule=schedule,
+            channel="EMAIL",
+            recipient_type="EMAIL",
+            email_address="ops@example.com",
+            destination="ops@example.com",
+            is_active=True,
+        )
+        ReportScheduleRecipient.objects.create(
+            schedule=schedule,
+            channel="SMS",
+            recipient_type="SMS",
+            phone_number="01329665857",
+            destination="01329665857",
             is_active=True,
         )
         job = self._completed_job(schedule=schedule, recipient_snapshot={})
@@ -363,8 +379,7 @@ class ReportPhase6ADeliveryTestCase(TestCase):
             "apps.notifications.services.delivery.send_sms_notification",
             side_effect=ValueError("sms rejected"),
         ):
-            with self.assertRaises(ValueError):
-                execute_report_delivery(delivery_id=sms_delivery.id)
+            execute_report_delivery(delivery_id=sms_delivery.id)
 
         self.assertEqual(ReportDelivery.objects.get(pk=email_delivery.pk).status, ReportDeliveryStatus.SENT)
         self.assertEqual(ReportDelivery.objects.get(pk=sms_delivery.pk).status, ReportDeliveryStatus.FAILED)
@@ -400,6 +415,14 @@ class ReportPhase6ADeliveryTestCase(TestCase):
             recipients=["ops@example.com"],
             sms_recipients=[],
             status="ACTIVE",
+            is_active=True,
+        )
+        ReportScheduleRecipient.objects.create(
+            schedule=schedule,
+            channel="EMAIL",
+            recipient_type="EMAIL",
+            email_address="ops@example.com",
+            destination="ops@example.com",
             is_active=True,
         )
         job = self._completed_job(schedule=schedule, recipient_snapshot={})

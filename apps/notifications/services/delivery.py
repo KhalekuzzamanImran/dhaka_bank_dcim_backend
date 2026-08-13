@@ -183,12 +183,17 @@ def claim_notification_for_delivery(notification_id: str | int):
         return delivery
 
     with transaction.atomic():
-        notification = (
-            Notification.objects.select_for_update()
-            .filter(pk=notification_id, deliveries__isnull=True)
-            .first()
-        )
-        if not notification:
+        # PostgreSQL cannot apply FOR UPDATE to the nullable side of the
+        # deliveries outer join. Select the candidate id first, then lock the
+        # notification row itself and re-check the legacy condition.
+        candidate_id = Notification.objects.filter(
+            pk=notification_id,
+            deliveries__isnull=True,
+        ).values_list("pk", flat=True).first()
+        if not candidate_id:
+            return None
+        notification = Notification.objects.select_for_update().filter(pk=candidate_id).first()
+        if not notification or notification.deliveries.exists():
             return None
         if notification.status in {NotificationStatus.SENT, NotificationStatus.DELIVERING}:
             return None

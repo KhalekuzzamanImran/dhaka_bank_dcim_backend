@@ -12,8 +12,8 @@ from apps.accounts.models import User
 from apps.datacenters.models import DataCenter
 from apps.organizations.models import Organization
 from apps.reports.definition_seeds import REPORT_DEFINITION_SEEDS
-from apps.reports.enums import ReportDefinitionCategory, ReportTriggerSource
-from apps.reports.models import ReportDefinition, ReportJob, ReportSchedule, ReportScheduleStatus
+from apps.reports.enums import ReportDefinitionCategory, ReportRecipientChannel, ReportTriggerSource
+from apps.reports.models import ReportDefinition, ReportJob, ReportSchedule, ReportScheduleRecipient, ReportScheduleStatus
 from apps.reports.services.definitions import (
     get_active_definition_by_code,
     seed_report_definitions,
@@ -55,7 +55,7 @@ class ReportPhase3DomainTestCase(TestCase):
         )
 
     def _schedule(self, *, template=None, status=ReportScheduleStatus.ACTIVE, parameters=None, overrides=None):
-        return ReportSchedule.objects.create(
+        schedule = ReportSchedule.objects.create(
             organization=self.org,
             data_center=self.dc,
             template=template,
@@ -73,6 +73,13 @@ class ReportPhase3DomainTestCase(TestCase):
             status=status,
             created_by=self.actor,
         )
+        ReportScheduleRecipient.objects.create(
+            schedule=schedule,
+            channel=ReportRecipientChannel.EMAIL,
+            recipient_type="EMAIL",
+            email_address="ops@example.com",
+        )
+        return schedule
 
     def test_active_definition_lookup_and_inactive_rejection(self):
         active = get_active_definition_by_code("DEVICE_INVENTORY")
@@ -226,7 +233,7 @@ class ReportPhase3DomainTestCase(TestCase):
             template=template,
             trigger_source=ReportTriggerSource.MANUAL,
             requested_by=self.actor,
-            parameters={"report_type": "device_inventory"},
+            parameters={},
             idempotency_key="manual-key",
             queue_job=False,
         )

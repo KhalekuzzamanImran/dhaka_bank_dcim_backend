@@ -378,10 +378,14 @@ class ReportScheduleViewSet(ScopedModelViewSet):
         schedule.last_error_message = ""
         schedule.save(update_fields=["last_delivery_status", "last_error_message", "updated_at"])
 
-        refreshed = execute_report_schedule(
-            str(schedule.pk),
-            trigger_source="MANUAL",
-        )
+        try:
+            refreshed = execute_report_schedule(
+                str(schedule.pk),
+                trigger_source="MANUAL",
+            )
+        except (ValueError, ValidationError, DRFValidationError) as exc:
+            detail = getattr(exc, "detail", None) or str(exc)
+            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
         _safe_write_audit(
             "REPORT_SCHEDULE_RUN_NOW_QUEUED",
             "ReportSchedule",
@@ -641,15 +645,20 @@ class ReportDashboardAPIView(APIView):
         query_serializer = ReportDashboardQuerySerializer(data=request.query_params)
         query_serializer.is_valid(raise_exception=True)
         params = query_serializer.validated_data
-        payload = get_reporting_dashboard(
-            user=request.user,
-            organization=params.get("organization"),
-            data_center=params.get("data_center"),
-            start_at=params.get("start_at"),
-            end_at=params.get("end_at"),
-            timezone_name=params.get("timezone") or "Asia/Dhaka",
-            request=request,
-        )
+        try:
+            payload = get_reporting_dashboard(
+                user=request.user,
+                organization=params.get("organization"),
+                data_center=params.get("data_center"),
+                start_at=params.get("start_at"),
+                end_at=params.get("end_at"),
+                timezone_name=params.get("timezone") or "Asia/Dhaka",
+                request=request,
+            )
+        except ValidationError as exc:
+            if hasattr(exc, "message_dict"):
+                raise DRFValidationError(exc.message_dict)
+            raise DRFValidationError(getattr(exc, "messages", [str(exc)]))
         response_serializer = ReportDashboardResponseSerializer(instance=payload, context={"request": request})
         return Response(response_serializer.data)
 

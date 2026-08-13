@@ -1,7 +1,7 @@
 from django.db import transaction
 from django.utils import timezone
 
-from apps.live_updates.services import publish_live_update
+from apps.live_updates.services import publish_live_update, telemetry_delta_from_latest
 from apps.telemetry.models import TelemetryPoint, LatestTelemetry, TelemetryQuality
 from .snmp_normalization import store_value_by_metric_type
 
@@ -25,7 +25,12 @@ def _quality_for_metric(metric_data_type, payload, fallback_quality):
 
 def _refresh_scopes(device):
     device_type_code = str(getattr(getattr(device, "device_type", None), "code", "") or "").strip().upper()
-    scopes = ["overview", f"device:{device.pk}"]
+    scopes = [
+        "overview",
+        f"device:{device.pk}",
+        f"organization:{device.organization_id}",
+        f"data_center:{device.data_center_id}",
+    ]
     if device_type_code:
         scopes.append(f"device_type:{device_type_code}")
     return scopes
@@ -36,6 +41,7 @@ def write_device_telemetry_bulk(*, organization, data_center, device, readings, 
     timestamp = timestamp or timezone.now()
     points = []
     latest_rows = []
+    telemetry_deltas = []
     for reading in readings:
         metric = reading["metric"]
         value = reading["value"]
@@ -57,7 +63,7 @@ def write_device_telemetry_bulk(*, organization, data_center, device, readings, 
         TelemetryPoint.objects.bulk_create(points, batch_size=1000)
     # Simple safe upsert for first production. Replace with ON CONFLICT for very high write volume.
     for metric, quality, payload, raw_value_text in latest_rows:
-        LatestTelemetry.objects.update_or_create(
+        latest, _ = LatestTelemetry.objects.update_or_create(
             device=device,
             metric=metric,
             defaults={
@@ -73,6 +79,7 @@ def write_device_telemetry_bulk(*, organization, data_center, device, readings, 
                 "value_text": payload.get("value_text"),
             },
         )
+        telemetry_deltas.append(telemetry_delta_from_latest(latest, observed_at=timestamp))
     if latest_rows:
         transaction.on_commit(
             lambda: publish_live_update(
@@ -86,7 +93,14 @@ def write_device_telemetry_bulk(*, organization, data_center, device, readings, 
                     "source": source,
                     "ingest_id": str(ingest_id) if ingest_id else None,
                     "point_count": len(points),
+                    "metrics": telemetry_deltas,
                 },
+                delivery_scopes=[
+                    "global",
+                    f"organization:{organization.pk}",
+                    f"data_center:{data_center.pk}",
+                    f"device:{device.pk}",
+                ],
             )
         )
     return len(points)

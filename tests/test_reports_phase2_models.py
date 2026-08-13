@@ -79,7 +79,7 @@ class ReportPhase2ModelTestCase(TestCase):
 
     def _schedule(self, *, organization=None, data_center=None, template=None, status=ReportScheduleStatus.ACTIVE, recipients=None, sms_recipients=None, send_sms=False):
         organization = organization or self.org
-        return ReportSchedule.objects.create(
+        schedule = ReportSchedule.objects.create(
             organization=organization,
             data_center=data_center,
             template=template,
@@ -88,7 +88,7 @@ class ReportPhase2ModelTestCase(TestCase):
             frequency="DAILY",
             delivery_time=time(6, 0),
             output_format="CSV",
-            parameters={"report_type": "device_inventory"},
+            parameters={},
             recipients=recipients if recipients is not None else ["ops@example.com"],
             send_sms=send_sms,
             sms_recipients=sms_recipients if sms_recipients is not None else [],
@@ -96,8 +96,23 @@ class ReportPhase2ModelTestCase(TestCase):
             status=status,
             created_by=self.user,
         )
+        for email in recipients if recipients is not None else ["ops@example.com"]:
+            ReportScheduleRecipient.objects.create(
+                schedule=schedule,
+                channel=ReportRecipientChannel.EMAIL,
+                recipient_type="EMAIL",
+                email_address=email,
+            )
+        for phone in sms_recipients if sms_recipients is not None else []:
+            ReportScheduleRecipient.objects.create(
+                schedule=schedule,
+                channel=ReportRecipientChannel.SMS,
+                recipient_type="SMS",
+                phone_number=phone,
+            )
+        return schedule
 
-    def _complete_generated_job(self, job_id):
+    def _complete_generated_job(self, job_id, **kwargs):
         job = ReportJob.objects.get(pk=job_id)
         started_at = timezone.now()
         job.status = ReportJobStatus.COMPLETED
@@ -298,7 +313,7 @@ class ReportPhase2ModelTestCase(TestCase):
         self.assertEqual(job.parameters["template_default"], "alpha")
         self.assertEqual(job.parameters["shared"], "override")
         self.assertEqual(job.parameters["schedule_only"], "beta")
-        self.assertEqual(job.parameters["report_type"], "device_inventory")
+        self.assertEqual(job.parameters["definition_code"], definition.code)
         self.assertEqual(job.parameters_snapshot["shared"], "override")
         self.assertEqual(job.template_snapshot["code"], template.code)
 

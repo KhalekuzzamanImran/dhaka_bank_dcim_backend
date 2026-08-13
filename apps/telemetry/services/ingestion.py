@@ -3,17 +3,23 @@ from decimal import Decimal
 
 from django.utils import timezone
 from apps.telemetry.models import TelemetryPoint, LatestTelemetry
-from apps.live_updates.services import publish_live_update
+from apps.live_updates.services import publish_live_update, telemetry_delta_from_latest
 
 
 def _refresh_scopes(device):
     device_type_code = str(getattr(getattr(device, "device_type", None), "code", "") or "").strip().upper()
-    scopes = ["overview", f"device:{device.pk}"]
+    scopes = [
+        "overview",
+        f"device:{device.pk}",
+        f"organization:{device.organization_id}",
+        f"data_center:{device.data_center_id}",
+    ]
     if device_type_code:
         scopes.append(f"device_type:{device_type_code}")
     return scopes
 
 
+@transaction.atomic
 def store_telemetry_point(*, device, metric, value, source=None, quality="GOOD", ingest_id=None, ts=None):
     ts = ts or timezone.now()
     value_kwargs = {"value_float": None, "value_integer": None, "value_boolean": None, "value_text": None}
@@ -45,7 +51,7 @@ def store_telemetry_point(*, device, metric, value, source=None, quality="GOOD",
         raw_value_text=raw_value_text,
         **value_kwargs,
     )
-    LatestTelemetry.objects.update_or_create(
+    latest, _ = LatestTelemetry.objects.update_or_create(
         device=device,
         metric=metric,
         defaults={
@@ -69,7 +75,14 @@ def store_telemetry_point(*, device, metric, value, source=None, quality="GOOD",
                 "metric_code": str(getattr(metric, "code", "") or ""),
                 "source": source,
                 "ingest_id": str(ingest_id) if ingest_id else None,
+                "metrics": [telemetry_delta_from_latest(latest, observed_at=ts)],
             },
+            delivery_scopes=[
+                "global",
+                f"organization:{device.organization_id}",
+                f"data_center:{device.data_center_id}",
+                f"device:{device.pk}",
+            ],
         )
     )
     return point

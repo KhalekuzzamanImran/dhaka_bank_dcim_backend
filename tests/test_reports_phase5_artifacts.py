@@ -83,7 +83,7 @@ class ReportPhase5ArtifactTestCase(TestCase):
             template=template,
             requested_by=self.user,
             trigger_source=ReportTriggerSource.MANUAL,
-            parameters={"report_type": "device_inventory"},
+            parameters={},
             runtime_parameters=output_overrides or {},
             queue_job=False,
         )

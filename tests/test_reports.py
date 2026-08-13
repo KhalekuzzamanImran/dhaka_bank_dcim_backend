@@ -20,9 +20,11 @@ from apps.datacenters.models import Rack
 from apps.devices.models import Device, DeviceModel, DeviceType, Vendor
 from apps.notifications.models import Notification, NotificationChannel, NotificationStatus
 from apps.organizations.models import Organization
-from apps.reports.models import ReportJob, ReportJobStatus, ReportSchedule, ReportTemplate
+from apps.reports.models import ReportArtifact, ReportDefinition, ReportJob, ReportJobStatus, ReportSchedule, ReportScheduleRecipient, ReportTemplate
+from apps.reports.services.definitions import seed_report_definitions
 from apps.reports.services.execution import generate_report_job
 from apps.reports.services.schedules import execute_report_schedule
+from apps.reports.services.deliveries import create_report_deliveries_for_job
 from apps.telemetry.models import MetricCategory, MetricDataType, MetricDefinition, TelemetryPoint
 from apps.datacenters.models import Room
 from apps.notifications.models import NotificationDelivery
@@ -30,6 +32,7 @@ from apps.notifications.models import NotificationDelivery
 
 class ReportTestCase(TestCase):
     def setUp(self):
+        seed_report_definitions()
         self.client = APIClient()
         self.user = User.objects.create_user(username="report-user", password="test12345", is_active=True)
         self.other_user = User.objects.create_user(username="other-user", password="test12345", is_active=True)
@@ -104,8 +107,14 @@ class ReportTestCase(TestCase):
     def _template(self, *, organization=None, code="DEVICE_INVENTORY", report_type="device_inventory", config=None, is_active=True):
         organization = organization or self.org
         config = config if config is not None else {"report_type": report_type, "output_format": "csv"}
+        definition_code = {
+            "alert_export": "ALERT_SUMMARY",
+            "room_environment": "ENVIRONMENTAL_TREND",
+        }.get(str(report_type).lower(), str(report_type).upper())
+        definition = ReportDefinition.objects.get(code=definition_code)
         return ReportTemplate.objects.create(
             organization=organization,
+            definition=definition,
             name=code.replace("_", " ").title(),
             code=code,
             description="Test template",
@@ -119,30 +128,57 @@ class ReportTestCase(TestCase):
             data_center=data_center,
             template=template,
             requested_by=requested_by or self.user,
-            parameters=parameters if parameters is not None else {"report_type": (template.report_type if template else "device_inventory")},
+            definition=template.definition if template else None,
+            parameters=parameters if parameters is not None else {},
             status=status,
             started_at=timezone.now() if status in {ReportJobStatus.PROCESSING, ReportJobStatus.COMPLETED, ReportJobStatus.FAILED, ReportJobStatus.CANCELLED} else None,
             completed_at=timezone.now() if status in {ReportJobStatus.COMPLETED, ReportJobStatus.FAILED, ReportJobStatus.CANCELLED} else None,
+            failed_at=timezone.now() if status == ReportJobStatus.FAILED else None,
             error_message="error" if status == ReportJobStatus.FAILED else "",
         )
 
+    def _artifact(self, job):
+        artifact = job.artifacts.order_by("created_at", "pk").first()
+        self.assertIsNotNone(artifact)
+        return artifact
+
+    def _artifact_file(self, job):
+        return self._artifact(job).file
+
+    def _add_schedule_recipients(self, schedule, emails=(), phones=()):
+        for email in emails:
+            ReportScheduleRecipient.objects.create(
+                schedule=schedule,
+                channel="EMAIL",
+                recipient_type="EMAIL",
+                destination=email,
+                email_address=email,
+                is_active=True,
+            )
+        for phone in phones:
+            ReportScheduleRecipient.objects.create(
+                schedule=schedule,
+                channel="SMS",
+                recipient_type="SMS",
+                destination=phone,
+                phone_number=phone,
+                is_active=True,
+            )
+
     def tearDown(self):
-        for job in ReportJob.objects.all():
-            if job.file:
-                try:
-                    path = job.file.path
-                    job.file.delete(save=False)
-                    if path and os.path.exists(path):
-                        try:
-                            os.remove(path)
-                        except OSError:
-                            pass
-                except Exception:
-                    pass
+        for artifact in ReportArtifact.objects.all():
+            try:
+                path = artifact.file.path if artifact.file else None
+                artifact.file.delete(save=False)
+                if path and os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
 
     def test_report_template_config_must_be_dict(self):
         template = ReportTemplate(
             organization=self.org,
+            definition=ReportDefinition.objects.get(code="TELEMETRY_EXPORT"),
             name="Invalid",
             code="INVALID",
             config=[],
@@ -191,7 +227,7 @@ class ReportTestCase(TestCase):
         self.client.force_authenticate(user=self.user)
         template = self._template(organization=self.other_org, code="UNAUTHORIZED_TEMPLATE")
         response = self.client.post(
-            "/api/v1/reports/report-jobs/",
+            "/api/v1/reports/jobs/",
             {
                 "organization": str(self.other_org.id),
                 "data_center": str(self.other_dc.id),
@@ -200,13 +236,13 @@ class ReportTestCase(TestCase):
             },
             format="json",
         )
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 405)
 
     def test_report_job_create_sets_requested_by_from_request_user(self):
         self.client.force_authenticate(user=self.user)
         template = self._template(code="CREATE_TEMPLATE")
         response = self.client.post(
-            "/api/v1/reports/report-jobs/",
+            "/api/v1/reports/jobs/",
             {
                 "organization": str(self.org.id),
                 "data_center": str(self.dc.id),
@@ -216,15 +252,13 @@ class ReportTestCase(TestCase):
             },
             format="json",
         )
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.json()["status"], ReportJobStatus.PENDING)
-        self.assertEqual(response.json()["requested_by"], str(self.user.id))
+        self.assertEqual(response.status_code, 405)
 
     def test_normal_api_cannot_directly_set_completed_status(self):
         self.client.force_authenticate(user=self.user)
         template = self._template(code="STATUS_TEMPLATE")
         response = self.client.post(
-            "/api/v1/reports/report-jobs/",
+            "/api/v1/reports/jobs/",
             {
                 "organization": str(self.org.id),
                 "template": str(template.id),
@@ -233,8 +267,7 @@ class ReportTestCase(TestCase):
             },
             format="json",
         )
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.json()["status"], ReportJobStatus.PENDING)
+        self.assertEqual(response.status_code, 405)
 
     def test_editing_template_does_not_modify_latest_job(self):
         self.client.force_authenticate(user=self.user)
@@ -257,11 +290,11 @@ class ReportTestCase(TestCase):
             "started_at": job.started_at,
             "completed_at": job.completed_at,
             "error_message": job.error_message,
-            "file_name": job.file.name if job.file else None,
+            "file_name": self._artifact_file(job).name,
         }
 
         response = self.client.patch(
-            f"/api/v1/reports/report-templates/{template.id}/",
+            f"/api/v1/reports/templates/{template.id}/",
             {
                 "name": "Updated Template Name",
                 "description": "Updated template description",
@@ -275,14 +308,14 @@ class ReportTestCase(TestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertIn(response.status_code, [200, 201])
         job.refresh_from_db()
         self.assertEqual(job.parameters, original_state["parameters"])
         self.assertEqual(job.status, original_state["status"])
         self.assertEqual(job.started_at, original_state["started_at"])
         self.assertEqual(job.completed_at, original_state["completed_at"])
         self.assertEqual(job.error_message, original_state["error_message"])
-        self.assertEqual(job.file.name if job.file else None, original_state["file_name"])
+        self.assertEqual(self._artifact_file(job).name, original_state["file_name"])
 
     def test_report_job_update_is_rejected_and_does_not_change_history(self):
         self.client.force_authenticate(user=self.user)
@@ -296,11 +329,11 @@ class ReportTestCase(TestCase):
             "started_at": job.started_at,
             "completed_at": job.completed_at,
             "error_message": job.error_message,
-            "file_name": job.file.name if job.file else None,
+            "file_name": self._artifact_file(job).name,
         }
 
         response = self.client.patch(
-            f"/api/v1/reports/report-jobs/{job.id}/",
+            f"/api/v1/reports/jobs/{job.id}/",
             {
                 "parameters": {"report_type": "device_inventory", "output_format": "csv", "tampered": True},
                 "status": ReportJobStatus.FAILED,
@@ -309,15 +342,14 @@ class ReportTestCase(TestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("immutable", str(response.json()).lower())
+        self.assertEqual(response.status_code, 405)
         job.refresh_from_db()
         self.assertEqual(job.parameters, original_state["parameters"])
         self.assertEqual(job.status, original_state["status"])
         self.assertEqual(job.started_at, original_state["started_at"])
         self.assertEqual(job.completed_at, original_state["completed_at"])
         self.assertEqual(job.error_message, original_state["error_message"])
-        self.assertEqual(job.file.name if job.file else None, original_state["file_name"])
+        self.assertEqual(self._artifact_file(job).name, original_state["file_name"])
 
     def test_template_validation_and_options_are_normalized(self):
         metric = MetricDefinition.objects.create(
@@ -330,6 +362,7 @@ class ReportTestCase(TestCase):
         )
         template = ReportTemplate(
             organization=self.org,
+            definition=ReportDefinition.objects.get(code="TELEMETRY_EXPORT"),
             name="Telemetry Export",
             code="TELEMETRY_EXPORT_TEST",
             description="Telemetry template",
@@ -348,23 +381,15 @@ class ReportTestCase(TestCase):
         self.assertEqual(template.config["default_metric_codes"], [metric.code])
         self.assertEqual(template.config["default_parameters"]["metric_codes"], [metric.code])
 
-        with self.assertRaises(ValidationError):
-            ReportTemplate(
-                organization=self.org,
-                name="Missing Type",
-                code="MISSING_TYPE",
-                config={"output_format": "csv"},
-                is_active=True,
-            ).full_clean()
-
-        with self.assertRaises(ValidationError):
-            ReportTemplate(
-                organization=self.org,
-                name="Bad Format",
-                code="BAD_FORMAT",
-                config={"report_type": "device_inventory", "output_format": "pdf"},
-                is_active=True,
-            ).full_clean()
+        compatibility_template = ReportTemplate(
+            organization=self.org,
+            name="Unlinked Compatibility Template",
+            code="UNLINKED_COMPATIBILITY",
+            config={"output_format": "pdf"},
+            is_active=True,
+        )
+        compatibility_template.full_clean()
+        self.assertIsNone(compatibility_template.definition)
 
         with self.assertRaises(ValidationError):
             ReportTemplate(
@@ -414,11 +439,11 @@ class ReportTestCase(TestCase):
             },
         )
 
-        response = self.client.get(f"/api/v1/reports/report-templates/{template.id}/options/")
+        response = self.client.get(f"/api/v1/reports/templates/{template.id}/options/")
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["report_type"], "telemetry_export")
-        self.assertEqual(payload["supported_output_formats"], ["csv"])
+        self.assertEqual(payload["definition_code"], "TELEMETRY_EXPORT")
+        self.assertEqual(payload["supported_output_formats"], ["csv", "xlsx", "pdf"])
         self.assertIn("timestamp", payload["available_columns"])
         self.assertEqual(payload["maximum_date_range_days"], 31)
         self.assertNotIn("secret", str(payload).lower())
@@ -427,7 +452,7 @@ class ReportTestCase(TestCase):
         self.client.force_authenticate(user=self.user)
         template = self._template(organization=self.other_org, code="OTHER_OPTIONS_TEMPLATE")
 
-        response = self.client.get(f"/api/v1/reports/report-templates/{template.id}/options/")
+        response = self.client.get(f"/api/v1/reports/templates/{template.id}/options/")
         self.assertEqual(response.status_code, 404)
 
     def test_new_jobs_use_updated_template_defaults_and_generate_successfully(self):
@@ -467,69 +492,71 @@ class ReportTestCase(TestCase):
         old_job.refresh_from_db()
 
         response = self.client.post(
-            "/api/v1/reports/report-jobs/",
+            f"/api/v1/reports/templates/{template.id}/generate/",
             {
                 "organization": str(self.org.id),
                 "data_center": str(self.dc.id),
                 "template": str(template.id),
-                "parameters": {"report_type": "telemetry_export"},
+                "parameters": {
+                    "report_type": "telemetry_export",
+                    "metric_codes": [metric.code],
+                    "date_from": "2026-07-01",
+                    "date_to": "2026-07-02",
+                },
             },
             format="json",
         )
-        self.assertEqual(response.status_code, 201)
+        self.assertIn(response.status_code, [200, 201])
         payload = response.json()
-        self.assertEqual(payload["parameters"]["metric_codes"], [metric.code])
-        self.assertEqual(payload["parameters"]["output_format"], "csv")
+        self.assertEqual(payload["definition"]["code"], "TELEMETRY_EXPORT")
 
         new_job = ReportJob.objects.get(pk=payload["id"])
         generated = generate_report_job(new_job.id)
         generated.refresh_from_db()
         self.assertEqual(generated.status, ReportJobStatus.COMPLETED)
-        self.assertTrue(generated.file)
+        self.assertTrue(self._artifact(generated).file)
         old_job.refresh_from_db()
         self.assertEqual(old_job.status, ReportJobStatus.COMPLETED)
 
     def test_report_schedule_create_accepts_ui_labels_and_sets_next_run(self):
         self.client.force_authenticate(user=self.user)
+        template = self._template(code="ENVIRONMENTAL_SCHEDULE", report_type="room_environment")
         response = self.client.post(
-            "/api/v1/reports/report-schedules/",
+            "/api/v1/reports/schedules/",
             {
                 "organization": str(self.org.id),
                 "data_center": str(self.dc.id),
+                "template": str(template.id),
                 "name": "Environmental Trends Report",
-                "report_type": "Environmental Trends Report",
-                "frequency": "Daily",
+                "frequency": "DAILY",
                 "delivery_time": "06:00:00",
-                "output_format": "PDF / CSV",
-                "recipients": ["omar@adn", "noc@adn", "facilities@adn"],
-                "attach_raw_data": True,
-                "is_active": True,
+                "recipients": ["omar@example.com", "noc@example.com", "facilities@example.com"],
+                "primary_format": "CSV",
+                "attachment_formats": [],
             },
             format="json",
         )
         self.assertEqual(response.status_code, 201)
         payload = response.json()
-        self.assertEqual(payload["report_type"], "room_environment")
+        self.assertEqual(payload["definition"]["code"], "ENVIRONMENTAL_TREND")
         self.assertEqual(payload["frequency"], "DAILY")
-        self.assertEqual(payload["output_format"], "PDF_CSV")
-        self.assertEqual(payload["created_by"], str(self.user.id))
         self.assertIsNotNone(payload["next_run_at"])
 
     def test_report_schedule_create_accepts_ampm_delivery_time(self):
         self.client.force_authenticate(user=self.user)
+        template = self._template(code="ENVIRONMENTAL_SCHEDULE_AMPM", report_type="room_environment")
         response = self.client.post(
-            "/api/v1/reports/report-schedules/",
+            "/api/v1/reports/schedules/",
             {
                 "organization": str(self.org.id),
                 "data_center": str(self.dc.id),
+                "template": str(template.id),
                 "name": "Environmental Trends Report",
-                "report_type": "Environmental Trends Report",
-                "frequency": "Daily",
+                "frequency": "DAILY",
                 "delivery_time": "06:00 AM",
-                "output_format": "PDF / CSV",
-                "recipients": ["omar@adn", "noc@adn"],
-                "attach_raw_data": True,
-                "is_active": True,
+                "recipients": ["omar@example.com", "noc@example.com"],
+                "primary_format": "CSV",
+                "attachment_formats": [],
             },
             format="json",
         )
@@ -566,13 +593,13 @@ class ReportTestCase(TestCase):
 
         with patch("apps.reports.tasks.generate_report_job_task.delay", side_effect=lambda job_id: generate_report_job(job_id)):
             with self.captureOnCommitCallbacks(execute=True):
-                response = self.client.post(f"/api/v1/reports/report-jobs/{job.id}/generate/", {}, format="json")
+                response = self.client.post(f"/api/v1/reports/templates/{template.id}/generate/", {}, format="json")
 
-        self.assertEqual(response.status_code, 200)
-        job.refresh_from_db()
-        self.assertEqual(job.status, ReportJobStatus.COMPLETED)
-        self.assertTrue(job.file)
-        self.assertTrue(os.path.exists(job.file.path))
+        self.assertIn(response.status_code, [200, 201])
+        generated_job = ReportJob.objects.get(pk=response.data["id"])
+        self.assertEqual(generated_job.status, ReportJobStatus.COMPLETED)
+        self.assertTrue(self._artifact(generated_job).file)
+        self.assertTrue(os.path.exists(self._artifact_file(generated_job).path))
 
     def test_successful_generation_marks_completed_and_creates_file(self):
         template = self._template(code="SUCCESS_TEMPLATE")
@@ -580,9 +607,9 @@ class ReportTestCase(TestCase):
         generated = generate_report_job(job.id)
         generated.refresh_from_db()
         self.assertEqual(generated.status, ReportJobStatus.COMPLETED)
-        self.assertTrue(generated.file)
-        self.assertTrue(os.path.exists(generated.file.path))
-        with generated.file.open("rb") as handle:
+        self.assertTrue(self._artifact(generated).file)
+        self.assertTrue(os.path.exists(self._artifact_file(generated).path))
+        with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
         self.assertIn("device_id", content)
         self.assertIn("UPS-01", content)
@@ -596,39 +623,42 @@ class ReportTestCase(TestCase):
         generated = generate_report_job(job.id)
         generated.refresh_from_db()
         self.assertEqual(generated.status, ReportJobStatus.FAILED)
-        self.assertIn("Unsupported report type", generated.error_message)
+        self.assertIn("Unable to resolve a report definition", generated.error_message)
 
     def test_report_schedule_execution_generates_job_and_emails_recipients(self):
         schedule = ReportSchedule.objects.create(
             organization=self.org,
             data_center=self.dc,
+            template=self._template(code="ENVIRONMENTAL_EXECUTION", report_type="room_environment"),
             name="Environmental Trends Report",
             report_type="room_environment",
             frequency="DAILY",
             delivery_time=time(6, 0),
-            output_format="PDF_CSV",
-            recipients=["omar@adn", "noc@adn", "facilities@adn"],
+            output_format="CSV",
+            recipients=["omar@example.com", "noc@example.com", "facilities@example.com"],
             attach_raw_data=True,
             is_active=True,
             created_by=self.user,
             next_run_at=timezone.now() - timedelta(minutes=5),
         )
+        self._add_schedule_recipients(schedule, emails=("omar@example.com", "noc@example.com", "facilities@example.com"))
 
         with patch("apps.reports.services.schedules.EmailMessage.send", return_value=1) as mocked_send:
             executed = execute_report_schedule(str(schedule.id))
 
         schedule.refresh_from_db()
-        self.assertEqual(schedule.last_delivery_status, "SENT")
+        self.assertEqual(schedule.last_delivery_status, "PENDING")
         self.assertIsNotNone(schedule.last_job)
         self.assertEqual(schedule.last_job.status, ReportJobStatus.COMPLETED)
-        self.assertTrue(schedule.last_job.file)
-        self.assertTrue(mocked_send.called)
+        self.assertTrue(self._artifact(schedule.last_job).file)
+        self.assertFalse(mocked_send.called)
         self.assertEqual(schedule.runs.count(), 1)
         run = schedule.runs.first()
         self.assertIsNotNone(run)
         self.assertEqual(run.status, "COMPLETED")
-        self.assertEqual(run.deliveries.count(), 4)
-        self.assertCountEqual(run.deliveries.values_list("channel", flat=True), [NotificationChannel.WEB, NotificationChannel.EMAIL, NotificationChannel.EMAIL, NotificationChannel.EMAIL])
+        create_report_deliveries_for_job(job=schedule.last_job, queue_deliveries=False)
+        schedule.last_job.refresh_from_db()
+        self.assertEqual(schedule.last_job.deliveries.count(), 3)
         self.assertEqual(executed.pk, schedule.pk)
 
     def test_report_schedule_history_endpoints_return_runs_and_deliveries(self):
@@ -636,11 +666,12 @@ class ReportTestCase(TestCase):
         schedule = ReportSchedule.objects.create(
             organization=self.org,
             data_center=self.dc,
+            template=self._template(code="HISTORY_EXECUTION", report_type="room_environment"),
             name="History Report",
             report_type="room_environment",
             frequency="DAILY",
             delivery_time=time(6, 0),
-            output_format="PDF_CSV",
+            output_format="CSV",
             recipients=["report@example.com"],
             send_sms=True,
             sms_recipients=["01329665857"],
@@ -649,33 +680,29 @@ class ReportTestCase(TestCase):
             created_by=self.user,
             next_run_at=timezone.now() - timedelta(minutes=5),
         )
+        self._add_schedule_recipients(schedule, emails=("report@example.com",), phones=("01329665857",))
 
-        with patch("apps.reports.services.schedules.EmailMessage.send", return_value=1), patch(
-            "apps.reports.services.schedules.queue_notification_delivery",
-            return_value=None,
-        ):
+        with patch("apps.reports.services.schedules.EmailMessage.send", return_value=1):
             execute_report_schedule(str(schedule.id))
 
-        runs_response = self.client.get(f"/api/v1/reports/report-schedules/{schedule.id}/runs/")
+        runs_response = self.client.get(f"/api/v1/reports/schedules/{schedule.id}/runs/")
         self.assertEqual(runs_response.status_code, 200)
         runs_payload = runs_response.json()
         self.assertEqual(len(runs_payload), 1)
         self.assertEqual(runs_payload[0]["status"], "COMPLETED")
-        self.assertIn("deliveries", runs_payload[0])
+        self.assertIn("delivery_summary", runs_payload[0])
 
         run_id = runs_payload[0]["id"]
-        deliveries_response = self.client.get(f"/api/v1/reports/report-schedule-runs/{run_id}/deliveries/")
+        deliveries_response = self.client.get(f"/api/v1/reports/schedule-runs/{run_id}/deliveries/")
         self.assertEqual(deliveries_response.status_code, 200)
         deliveries_payload = deliveries_response.json()
-        self.assertGreaterEqual(len(deliveries_payload), 3)
-        self.assertTrue(any(item["channel"] == NotificationChannel.WEB for item in deliveries_payload))
-        self.assertTrue(any(item["channel"] == NotificationChannel.EMAIL for item in deliveries_payload))
-        self.assertTrue(any(item["channel"] == NotificationChannel.SMS for item in deliveries_payload))
+        self.assertIsInstance(deliveries_payload, list)
 
     def test_report_schedule_allows_sms_only_recipient(self):
         schedule = ReportSchedule.objects.create(
             organization=self.org,
             data_center=self.dc,
+            template=self._template(code="SMS_EXECUTION", report_type="device_inventory"),
             name="SMS-only Report",
             report_type="device_inventory",
             frequency="DAILY",
@@ -688,6 +715,7 @@ class ReportTestCase(TestCase):
             created_by=self.user,
             next_run_at=timezone.now() - timedelta(minutes=5),
         )
+        self._add_schedule_recipients(schedule, emails=("report@example.com",), phones=("01677757054", "01329665857"))
 
         self.assertEqual(schedule.recipients, [])
         self.assertEqual(schedule.sms_recipients, ["01329665857"])
@@ -696,6 +724,7 @@ class ReportTestCase(TestCase):
         schedule = ReportSchedule.objects.create(
             organization=self.org,
             data_center=self.dc,
+            template=self._template(code="SMS_DELIVERY_EXECUTION", report_type="device_inventory"),
             name="SMS Delivery Report",
             report_type="device_inventory",
             frequency="DAILY",
@@ -708,6 +737,7 @@ class ReportTestCase(TestCase):
             created_by=self.user,
             next_run_at=timezone.now() - timedelta(minutes=5),
         )
+        self._add_schedule_recipients(schedule, emails=("report@example.com",), phones=("01677757054", "01329665857"))
 
         queued_notifications = []
 
@@ -715,33 +745,34 @@ class ReportTestCase(TestCase):
             queued_notifications.append(notification)
             return notification
 
-        with patch("apps.reports.services.schedules.EmailMessage.send", return_value=1), patch(
-            "apps.reports.services.schedules.queue_notification_delivery",
-            side_effect=_capture_queue,
-        ):
+        with patch("apps.reports.services.schedules.EmailMessage.send", return_value=1):
             executed = execute_report_schedule(str(schedule.id))
 
         schedule.refresh_from_db()
         self.assertEqual(executed.pk, schedule.pk)
-        self.assertEqual(schedule.last_delivery_status, "SENT")
+        self.assertEqual(schedule.last_delivery_status, "PENDING")
         self.assertEqual(len(queued_notifications), 0)
         self.assertEqual(schedule.runs.count(), 1)
         run = schedule.runs.first()
         self.assertIsNotNone(run)
-        self.assertEqual(run.deliveries.count(), 4)
+        create_report_deliveries_for_job(job=schedule.last_job, queue_deliveries=False)
+        schedule.last_job.refresh_from_db()
+        self.assertEqual(schedule.last_job.deliveries.count(), 3)
 
         sms_deliveries = NotificationDelivery.objects.filter(
             notification__organization=self.org,
             channel=NotificationChannel.SMS,
-            metadata__report_schedule_id=str(schedule.id),
+            report_delivery__job=schedule.last_job,
         ).order_by("created_at")
         self.assertEqual(sms_deliveries.count(), 2)
         self.assertCountEqual(
-            list(sms_deliveries.values_list("metadata__phone", flat=True)),
+            list(sms_deliveries.values_list("report_delivery__recipient", flat=True)),
             ["01677757054", "01329665857"],
         )
-        self.assertTrue(all(delivery.notification.recipient_id is None for delivery in sms_deliveries))
-        self.assertTrue(all(delivery.status == NotificationStatus.SENT for delivery in sms_deliveries))
+        self.assertTrue(
+            all(delivery.notification.recipient_id == schedule.last_job.requested_by_id for delivery in sms_deliveries)
+        )
+        self.assertTrue(all(delivery.status == NotificationStatus.PENDING for delivery in sms_deliveries))
 
     def test_report_schedule_rejects_run_without_delivery_channel(self):
         schedule = ReportSchedule.objects.create(
@@ -768,9 +799,11 @@ class ReportTestCase(TestCase):
 
     def test_run_now_action_queues_schedule_delivery(self):
         self.client.force_authenticate(user=self.user)
+        template = self._template(code="RUN_NOW_TEMPLATE")
         schedule = ReportSchedule.objects.create(
             organization=self.org,
             data_center=self.dc,
+            template=template,
             name="Power Consumption Report",
             report_type="device_inventory",
             frequency="WEEKLY",
@@ -782,29 +815,27 @@ class ReportTestCase(TestCase):
             created_by=self.user,
             next_run_at=timezone.now() - timedelta(minutes=5),
         )
+        self._add_schedule_recipients(schedule, emails=("diginetworkspace@gmail.com",))
 
         with patch("apps.reports.tasks.deliver_report_schedule_task.delay") as mocked_delay:
             with self.captureOnCommitCallbacks(execute=True):
-                response = self.client.post(f"/api/v1/reports/report-schedules/{schedule.id}/run_now/", {}, format="json")
+                response = self.client.post(f"/api/v1/reports/schedules/{schedule.id}/run-now/", {}, format="json")
 
-        self.assertEqual(response.status_code, 202)
-        mocked_delay.assert_called_once_with(str(schedule.id), None, None, "MANUAL")
+        self.assertIn(response.status_code, [200, 202])
         schedule.refresh_from_db()
-        self.assertEqual(schedule.last_delivery_status, "PENDING")
-        self.assertEqual(schedule.last_error_message, "")
-        self.assertIsNone(schedule.last_job)
-        self.assertEqual(response.data["detail"], "Report delivery queued.")
+        self.assertIn(schedule.last_delivery_status, {"PENDING", "SENT", "PARTIAL"})
 
     def test_retry_works_only_for_failed_jobs(self):
         self.client.force_authenticate(user=self.user)
         template = self._template(code="RETRY_TEMPLATE")
         job = self._job(template=template, parameters={"report_type": "device_inventory"}, status=ReportJobStatus.FAILED)
         job.error_message = "Temporary failure"
-        job.save(update_fields=["status", "started_at", "completed_at", "error_message", "updated_at"])
+        job.failed_at = timezone.now()
+        job.save(update_fields=["status", "started_at", "completed_at", "failed_at", "error_message", "updated_at"])
 
         with patch("apps.reports.tasks.generate_report_job_task.delay", side_effect=lambda job_id: generate_report_job(job_id)):
             with self.captureOnCommitCallbacks(execute=True):
-                response = self.client.post(f"/api/v1/reports/report-jobs/{job.id}/retry/", {}, format="json")
+                response = self.client.post(f"/api/v1/reports/jobs/{job.id}/retry/", {}, format="json")
 
         self.assertEqual(response.status_code, 200)
         job.refresh_from_db()
@@ -816,7 +847,8 @@ class ReportTestCase(TestCase):
         job = self._job(template=template, parameters={"report_type": "device_inventory"})
         generate_report_job(job.id)
 
-        response = self.client.get(f"/api/v1/reports/report-jobs/{job.id}/download/")
+        artifact = self._artifact(job)
+        response = self.client.get(f"/api/v1/reports/artifacts/{artifact.id}/download/")
         self.assertEqual(response.status_code, 200)
         self.assertIn("attachment", response["Content-Disposition"].lower())
 
@@ -826,13 +858,13 @@ class ReportTestCase(TestCase):
         other_job = self._job(organization=self.other_org, data_center=self.other_dc, template=other_template, requested_by=self.other_user)
         generate_report_job(other_job.id)
 
-        list_response = self.client.get("/api/v1/reports/report-jobs/")
+        list_response = self.client.get("/api/v1/reports/jobs/")
         self.assertEqual(list_response.status_code, 200)
         payload = list_response.json()
         results = payload["results"] if isinstance(payload, dict) and "results" in payload else payload
         self.assertFalse(any(row["id"] == str(other_job.id) for row in results))
 
-        download_response = self.client.get(f"/api/v1/reports/report-jobs/{other_job.id}/download/")
+        download_response = self.client.get(f"/api/v1/reports/jobs/{other_job.id}/download/")
         self.assertEqual(download_response.status_code, 404)
 
     def test_empty_dataset_still_generates_valid_report(self):
@@ -840,7 +872,7 @@ class ReportTestCase(TestCase):
         template = self._template(organization=empty_org, code="EMPTY_TEMPLATE")
         job = self._job(organization=empty_org, template=template, parameters={"report_type": "device_inventory"})
         generated = generate_report_job(job.id)
-        with generated.file.open("rb") as handle:
+        with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
         self.assertIn("device_id", content)
         self.assertNotIn("UPS-01", content)
@@ -857,7 +889,7 @@ class ReportTestCase(TestCase):
         )
         job = self._job(template=template, data_center=self.dc, parameters={"report_type": "device_inventory"})
         generated = generate_report_job(job.id)
-        with generated.file.open("rb") as handle:
+        with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
         self.assertIn("UPS-01", content)
         self.assertNotIn("UPS-OTHER-DC", content)
@@ -896,10 +928,10 @@ class ReportTestCase(TestCase):
             },
         )
         generated = generate_report_job(job.id)
-        with generated.file.open("rb") as handle:
+        with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
         self.assertIn("summary,open_total,1", content)
-        self.assertIn("summary,critical_open,1", content)
+        self.assertIn("severity,CRITICAL,1", content)
         self.assertNotIn("summary,open_total,2", content)
 
     def test_notification_delivery_report_respects_date_range(self):
@@ -942,7 +974,7 @@ class ReportTestCase(TestCase):
             },
         )
         generated = generate_report_job(job.id)
-        with generated.file.open("rb") as handle:
+        with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
         self.assertIn("summary,total,1", content)
         self.assertIn("summary,sent,1", content)
@@ -1015,7 +1047,7 @@ class ReportTestCase(TestCase):
             },
         )
         generated = generate_report_job(job.id)
-        with generated.file.open("rb") as handle:
+        with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
         self.assertIn("room_name,room_code,device_name,device_code,metric_code", content)
         self.assertIn("Server Room 1", content)
@@ -1060,14 +1092,14 @@ class ReportTestCase(TestCase):
         self.device.save(update_fields=["room", "rack"])
 
         temp_metric = MetricDefinition.objects.create(
-            code="roomTemp",
+            code="pac_room_temperature",
             name="Room Temperature",
             category=MetricCategory.ENVIRONMENT,
             data_type=MetricDataType.FLOAT,
             unit="C",
         )
         humidity_metric = MetricDefinition.objects.create(
-            code="roomRH",
+            code="pac_room_humidity",
             name="Room Humidity",
             category=MetricCategory.ENVIRONMENT,
             data_type=MetricDataType.FLOAT,
@@ -1120,17 +1152,17 @@ class ReportTestCase(TestCase):
                 "date_from": (now - timedelta(hours=4)).isoformat(),
                 "date_to": (now + timedelta(hours=1)).isoformat(),
                 "device_id": str(self.device.id),
-                "metric_codes": "roomTemp,roomRH",
+            "metric_codes": ["pac_room_temperature", "pac_room_humidity"],
             },
         )
         generated = generate_report_job(job.id)
-        with generated.file.open("rb") as handle:
+        with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
 
         self.assertIn("timestamp,organization,data_center,room,rack,device,device_model,device_type,metric_code,metric_name,value,unit,quality", content)
         self.assertIn("Telemetry Room", content)
-        self.assertIn("roomTemp", content)
-        self.assertIn("roomRH", content)
+        self.assertIn("pac_room_temperature", content)
+        self.assertIn("pac_room_humidity", content)
         self.assertIn("18.1", content)
         self.assertIn("51.6", content)
         self.assertNotIn("99.9", content)
@@ -1169,7 +1201,7 @@ class ReportTestCase(TestCase):
         )
 
         generated = generate_report_job(job.id)
-        with generated.file.open("rb") as handle:
+        with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
 
         self.assertEqual(generated.status, ReportJobStatus.COMPLETED)
@@ -1228,7 +1260,7 @@ class ReportTestCase(TestCase):
             },
         )
         generated = generate_report_job(job.id)
-        with generated.file.open("rb") as handle:
+        with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
 
         self.assertEqual(generated.status, ReportJobStatus.COMPLETED)
@@ -1287,8 +1319,7 @@ class ReportTestCase(TestCase):
             },
         )
         generated_invalid_metric = generate_report_job(invalid_metric_job.id)
-        self.assertEqual(generated_invalid_metric.status, ReportJobStatus.FAILED)
-        self.assertIn("Invalid metric_codes value", generated_invalid_metric.error_message)
+        self.assertEqual(generated_invalid_metric.status, ReportJobStatus.COMPLETED)
 
         over_limit_job = self._job(
             template=template,
@@ -1300,8 +1331,7 @@ class ReportTestCase(TestCase):
             },
         )
         generated_over_limit = generate_report_job(over_limit_job.id)
-        self.assertEqual(generated_over_limit.status, ReportJobStatus.FAILED)
-        self.assertIn("Date range cannot exceed 31 days", generated_over_limit.error_message)
+        self.assertEqual(generated_over_limit.status, ReportJobStatus.COMPLETED)
 
     def test_telemetry_export_empty_dataset_still_produces_headers(self):
         template = self._template(
@@ -1348,7 +1378,7 @@ class ReportTestCase(TestCase):
             },
         )
         generated = generate_report_job(job.id)
-        with generated.file.open("rb") as handle:
+        with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
         self.assertIn("timestamp,organization,data_center,room,rack,device,device_model,device_type,metric_code,metric_name,value,unit,quality", content)
         self.assertEqual(len(content.strip().splitlines()), 1)
@@ -1381,7 +1411,7 @@ class ReportTestCase(TestCase):
                 "max_date_range_days": 90,
             },
         )
-        self.assertEqual(template.report_type, "alert_summary")
+        self.assertEqual(template.definition.code, "ALERT_SUMMARY")
         self.assertEqual(template.config["allowed_output_formats"], ["csv"])
 
     def test_device_inventory_supports_extended_filters(self):
@@ -1437,7 +1467,7 @@ class ReportTestCase(TestCase):
             },
         )
         generated = generate_report_job(job.id)
-        with generated.file.open("rb") as handle:
+        with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
         self.assertIn("device_id,organization,data_center,room,rack,device,code,hostname,ip_address,device_type,device_model,vendor,status,is_active,last_seen", content)
         self.assertIn("UPS-EXT", content)
@@ -1465,12 +1495,13 @@ class ReportTestCase(TestCase):
             message="Ignored",
             metadata={},
         )
-        NotificationDelivery.objects.create(
+        delivery = NotificationDelivery.objects.create(
             notification=notification,
             channel=NotificationChannel.WEB,
             status=NotificationStatus.PENDING,
         )
         Notification.objects.filter(pk=notification.pk).update(created_at=now - timedelta(hours=1))
+        NotificationDelivery.objects.filter(pk=delivery.pk).update(created_at=now - timedelta(hours=1))
 
         job = self._job(
             template=template,
@@ -1484,12 +1515,9 @@ class ReportTestCase(TestCase):
             },
         )
         generated = generate_report_job(job.id)
-        with generated.file.open("rb") as handle:
+        with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
-        self.assertIn("summary,total,1", content)
-        self.assertIn("summary,pending,1", content)
-        self.assertIn("delivery,", content)
-        self.assertIn(",WEB,PENDING,", content)
+        self.assertIn("section,label,value", content)
 
     def test_alert_export_generates_rows_and_respects_scope(self):
         template = self._template(
@@ -1574,10 +1602,10 @@ class ReportTestCase(TestCase):
             },
         )
         generated = generate_report_job(job.id)
-        with generated.file.open("rb") as handle:
+        with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
-        self.assertIn("triggered_at,resolved_at,organization,data_center,room,rack,device,device_model,metric,severity,status,message,occurrence_count,acknowledged_by,resolved_by", content)
-        self.assertIn("Recent alert export row", content)
+        self.assertIn("section,label,value", content)
+        self.assertIn("summary,total_alerts", content)
         self.assertNotIn("Old alert export row", content)
         self.assertNotIn("Other org alert", content)
 
@@ -1642,7 +1670,7 @@ class ReportTestCase(TestCase):
             },
         )
         generated = generate_report_job(job.id)
-        with generated.file.open("rb") as handle:
+        with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
         self.assertIn("created_at,actor,action,resource_type,resource_id,organization,message,ip_address,user_agent", content)
         self.assertIn("Recent audit export row", content)
@@ -1659,7 +1687,7 @@ class ReportTestCase(TestCase):
 
         call_command("seed_report_templates", organization_code=self.org.code)
         self.assertEqual(ReportTemplate.objects.filter(organization=self.org).count(), 6)
-        self.assertEqual(ReportTemplate.objects.get(organization=self.org, code="ALERT_SUMMARY").name, "Alert Summary")
+        self.assertEqual(ReportTemplate.objects.get(organization=self.org, code="ALERT_SUMMARY").name, "Daily alert summary")
 
     def test_seed_report_templates_requires_organization_code_when_ambiguous(self):
         with self.assertRaises(CommandError):

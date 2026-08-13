@@ -81,6 +81,20 @@ def get_alert_recipients(alert):
     return list(_recipient_queryset(alert).order_by("username", "id"))
 
 
+def get_escalation_recipients(alert, policy):
+    """Resolve policy targets and keep only users authorized for the alert."""
+    from apps.accounts.models import User
+
+    recipients = policy.target_users.filter(is_active=True)
+    if policy.target_role_id:
+        recipients = recipients | User.objects.filter(
+            is_active=True,
+            data_center_roles__role_id=policy.target_role_id,
+            data_center_roles__is_active=True,
+        )
+    return [user for user in recipients.distinct().order_by("username", "id") if _has_alert_scope(user, alert)]
+
+
 def _channels_for_open(severity: str) -> list[str]:
     severity = (severity or "").upper()
     if severity == "INFO":
@@ -206,7 +220,7 @@ def _create_delivery(notification, channel: str, recipient_address: str | None, 
 
 def _create_notifications_for_alert(alert, *, action: str, subject: str, message: str, channels: list[str], policy=None):
     created_payloads = []
-    recipients = get_alert_recipients(alert)
+    recipients = get_escalation_recipients(alert, policy) if policy is not None else get_alert_recipients(alert)
     for user in recipients:
         with transaction.atomic():
             notification, notification_created = _create_logical_notification(alert, user, subject, message, action=action, policy=policy)

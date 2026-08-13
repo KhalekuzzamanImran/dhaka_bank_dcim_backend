@@ -14,7 +14,7 @@ from apps.access_control.models import Permission, Role, RolePermission, RoleSco
 from apps.accounts.models import User
 from apps.datacenters.models import DataCenter
 from apps.organizations.models import Organization
-from apps.reports.enums import ReportDeliveryStatus, ReportScheduleStatus, ReportTriggerSource
+from apps.reports.enums import ReportDeliveryStatus, ReportRecipientChannel, ReportScheduleStatus, ReportTriggerSource
 from apps.reports.models import (
     ReportArtifact,
     ReportDefinition,
@@ -161,7 +161,7 @@ class ReportPhase6BDashboardTestCase(TestCase):
             template=template,
             requested_by=self.user,
             trigger_source=ReportTriggerSource.MANUAL,
-            parameters={"report_type": "device_inventory"},
+            parameters={},
             queue_job=queue_job,
         )
         job = result.job
@@ -280,6 +280,31 @@ class ReportPhase6BDashboardTestCase(TestCase):
         client.force_authenticate(user=user or self.user)
         return client.get("/api/v1/reports/dashboard/", params)
 
+    def _add_schedule_recipients(self, schedule, emails=(), phones=()):
+        rows = [
+            ReportScheduleRecipient(
+                schedule=schedule,
+                channel=ReportRecipientChannel.EMAIL,
+                recipient_type=ReportRecipientChannel.EMAIL,
+                destination=email,
+                email_address=email,
+                is_active=True,
+            )
+            for email in emails
+        ]
+        rows.extend(
+            ReportScheduleRecipient(
+                schedule=schedule,
+                channel=ReportRecipientChannel.SMS,
+                recipient_type=ReportRecipientChannel.SMS,
+                destination=phone,
+                phone_number=phone,
+                is_active=True,
+            )
+            for phone in phones
+        )
+        ReportScheduleRecipient.objects.bulk_create(rows)
+
     def _build_dashboard_data(self):
         completed_csv = self._create_completed_job(template=self.template_csv, day=self.day_1, hour=9)
         completed_pdf = self._create_completed_job(template=self.template_pdf, day=self.day_3, hour=15)
@@ -379,6 +404,7 @@ class ReportPhase6BDashboardTestCase(TestCase):
         )
         active_schedule.last_job = failed_job
         active_schedule.save(update_fields=["last_job", "updated_at"])
+        self._add_schedule_recipients(active_schedule, emails=("ops@example.com",), phones=("01329665857",))
         paused_schedule = ReportSchedule.objects.create(
             organization=self.org,
             data_center=self.dc,
@@ -399,6 +425,7 @@ class ReportPhase6BDashboardTestCase(TestCase):
             next_run_at=self._aware(self.day_3, 19),
             created_by=self.user,
         )
+        self._add_schedule_recipients(paused_schedule, emails=("paused@example.com",))
         disabled_schedule = ReportSchedule.objects.create(
             organization=self.org,
             data_center=self.dc,
@@ -419,6 +446,7 @@ class ReportPhase6BDashboardTestCase(TestCase):
             next_run_at=self._aware(self.day_3, 20),
             created_by=self.user,
         )
+        self._add_schedule_recipients(disabled_schedule, emails=("disabled@example.com",))
         failed_run = ReportScheduleRun.objects.create(
             schedule=active_schedule,
             organization=self.org,
@@ -601,7 +629,7 @@ class ReportPhase6BDashboardTestCase(TestCase):
             },
         )
         self.assertEqual(response.status_code, 400)
-        self.assertIn("end_at", response.json())
+        self.assertIn("start_at", response.json())
 
         response = client.get(
             "/api/v1/reports/dashboard/",

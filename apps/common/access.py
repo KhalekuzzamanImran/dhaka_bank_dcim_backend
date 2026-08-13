@@ -105,11 +105,16 @@ def _add_organization(scope: Dict[str, object], organization: Organization):
 
 
 def _expand_row_scope(scope: Dict[str, object], row: UserResourceAccess):
-    if row.role and row.role.scope == RoleScope.GLOBAL:
+    role_scope = getattr(row.role, "scope", None)
+    if role_scope == RoleScope.GLOBAL:
         scope["global_access"] = True
         return
 
-    if row.organization_id:
+    # Resource rows carry parent foreign keys for referential consistency. The
+    # role scope, not the presence of those parent IDs, determines the access
+    # breadth. Otherwise a device-scoped row would incorrectly expand through
+    # its organization to every device in that organization.
+    if role_scope == RoleScope.ORGANIZATION and row.organization_id:
         _add_organization(scope, row.organization)
         for device in Device.objects.filter(organization_id=row.organization_id).select_related(
             "organization",
@@ -126,7 +131,7 @@ def _expand_row_scope(scope: Dict[str, object], row: UserResourceAccess):
                 _add_rack(scope, rack)
         return
 
-    if row.data_center_id:
+    if role_scope == RoleScope.DATA_CENTER and row.data_center_id:
         _add_data_center(scope, row.data_center)
         for room in Room.objects.filter(data_center_id=row.data_center_id).select_related("data_center__organization"):
             _add_room(scope, room)
@@ -141,7 +146,7 @@ def _expand_row_scope(scope: Dict[str, object], row: UserResourceAccess):
             _add_device(scope, device)
         return
 
-    if row.room_id:
+    if role_scope == RoleScope.ROOM and row.room_id:
         _add_room(scope, row.room)
         for rack in Rack.objects.filter(room_id=row.room_id).select_related("room__data_center__organization", "data_center__organization"):
             _add_rack(scope, rack)
@@ -154,7 +159,7 @@ def _expand_row_scope(scope: Dict[str, object], row: UserResourceAccess):
             _add_device(scope, device)
         return
 
-    if row.rack_id:
+    if role_scope == RoleScope.RACK and row.rack_id:
         _add_rack(scope, row.rack)
         for device in Device.objects.filter(rack_id=row.rack_id).select_related(
             "organization",
@@ -165,7 +170,7 @@ def _expand_row_scope(scope: Dict[str, object], row: UserResourceAccess):
             _add_device(scope, device)
         return
 
-    if row.device_id:
+    if role_scope == RoleScope.DEVICE and row.device_id:
         _add_device(scope, row.device)
 
 
@@ -292,6 +297,39 @@ def filter_queryset_for_user(
             "device": device_field,
         }
         return _apply_scope_filter(qs, field_map[access_scope], scope[f"{access_scope}_ids"])
+
+    # Effective scopes contain ancestor IDs for convenience, but using those
+    # IDs in one OR expression widens a data-center/room/device assignment to
+    # the entire organization. For mixed querysets, preserve the assignment's
+    # actual role scope and build one predicate per access row.
+    direct_conditions = Q()
+    direct_added = False
+    for row in get_user_resource_access_rows(user):
+        role_scope = getattr(row.role, "scope", None)
+        field_path = {
+            RoleScope.ORGANIZATION: organization_field,
+            RoleScope.DATA_CENTER: data_center_field,
+            RoleScope.ROOM: room_field,
+            RoleScope.RACK: rack_field,
+            RoleScope.DEVICE: device_field,
+        }.get(role_scope)
+        value = {
+            RoleScope.ORGANIZATION: row.organization_id,
+            RoleScope.DATA_CENTER: row.data_center_id,
+            RoleScope.ROOM: row.room_id,
+            RoleScope.RACK: row.rack_id,
+            RoleScope.DEVICE: row.device_id,
+        }.get(role_scope)
+        if not field_path or not value:
+            continue
+        if _lookup_exists(qs.model, field_path):
+            direct_conditions |= Q(**{f"{field_path}_id": value})
+            direct_added = True
+        elif role_scope == RoleScope.DEVICE and _lookup_exists(qs.model, "id"):
+            direct_conditions |= Q(pk=value)
+            direct_added = True
+    if direct_added:
+        return qs.filter(direct_conditions).distinct()
 
     conditions = Q()
     added = False

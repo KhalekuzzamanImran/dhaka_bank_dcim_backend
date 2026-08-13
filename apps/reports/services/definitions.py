@@ -12,6 +12,8 @@ from ..models import ReportDefinition
 from .validators import validate_parameter_schema
 
 RESERVED_RUNTIME_PARAMETER_KEYS = {
+    # Kept as an input compatibility alias; the linked ReportDefinition remains authoritative.
+    "report_type",
     "output_format",
     "primary_format",
     "attachment_formats",
