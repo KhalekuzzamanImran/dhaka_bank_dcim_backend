@@ -19,7 +19,7 @@ from .services import acknowledge_alert, manually_resolve_alert
 from .services.summary import (
     build_active_by_severity,
     build_dashboard_payload,
-    build_recent_alerts,
+    build_recent_alert_logs,
     build_top_devices,
 )
 
@@ -130,7 +130,7 @@ class AlertEventViewSet(ScopedModelViewSet):
 
     @action(detail=False, methods=["get"])
     def recent(self, request):
-        return Response(build_recent_alerts(self.get_queryset(), limit=20, context=self.get_serializer_context()))
+        return Response(build_recent_alert_logs(self.get_queryset(), limit=20, context=self.get_serializer_context()))
 
 
 class AlertSummaryAPIView(APIView):
@@ -159,4 +159,4 @@ class AlertRecentAPIView(APIView):
     permission_module = "alert"
 
     def get(self, request):
-        return Response(build_recent_alerts(get_alert_queryset_for_user(request.user), limit=20, context={"request": request}))
+        return Response(build_recent_alert_logs(get_alert_queryset_for_user(request.user), limit=20, context={"request": request}))

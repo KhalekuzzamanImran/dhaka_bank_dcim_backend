@@ -23,8 +23,6 @@ class NotificationViewSet(ScopedModelViewSet):
         user = self.request.user
         if not user or not user.is_authenticated:
             return qs.none()
-        if user.is_superuser or user.is_staff:
-            return qs
         return qs.filter(recipient=user)
 
     def create(self, request, *args, **kwargs):
@@ -41,8 +39,6 @@ class NotificationViewSet(ScopedModelViewSet):
 
     def _mark_read_queryset(self):
         user = self.request.user
-        if user.is_superuser or user.is_staff:
-            return self.get_queryset()
         return self.get_queryset().filter(recipient=user)
 
     @action(detail=False, methods=["get"])

@@ -268,6 +268,7 @@ def poll_snmp_device(device_id: str, evaluate_alerts: bool = True) -> PollOutcom
                 "metrics": telemetry_deltas,
             },
             delivery_scopes=[
+                "global",
                 f"organization:{device.organization_id}",
                 f"data_center:{device.data_center_id}",
                 f"device:{device.pk}",

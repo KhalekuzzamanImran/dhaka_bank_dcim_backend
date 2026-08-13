@@ -18,7 +18,23 @@ SUPPORTED_TEMPLATE_OUTPUT_FORMATS = ["csv", "xlsx", "pdf"]
 
 REPORT_TEMPLATE_OPTIONS = {
     "ALERT_SUMMARY": {
-        "available_columns": ["section", "label", "value"],
+        "available_columns": [
+            "triggered_at",
+            "resolved_at",
+            "organization",
+            "data_center",
+            "room",
+            "rack",
+            "device",
+            "device_model",
+            "metric",
+            "severity",
+            "status",
+            "message",
+            "occurrence_count",
+            "acknowledged_by",
+            "resolved_by",
+        ],
         "optional_fields": [
             "default_columns",
             "default_parameters",

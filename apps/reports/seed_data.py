@@ -4,7 +4,7 @@ REPORT_TEMPLATE_SEEDS = [
     {
         "name": "Daily alert summary",
         "code": "ALERT_SUMMARY",
-        "description": "Summary of alert activity, severity breakdown, and resolution counts for the day.",
+        "description": "Detailed alert events for the selected day.",
         "config": {
             "report_type": "alert_summary",
             "output_format": "csv",
@@ -23,7 +23,23 @@ REPORT_TEMPLATE_SEEDS = [
                 "severity",
                 "status",
             ],
-            "default_columns": ["section", "label", "value"],
+            "default_columns": [
+                "triggered_at",
+                "resolved_at",
+                "organization",
+                "data_center",
+                "room",
+                "rack",
+                "device",
+                "device_model",
+                "metric",
+                "severity",
+                "status",
+                "message",
+                "occurrence_count",
+                "acknowledged_by",
+                "resolved_by",
+            ],
             "max_date_range_days": 90,
         },
     },
@@ -87,7 +103,7 @@ REPORT_TEMPLATE_SEEDS = [
         },
     },
     {
-        "name": "Alert Export",
+        "name": "Alert Summary",
         "code": "ALERT_EXPORT",
         "description": "Exports detailed alert history with device, metric, severity, status, acknowledgement, and resolution details.",
         "config": {

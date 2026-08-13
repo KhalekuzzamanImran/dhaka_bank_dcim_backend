@@ -59,7 +59,7 @@ REPORT_DEFINITION_SEEDS = [
     {
         "code": "ALERT_SUMMARY",
         "name": "Daily alert summary",
-        "description": "Summarises alerts by severity, status, and common operational filters for day-by-day review.",
+        "description": "Exports detailed alert events for the day using the alert export column layout.",
         "category": ReportDefinitionCategory.ALERT,
         "generator_key": "alert_summary",
         "parameter_schema": {
@@ -83,7 +83,7 @@ REPORT_DEFINITION_SEEDS = [
     },
     {
         "code": "ALERT_DETAIL",
-        "name": "Alert Detail",
+        "name": "Alert Summary",
         "description": "Exports detailed alert events with acknowledgement and resolution information.",
         "category": ReportDefinitionCategory.ALERT,
         "generator_key": "alert_export",

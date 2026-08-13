@@ -1236,9 +1236,9 @@ def test_alert_summary_endpoints_share_same_shape_and_respect_scope():
     recent_payload = _json_results(recent_response)
     assert recent_payload
     assert recent_payload[0]["device_name"] == "UPS-01"
-    assert recent_payload[0]["metric_code"] in {"UPS_ON_BATTERY", "UPS_WARNING", "UPS_RESOLVED"}
-    assert isinstance(recent_payload[0]["age_seconds"], int)
-    assert isinstance(recent_payload[0]["is_active"], bool)
+    assert recent_payload[0]["action_label"] in {"Opened", "Acknowledged", "Resolved", "Suppressed"}
+    assert recent_payload[0]["alert_message"]
+    assert {row["action_label"] for row in recent_payload} >= {"Opened", "Resolved"}
 
 
 @pytest.mark.django_db

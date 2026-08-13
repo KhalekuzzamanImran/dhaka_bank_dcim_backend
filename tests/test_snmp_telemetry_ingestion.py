@@ -164,3 +164,24 @@ class SnmpTelemetryIngestionTestCase(TestCase):
         self.assertIsNone(latest.value_float)
         self.assertIsNone(latest.value_integer)
         self.assertIsNone(latest.value_boolean)
+
+    def test_snmp_poll_publishes_global_scope_for_superuser_live_updates(self):
+        device = self._build_device()
+        self._add_mapping(
+            device,
+            metric_code="pdu_bank1_current",
+            metric_type=MetricDataType.FLOAT,
+            mapping_type="integer",
+            scale_factor="0.1",
+        )
+
+        with patch("collectors.snmp_collector.services.publish_live_update") as publish_mock:
+            with self.captureOnCommitCallbacks(execute=True):
+                self._poll_with_raw_value(device, 31)
+
+        publish_mock.assert_called_once()
+        kwargs = publish_mock.call_args.kwargs
+        self.assertIn("global", kwargs["delivery_scopes"])
+        self.assertIn(f"organization:{device.organization_id}", kwargs["delivery_scopes"])
+        self.assertIn(f"data_center:{device.data_center_id}", kwargs["delivery_scopes"])
+        self.assertIn(f"device:{device.pk}", kwargs["delivery_scopes"])

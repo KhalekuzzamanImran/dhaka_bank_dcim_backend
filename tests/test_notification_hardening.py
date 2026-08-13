@@ -391,6 +391,44 @@ class NotificationHardeningTests(TestCase):
         self.assertEqual(rows[0]["delivery_summary"]["EMAIL"], NotificationStatus.SENT)
         self.assertEqual(rows[0]["delivery_summary"]["SMS"], NotificationStatus.FAILED)
 
+    def test_notification_list_stays_personal_for_staff_users(self):
+        org = self._org()
+        role = self._role()
+        staff = self._user(email="staff@example.com")
+        staff.is_staff = True
+        staff.save(update_fields=["is_staff"])
+        other = self._user(email="other@example.com")
+        self._grant_access(staff, org, role)
+        self._grant_access(other, org, role)
+
+        own = Notification.objects.create(
+            organization=org,
+            recipient=staff,
+            channel=NotificationChannel.WEB,
+            subject="Alert Opened: UPS 01",
+            message="Own message",
+            metadata={"alert_event_id": "alert-staff", "severity": "CRITICAL", "action": "OPENED"},
+        )
+        NotificationDelivery.objects.create(notification=own, channel=NotificationChannel.WEB, status=NotificationStatus.SENT)
+        Notification.objects.create(
+            organization=org,
+            recipient=other,
+            channel=NotificationChannel.WEB,
+            subject="Alert Opened: UPS 01",
+            message="Other message",
+            metadata={"alert_event_id": "alert-other", "severity": "CRITICAL", "action": "OPENED"},
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=staff)
+        response = client.get("/api/v1/notifications/")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        rows = payload.get("results", payload)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], str(own.id))
+
     def test_mark_read_marks_only_own_notification(self):
         org = self._org()
         role = self._role()

@@ -6,8 +6,9 @@ from zoneinfo import ZoneInfo
 from django.db.models import Count, Q
 from django.utils import timezone
 
-from ..models import AlertSeverity, AlertStatus
-from ..serializers import AlertEventListSerializer
+from ..models import AlertEventLogAction, AlertSeverity, AlertStatus
+from ..models import AlertEventLog
+from ..serializers import AlertEventListSerializer, AlertEventLogSerializer
 
 ACTIVE_STATUSES = (AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED)
 
@@ -104,6 +105,30 @@ def build_top_devices(queryset, limit=10):
 
 def build_recent_alerts(queryset, limit=10, context=None):
     serializer = AlertEventListSerializer(queryset.order_by("-triggered_at")[:limit], many=True, context=context or {})
+    return serializer.data
+
+
+def build_recent_alert_logs(queryset, limit=10, context=None):
+    log_queryset = (
+        AlertEventLog.objects.select_related(
+            "alert_event",
+            "alert_event__organization",
+            "alert_event__data_center",
+            "alert_event__device",
+            "alert_event__device__device_type",
+            "alert_event__metric",
+            "actor",
+        )
+        .filter(alert_event__in=queryset)
+        .filter(action__in=[
+            AlertEventLogAction.OPENED,
+            AlertEventLogAction.ACKNOWLEDGED,
+            AlertEventLogAction.RESOLVED,
+            AlertEventLogAction.SUPPRESSED,
+        ])
+        .order_by("-created_at")
+    )
+    serializer = AlertEventLogSerializer(log_queryset[:limit], many=True, context=context or {})
     return serializer.data
 
 

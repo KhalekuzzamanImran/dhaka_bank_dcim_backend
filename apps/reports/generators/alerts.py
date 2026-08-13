@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from datetime import datetime, time
+from collections import Counter
+
+from django.utils.text import slugify
+from django.utils import timezone
 
 from .base import BaseReportGenerator, GeneratorContext, ReportDataset, ReportTable
-from .datasets import parse_date_range
+from .datasets import normalize_list, parse_date_range
 from .registry import register_generator
 
 
@@ -27,18 +31,50 @@ def _alert_rows(context: GeneratorContext):
     if context.data_center:
         qs = qs.filter(data_center_id=context.data_center.id)
     start_dt, end_dt = parse_date_range(parameters)
+    if context.definition.code == "ALERT_SUMMARY" and start_dt is None and end_dt is None:
+        current_day = timezone.localdate(context.generated_at)
+        tz = timezone.get_current_timezone()
+        start_dt = timezone.make_aware(datetime.combine(current_day, time.min), tz)
+        end_dt = timezone.make_aware(datetime.combine(current_day, time.max), tz)
     if start_dt:
         qs = qs.filter(triggered_at__gte=start_dt)
     if end_dt:
         qs = qs.filter(triggered_at__lte=end_dt)
     if parameters.get("severity"):
-        qs = qs.filter(severity=parameters["severity"])
+        severities = [value.upper() for value in normalize_list(parameters.get("severity")) if value]
+        if severities:
+            qs = qs.filter(severity__in=severities)
     if parameters.get("status"):
-        qs = qs.filter(status=parameters["status"])
+        statuses = [value.upper() for value in normalize_list(parameters.get("status")) if value]
+        if statuses:
+            qs = qs.filter(status__in=statuses)
     if parameters.get("device_id"):
         qs = qs.filter(device_id=parameters["device_id"])
 
     return qs
+
+
+def _alert_detail_table_rows(qs):
+    return (
+        {
+            "triggered_at": alert.triggered_at,
+            "resolved_at": alert.resolved_at,
+            "organization": getattr(alert.organization, "name", None),
+            "data_center": getattr(alert.data_center, "name", None),
+            "room": getattr(getattr(alert.device, "room", None), "name", None),
+            "rack": getattr(getattr(alert.device, "rack", None), "name", None),
+            "device": getattr(alert.device, "name", None),
+            "device_model": getattr(getattr(alert.device, "device_model", None), "name", None),
+            "metric": getattr(alert.metric, "code", None),
+            "severity": alert.severity,
+            "status": alert.status,
+            "message": alert.message,
+            "occurrence_count": alert.occurrence_count,
+            "acknowledged_by": getattr(alert.acknowledged_by, "username", None),
+            "resolved_by": getattr(alert.resolved_by, "username", None),
+        }
+        for alert in qs.order_by("triggered_at", "id").iterator(chunk_size=1000)
+    )
 
 
 @register_generator("alert_summary")
@@ -48,31 +84,16 @@ class AlertSummaryGenerator(BaseReportGenerator):
     supported_formats = ("CSV", "XLSX", "PDF")
 
     def build_dataset(self, context: GeneratorContext) -> ReportDataset:
-        from apps.alerts.models import AlertSeverity, AlertStatus
-
         qs = _alert_rows(context)
-        total = qs.count()
-        severity_counts = Counter(qs.values_list("severity", flat=True))
-        status_counts = Counter(qs.values_list("status", flat=True))
-        rows = [
-            {"section": "summary", "label": "total_alerts", "value": total},
-            {"section": "summary", "label": "open_total", "value": qs.filter(status=AlertStatus.OPEN).count()},
-            {"section": "summary", "label": "acknowledged_total", "value": qs.filter(status=AlertStatus.ACKNOWLEDGED).count()},
-            {"section": "summary", "label": "resolved_total", "value": qs.filter(status=AlertStatus.RESOLVED).count()},
-        ]
-        for severity in AlertSeverity.values:
-            rows.append({"section": "severity", "label": severity, "value": severity_counts.get(severity, 0)})
-        for status in AlertStatus.values:
-            rows.append({"section": "status", "label": status, "value": status_counts.get(status, 0)})
         return ReportDataset(
             title="Daily alert summary",
-            subtitle="Aggregated alert status",
+            subtitle="Detailed alert events for today",
             metadata={"report_type": context.definition.code},
             tables=[
                 ReportTable(
-                    name="Summary",
-                    columns=["section", "label", "value"],
-                    rows=rows,
+                    name="Alerts",
+                    columns=["triggered_at", "resolved_at", "organization", "data_center", "room", "rack", "device", "device_model", "metric", "severity", "status", "message", "occurrence_count", "acknowledged_by", "resolved_by"],
+                    rows=_alert_detail_table_rows(qs),
                     primary=True,
                 )
             ],
@@ -85,37 +106,22 @@ class AlertDetailGenerator(BaseReportGenerator):
     generator_key = "alert_export"
     supported_formats = ("CSV", "XLSX", "PDF")
 
+    def get_filename(self, context: GeneratorContext, output_format: str) -> str:
+        prefix = slugify(context.definition.name or context.definition.code or "report") or "report"
+        timestamp = context.generated_at.strftime("%Y%m%d_%H%M%S")
+        return f"{prefix}_{context.job.pk}_{timestamp}.{output_format.lower()}"
+
     def build_dataset(self, context: GeneratorContext) -> ReportDataset:
         qs = _alert_rows(context)
-        rows = (
-            {
-                "triggered_at": alert.triggered_at,
-                "resolved_at": alert.resolved_at,
-                "organization": getattr(alert.organization, "name", None),
-                "data_center": getattr(alert.data_center, "name", None),
-                "room": getattr(getattr(alert.device, "room", None), "name", None),
-                "rack": getattr(getattr(alert.device, "rack", None), "name", None),
-                "device": getattr(alert.device, "name", None),
-                "device_model": getattr(getattr(alert.device, "device_model", None), "name", None),
-                "metric": getattr(alert.metric, "code", None),
-                "severity": alert.severity,
-                "status": alert.status,
-                "message": alert.message,
-                "occurrence_count": alert.occurrence_count,
-                "acknowledged_by": getattr(alert.acknowledged_by, "username", None),
-                "resolved_by": getattr(alert.resolved_by, "username", None),
-            }
-            for alert in qs.order_by("triggered_at", "id").iterator(chunk_size=1000)
-        )
         return ReportDataset(
-            title="Alert Detail",
+            title="Alert Summary",
             subtitle="Detailed alert events",
             metadata={"report_type": context.definition.code},
             tables=[
                 ReportTable(
                     name="Alerts",
                     columns=["triggered_at", "resolved_at", "organization", "data_center", "room", "rack", "device", "device_model", "metric", "severity", "status", "message", "occurrence_count", "acknowledged_by", "resolved_by"],
-                    rows=rows,
+                    rows=_alert_detail_table_rows(qs),
                     primary=True,
                 )
             ],

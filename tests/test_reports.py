@@ -108,7 +108,7 @@ class ReportTestCase(TestCase):
         organization = organization or self.org
         config = config if config is not None else {"report_type": report_type, "output_format": "csv"}
         definition_code = {
-            "alert_export": "ALERT_SUMMARY",
+            "alert_export": "ALERT_DETAIL",
             "room_environment": "ENVIRONMENTAL_TREND",
         }.get(str(report_type).lower(), str(report_type).upper())
         definition = ReportDefinition.objects.get(code=definition_code)
@@ -930,9 +930,49 @@ class ReportTestCase(TestCase):
         generated = generate_report_job(job.id)
         with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
-        self.assertIn("summary,open_total,1", content)
-        self.assertIn("severity,CRITICAL,1", content)
-        self.assertNotIn("summary,open_total,2", content)
+        self.assertIn(
+            "triggered_at,resolved_at,organization,data_center,room,rack,device,device_model,metric,severity,status,message,occurrence_count,acknowledged_by,resolved_by",
+            content,
+        )
+        self.assertIn("Recent alert", content)
+        self.assertNotIn("Old alert", content)
+
+    def test_alert_summary_defaults_to_today_only(self):
+        template = self._template(code="ALERT_SUMMARY_TEMPLATE", report_type="alert_summary")
+        now = timezone.now()
+        today_alert = AlertEvent.objects.create(
+            organization=self.org,
+            data_center=self.dc,
+            device=self.device,
+            metric=None,
+            alert_rule=None,
+            severity=AlertSeverity.WARNING,
+            status=AlertStatus.OPEN,
+            message="Today alert",
+            triggered_at=now - timedelta(hours=1),
+        )
+        yesterday_alert = AlertEvent.objects.create(
+            organization=self.org,
+            data_center=self.dc,
+            device=self.device,
+            metric=None,
+            alert_rule=None,
+            severity=AlertSeverity.CRITICAL,
+            status=AlertStatus.OPEN,
+            message="Yesterday alert",
+            triggered_at=now - timedelta(days=1),
+        )
+        job = self._job(
+            template=template,
+            parameters={
+                "report_type": "alert_summary",
+            },
+        )
+        generated = generate_report_job(job.id)
+        with self._artifact_file(generated).open("rb") as handle:
+            content = handle.read().decode("utf-8")
+        self.assertIn("Today alert", content)
+        self.assertNotIn("Yesterday alert", content)
 
     def test_notification_delivery_report_respects_date_range(self):
         template = self._template(code="NOTIF_TEMPLATE", report_type="notification_delivery")
@@ -1407,7 +1447,23 @@ class ReportTestCase(TestCase):
                 "allowed_output_formats": ["csv"],
                 "required_filters": [],
                 "optional_filters": ["date_from", "date_to"],
-                "default_columns": ["section", "label", "value"],
+                "default_columns": [
+                    "triggered_at",
+                    "resolved_at",
+                    "organization",
+                    "data_center",
+                    "room",
+                    "rack",
+                    "device",
+                    "device_model",
+                    "metric",
+                    "severity",
+                    "status",
+                    "message",
+                    "occurrence_count",
+                    "acknowledged_by",
+                    "resolved_by",
+                ],
                 "max_date_range_days": 90,
             },
         )
@@ -1604,8 +1660,11 @@ class ReportTestCase(TestCase):
         generated = generate_report_job(job.id)
         with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
-        self.assertIn("section,label,value", content)
-        self.assertIn("summary,total_alerts", content)
+        self.assertIn(
+            "triggered_at,resolved_at,organization,data_center,room,rack,device,device_model,metric,severity,status,message,occurrence_count,acknowledged_by,resolved_by",
+            content,
+        )
+        self.assertIn("Recent alert export row", content)
         self.assertNotIn("Old alert export row", content)
         self.assertNotIn("Other org alert", content)
 

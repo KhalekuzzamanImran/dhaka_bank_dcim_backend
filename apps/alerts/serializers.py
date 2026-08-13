@@ -154,6 +154,16 @@ class AlertEventListSerializer(AlertEventBaseSerializer):
 
 class AlertEventLogSerializer(serializers.ModelSerializer):
     actor_name = serializers.SerializerMethodField()
+    action_label = serializers.SerializerMethodField()
+    alert_message = serializers.CharField(source="alert_event.message", read_only=True)
+    alert_status = serializers.CharField(source="new_status", read_only=True)
+    severity = serializers.CharField(source="alert_event.severity", read_only=True)
+    device_name = serializers.CharField(source="alert_event.device.name", read_only=True)
+    device_code = serializers.CharField(source="alert_event.device.code", read_only=True)
+    device_type_name = serializers.CharField(source="alert_event.device.device_type.name", read_only=True)
+    metric_code = serializers.CharField(source="alert_event.metric.code", read_only=True)
+    triggered_at = serializers.DateTimeField(source="alert_event.triggered_at", read_only=True)
+    resolved_at = serializers.DateTimeField(source="alert_event.resolved_at", read_only=True)
 
     class Meta:
         model = AlertEventLog
@@ -161,11 +171,21 @@ class AlertEventLogSerializer(serializers.ModelSerializer):
             "id",
             "alert_event",
             "action",
+            "action_label",
             "old_status",
             "new_status",
+            "alert_status",
             "actor",
             "actor_name",
             "message",
+            "alert_message",
+            "severity",
+            "device_name",
+            "device_code",
+            "device_type_name",
+            "metric_code",
+            "triggered_at",
+            "resolved_at",
             "value_snapshot",
             "metadata",
             "created_at",
@@ -175,6 +195,9 @@ class AlertEventLogSerializer(serializers.ModelSerializer):
 
     def get_actor_name(self, obj):
         return _display_name(obj.actor)
+
+    def get_action_label(self, obj):
+        return obj.get_action_display()
 
 
 class AlertCommentSerializer(serializers.ModelSerializer):

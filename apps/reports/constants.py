@@ -11,7 +11,7 @@ REPORT_TYPE_LABELS = {
     "alert_summary": "Daily alert summary",
     "notification_delivery": "Notification Delivery",
     "device_inventory": "Device Inventory",
-    "alert_export": "Alert Export",
+    "alert_export": "Alert Summary",
     "audit_export": "Audit Export",
     "telemetry_export": "Telemetry Export",
     "room_environment": "Environmental Trends Report",
@@ -19,8 +19,8 @@ REPORT_TYPE_LABELS = {
 }
 
 REPORT_TYPE_ALIASES = {
-    normalize_key("alert summary"): "alert_summary",
-    normalize_key("alert summary report"): "alert_summary",
+    normalize_key("alert summary"): "alert_export",
+    normalize_key("alert summary report"): "alert_export",
     normalize_key("daily alert summary"): "alert_summary",
     normalize_key("daily alert summary report"): "alert_summary",
     normalize_key("notification delivery"): "notification_delivery",
@@ -35,6 +35,7 @@ REPORT_TYPE_ALIASES = {
     normalize_key("notification_delivery"): "notification_delivery",
     normalize_key("device_inventory"): "device_inventory",
     normalize_key("alert_export"): "alert_export",
+    normalize_key("alert detail"): "alert_export",
     normalize_key("audit_export"): "audit_export",
     normalize_key("alert export"): "alert_export",
     normalize_key("audit export"): "audit_export",
