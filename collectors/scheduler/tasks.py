@@ -6,6 +6,7 @@ from django.db import OperationalError, ProgrammingError
 from django.utils import timezone
 
 from apps.devices.models import Device, DevicePollingConfig, DeviceStatus, ProtocolType
+from apps.live_updates.services import publish_device_status_update
 from collectors.modbus_collector.tasks import poll_modbus_device_task
 from collectors.snmp_collector.tasks import poll_snmp_device_task
 
@@ -49,11 +50,21 @@ def reconcile_stale_devices():
             stale_after = max(1, int(config.polling_profile.stale_after_seconds or 180))
             if (now - last_seen).total_seconds() < stale_after:
                 continue
+            previous_status = config.device.status
             updated = Device.objects.filter(
                 pk=config.device_id,
                 status__in=[DeviceStatus.ONLINE, DeviceStatus.DEGRADED],
             ).update(status=DeviceStatus.OFFLINE, updated_at=now)
             marked_offline += updated
+            if updated:
+                publish_device_status_update(
+                    config.device,
+                    status=DeviceStatus.OFFLINE,
+                    previous_status=previous_status,
+                    reason="stale heartbeat",
+                    source="scheduler",
+                    observed_at=now,
+                )
     except (ProgrammingError, OperationalError) as exc:
         logger.warning("Stale-device reconciliation skipped because database schema is not ready: %s", exc)
         return {"marked_offline": 0, "skipped": True, "reason": "database_schema_not_ready"}

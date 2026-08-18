@@ -17,7 +17,7 @@ from apps.devices.models import (
     ProtocolType,
     SNMPOIDMapping,
 )
-from apps.live_updates.services import publish_live_update, telemetry_delta_from_latest
+from apps.live_updates.services import publish_device_status_update, publish_live_update, telemetry_delta_from_latest
 from apps.telemetry.models import LatestTelemetry, TelemetryIngestLog, TelemetryPoint, TelemetryQuality
 from .client import SNMPClient, SNMPResult
 from .exceptions import SNMPConfigurationError, SNMPCredentialError, SNMPResponseError, SNMPTimeoutError, SNMPWorkerError
@@ -125,7 +125,17 @@ def _quality_for_metric(metric_data_type: str, payload: Dict[str, Any]) -> str:
 
 def _mark_success(device: Device, polling_config: Optional[DevicePollingConfig], at):
     updates = {"status": DeviceStatus.ONLINE, "last_seen_at": at}
-    Device.objects.filter(pk=device.pk).update(**updates)
+    previous_status = device.status
+    updated = Device.objects.filter(pk=device.pk).update(**updates)
+    if updated and str(previous_status or "").upper() != DeviceStatus.ONLINE:
+        publish_device_status_update(
+            device,
+            status=DeviceStatus.ONLINE,
+            previous_status=previous_status,
+            reason="poll success",
+            source="snmp_worker",
+            observed_at=at,
+        )
     if polling_config:
         interval = polling_config.polling_profile.interval_seconds
         DevicePollingConfig.objects.filter(pk=polling_config.pk).update(
@@ -140,6 +150,7 @@ def _mark_failure(device: Device, polling_config: Optional[DevicePollingConfig],
     failure_count = 1
     stale_after = 180
     interval = 60
+    previous_status = device.status
     if polling_config:
         failure_count = polling_config.consecutive_failures + 1
         stale_after = polling_config.polling_profile.stale_after_seconds
@@ -148,6 +159,15 @@ def _mark_failure(device: Device, polling_config: Optional[DevicePollingConfig],
     if device.last_seen_at is None or (at - device.last_seen_at).total_seconds() >= stale_after or failure_count >= 3:
         status = DeviceStatus.OFFLINE
     Device.objects.filter(pk=device.pk).update(status=status)
+    if status == DeviceStatus.OFFLINE:
+        publish_device_status_update(
+            device,
+            status=status,
+            previous_status=previous_status,
+            reason=str(error_message or "")[:500] or "poll failure",
+            source="snmp_worker",
+            observed_at=at,
+        )
     if polling_config:
         DevicePollingConfig.objects.filter(pk=polling_config.pk).update(
             last_polled_at=at,

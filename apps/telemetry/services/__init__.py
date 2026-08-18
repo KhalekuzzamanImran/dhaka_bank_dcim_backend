@@ -11,6 +11,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.live_updates.services import publish_live_update, telemetry_delta_from_latest
+from apps.live_updates.services import publish_device_status_update
 from apps.devices.models import Device, DeviceStatus
 from apps.telemetry.models import (
     LatestTelemetry,
@@ -55,6 +56,7 @@ def ingest_points(points, source="api"):
     now = timezone.now()
     created = []
     telemetry_deltas = []
+    device_status_updates = {}
 
     for item in points:
         device = Device.objects.select_related("organization", "data_center").get(id=item["device"])
@@ -84,7 +86,14 @@ def ingest_points(points, source="api"):
             defaults={**common, "last_seen_at": ts},
         )
         telemetry_deltas.append(telemetry_delta_from_latest(latest, observed_at=ts))
-        Device.objects.filter(pk=device.pk).update(last_seen_at=ts, status=DeviceStatus.ONLINE)
+        previous_status = device.status
+        updated = Device.objects.filter(pk=device.pk).update(last_seen_at=ts, status=DeviceStatus.ONLINE)
+        if updated and str(previous_status or "").upper() != DeviceStatus.ONLINE:
+            device_status_updates[str(device.pk)] = {
+                "device": device,
+                "previous_status": previous_status,
+                "observed_at": ts,
+            }
         created.append(point)
 
     first_device = created[0].device if created else None
@@ -120,6 +129,17 @@ def ingest_points(points, source="api"):
                     f"data_center:{first_device.data_center_id}",
                     f"device:{first_device.pk}",
                 ],
+            )
+        )
+    for update in device_status_updates.values():
+        transaction.on_commit(
+            lambda update=update: publish_device_status_update(
+                update["device"],
+                status=DeviceStatus.ONLINE,
+                previous_status=update["previous_status"],
+                reason="telemetry ingest",
+                source=source,
+                observed_at=update["observed_at"],
             )
         )
     return ingest_id, created

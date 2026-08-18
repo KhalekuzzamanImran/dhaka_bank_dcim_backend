@@ -17,6 +17,7 @@ from collectors.common.locks import acquire_device_poll_lock, release_device_pol
 from collectors.common.telemetry_writer import write_device_telemetry_bulk
 from collectors.common.value_converter import normalize_value
 from apps.devices.models import Device, DevicePollingConfig, DeviceProtocolConfig, DeviceStatus, ModbusRegisterMapping, ProtocolType
+from apps.live_updates.services import publish_device_status_update
 from apps.telemetry.models import LatestTelemetry, TelemetryIngestLog, TelemetryQuality
 from .exceptions import ModbusConfigurationError, ModbusResponseError
 
@@ -116,7 +117,17 @@ def _read_mapping(client, mapping):
 
 
 def _mark_success(device, polling_config, at):
-    Device.objects.filter(pk=device.pk).update(status=DeviceStatus.ONLINE, last_seen_at=at)
+    previous_status = device.status
+    updated = Device.objects.filter(pk=device.pk).update(status=DeviceStatus.ONLINE, last_seen_at=at)
+    if updated and str(previous_status or "").upper() != DeviceStatus.ONLINE:
+        publish_device_status_update(
+            device,
+            status=DeviceStatus.ONLINE,
+            previous_status=previous_status,
+            reason="poll success",
+            source="modbus_worker",
+            observed_at=at,
+        )
     if polling_config:
         interval = polling_config.polling_profile.interval_seconds
         DevicePollingConfig.objects.filter(pk=polling_config.pk).update(
@@ -130,7 +141,17 @@ def _mark_success(device, polling_config, at):
 def _mark_failure(device, polling_config, error_message, at):
     failure_count = (polling_config.consecutive_failures + 1) if polling_config else 1
     status = DeviceStatus.DEGRADED if failure_count < 3 else DeviceStatus.OFFLINE
+    previous_status = device.status
     Device.objects.filter(pk=device.pk).update(status=status)
+    if status == DeviceStatus.OFFLINE:
+        publish_device_status_update(
+            device,
+            status=status,
+            previous_status=previous_status,
+            reason=str(error_message or "")[:500] or "poll failure",
+            source="modbus_worker",
+            observed_at=at,
+        )
     if polling_config:
         interval = min(polling_config.polling_profile.interval_seconds, 300)
         DevicePollingConfig.objects.filter(pk=polling_config.pk).update(

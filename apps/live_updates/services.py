@@ -82,6 +82,65 @@ def telemetry_delta_from_latest(latest, *, observed_at=None) -> dict:
     }
 
 
+def device_scopes(device) -> list[str]:
+    device_id = getattr(device, "pk", None)
+    if not device_id:
+        return ["overview"]
+
+    scopes = ["overview", f"device:{device_id}"]
+    organization_id = getattr(device, "organization_id", None)
+    data_center_id = getattr(device, "data_center_id", None)
+    if organization_id:
+        scopes.append(f"organization:{organization_id}")
+    if data_center_id:
+        scopes.append(f"data_center:{data_center_id}")
+
+    device_type = getattr(device, "device_type", None)
+    device_type_code = str(getattr(device_type, "code", "") or "").strip().upper()
+    if device_type_code:
+        scopes.append(f"device_type:{device_type_code}")
+    return scopes
+
+
+def publish_device_status_update(
+    device,
+    *,
+    status: str,
+    previous_status: str | None = None,
+    reason: str | None = None,
+    source: str | None = None,
+    observed_at=None,
+) -> dict:
+    now = timezone.now()
+    normalized_status = str(status or "").upper()
+    observed_at_value = observed_at.isoformat() if observed_at else None
+    last_seen_value = (
+        observed_at_value
+        if normalized_status == "ONLINE" and observed_at_value
+        else getattr(device, "last_seen_at", None).isoformat() if getattr(device, "last_seen_at", None) else None
+    )
+    event = publish_live_update(
+        event_type="device_status_changed",
+        resource_type="Device",
+        resource_id=getattr(device, "pk", None),
+        scopes=device_scopes(device),
+        metadata={
+            "device_id": str(getattr(device, "pk", "") or ""),
+            "organization_id": str(getattr(device, "organization_id", "") or ""),
+            "data_center_id": str(getattr(device, "data_center_id", "") or ""),
+            "device_type": str(getattr(getattr(device, "device_type", None), "code", "") or "").upper(),
+            "status": normalized_status,
+            "previous_status": str(previous_status or getattr(device, "status", "") or "").upper() or None,
+            "last_seen_at": last_seen_value,
+            "updated_at": observed_at.isoformat() if observed_at else now.isoformat(),
+            "observed_at": observed_at_value,
+            "reason": reason,
+            "source": source,
+        },
+    )
+    return event
+
+
 def build_live_update_event(*, event_type: str, resource_type: str, resource_id: Any = None, scope: str = "global", scopes: Iterable[str] | None = None, metadata: dict | None = None) -> dict:
     scope_list = _normalize_scopes(scope=scope, scopes=scopes)
     revision = _next_revision()
