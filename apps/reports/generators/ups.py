@@ -4,8 +4,9 @@ from collections import defaultdict
 from statistics import mean
 
 from .base import BaseReportGenerator, GeneratorContext, ReportDataset, ReportTable
-from .datasets import normalize_telemetry_metrics, parse_date_range
+from .datasets import normalize_telemetry_metrics
 from .registry import register_generator
+from ..services.telemetry_history import fetch_telemetry_report_rows
 
 
 UPS_DEFAULT_METRICS = [
@@ -23,26 +24,15 @@ UPS_DEFAULT_METRICS = [
 
 
 def _load_points(context: GeneratorContext):
-    from apps.telemetry.models import MetricDefinition, TelemetryPoint
-
     parameters = context.parameters or {}
     metric_codes = normalize_telemetry_metrics(parameters.get("metric_codes") or parameters.get("metrics") or UPS_DEFAULT_METRICS)
-    metrics = MetricDefinition.objects.filter(code__in=metric_codes, is_active=True)
-    metric_ids = list(metrics.values_list("id", flat=True))
-    qs = TelemetryPoint.objects.select_related("organization", "data_center", "device", "metric").filter(
-        organization_id=context.organization.id,
-        metric_id__in=metric_ids,
+    rows, metrics = fetch_telemetry_report_rows(
+        organization=context.organization,
+        data_center=context.data_center,
+        metric_codes=metric_codes,
+        parameters=parameters,
     )
-    if context.data_center:
-        qs = qs.filter(data_center_id=context.data_center.id)
-    start_dt, end_dt = parse_date_range(parameters)
-    if start_dt:
-        qs = qs.filter(time__gte=start_dt)
-    if end_dt:
-        qs = qs.filter(time__lte=end_dt)
-    if parameters.get("device_id"):
-        qs = qs.filter(device_id=parameters["device_id"])
-    return qs, list(metrics)
+    return rows, metrics
 
 
 @register_generator("ups_performance")
@@ -53,10 +43,10 @@ class UPSPerformanceGenerator(BaseReportGenerator):
     row_limit_for_pdf = 400
 
     def build_dataset(self, context: GeneratorContext) -> ReportDataset:
-        qs, metrics = _load_points(context)
+        rows, metrics = _load_points(context)
         grouped = defaultdict(list)
-        for point in qs.order_by("time", "metric__code").iterator(chunk_size=5000):
-            grouped[getattr(point.metric, "code", None)].append(point)
+        for row in rows:
+            grouped[row.get("metric_code")].append(row)
 
         summary_rows = []
         detail_rows = []
@@ -65,21 +55,24 @@ class UPSPerformanceGenerator(BaseReportGenerator):
             numeric_values = []
             last_value = None
             for point in metric_points:
-                value = point.value_float if point.value_float is not None else point.value_integer
+                value = point.get("value")
                 if value is not None:
-                    numeric_values.append(float(value))
+                    if isinstance(value, bool):
+                        numeric_values.append(1.0 if value else 0.0)
+                    else:
+                        numeric_values.append(float(value))
                     last_value = value
                 detail_rows.append(
                     {
-                        "timestamp": point.time,
-                        "organization": getattr(point.organization, "name", None),
-                        "data_center": getattr(point.data_center, "name", None),
-                        "device": getattr(point.device, "name", None),
+                        "timestamp": point.get("timestamp"),
+                        "organization": point.get("organization"),
+                        "data_center": point.get("data_center"),
+                        "device": point.get("device"),
                         "metric_code": metric.code,
                         "metric_name": metric.name,
-                        "value": value if value is not None else point.value_text or point.raw_value_text,
+                        "value": value,
                         "unit": metric.unit,
-                        "quality": point.quality,
+                        "quality": point.get("quality"),
                     }
                 )
             if numeric_values:
@@ -102,4 +95,3 @@ class UPSPerformanceGenerator(BaseReportGenerator):
                 )
             ],
         )
-

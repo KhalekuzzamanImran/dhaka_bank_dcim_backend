@@ -11,6 +11,7 @@ from apps.notifications.models import NotificationChannel, NotificationStatus
 from apps.telemetry.models import MetricDefinition
 
 from ..constants import normalize_key
+from .device_metrics import get_device_for_user, get_device_metric_options
 
 
 SUPPORTED_TEMPLATE_OUTPUT_FORMATS = ["csv", "xlsx", "pdf"]
@@ -289,14 +290,20 @@ def _as_dict(value, *, field_name: str) -> dict:
     return dict(value)
 
 
-def _normalize_columns(value, *, field_name: str) -> list[str]:
+def _normalize_columns(value, *, field_name: str, allowed_columns: list[str] | None = None) -> list[str]:
     columns = _as_list(value)
     if not columns:
         return []
+    allowed_map = {
+        str(column).strip().lower(): str(column).strip()
+        for column in (allowed_columns or [])
+        if str(column).strip()
+    }
     normalized: list[str] = []
     for column in columns:
-        if column not in normalized:
-            normalized.append(column)
+        canonical = allowed_map.get(str(column).strip().lower(), str(column).strip())
+        if canonical and canonical not in normalized:
+            normalized.append(canonical)
     return normalized
 
 
@@ -304,15 +311,21 @@ def _normalize_metric_codes(value, *, field_name: str) -> list[str]:
     codes = _as_list(value)
     if not codes:
         return []
-    active_codes = set(MetricDefinition.objects.filter(is_active=True, code__in=codes).values_list("code", flat=True))
-    missing = [code for code in codes if code not in active_codes]
+    active_code_map = {
+        str(code).strip().lower(): str(code).strip()
+        for code in MetricDefinition.objects.filter(is_active=True).values_list("code", flat=True)
+        if str(code).strip()
+    }
+    normalized_input = [str(code).strip() for code in codes if str(code).strip()]
+    missing = [code for code in normalized_input if code.lower() not in active_code_map]
     if missing:
         raise ValidationError({field_name: f"Unknown or inactive metric code(s): {', '.join(missing)}."})
     normalized: list[str] = []
-    for code in codes:
-        if code not in active_codes or code in normalized:
+    for code in normalized_input:
+        canonical = active_code_map.get(code.lower())
+        if canonical is None or canonical in normalized:
             continue
-        normalized.append(code)
+        normalized.append(canonical)
     return normalized
 
 
@@ -354,6 +367,7 @@ def validate_report_template_config(config, *, existing_config: dict | None = No
         normalized["default_columns"] = _normalize_columns(
             normalized.get("default_columns"),
             field_name="default_columns",
+            allowed_columns=list(options.get("available_columns", [])),
         )
 
     if "default_parameters" in normalized:
@@ -395,7 +409,7 @@ def validate_report_template_config(config, *, existing_config: dict | None = No
     return normalized
 
 
-def build_report_template_options(template) -> dict:
+def build_report_template_options(template, *, user=None, device_id=None) -> dict:
     definition_code = str(getattr(getattr(template, "definition", None), "code", None) or "").strip().upper()
     if not definition_code:
         raise ValidationError({"definition": "Unsupported report definition."})
@@ -440,6 +454,18 @@ def build_report_template_options(template) -> dict:
             }
             for device_type in DeviceType.objects.all().order_by("name")
         ]
+    if definition_code == "TELEMETRY_EXPORT" and device_id not in (None, ""):
+        device = get_device_for_user(user, device_id)
+        response["device_summary"] = {
+            "id": str(device.pk),
+            "name": getattr(device, "name", None),
+            "code": getattr(device, "code", None),
+            "device_type": getattr(getattr(device, "device_type", None), "name", None),
+            "device_model": getattr(getattr(device, "device_model", None), "name", None),
+            "status": getattr(device, "status", None),
+        }
+        response["device_metric_options"] = get_device_metric_options(device)
+        field_options["device_metric_options"] = response["device_metric_options"]
 
     response["field_options"] = field_options
     return response

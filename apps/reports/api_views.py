@@ -236,7 +236,11 @@ class ReportTemplateViewSet(ScopedModelViewSet):
     def options(self, request, pk=None):
         template = self.get_object()
         try:
-            data = build_report_template_options(template)
+            data = build_report_template_options(
+                template,
+                user=request.user,
+                device_id=request.query_params.get("device_id"),
+            )
         except ValidationError as exc:
             raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages)
         return Response(data)

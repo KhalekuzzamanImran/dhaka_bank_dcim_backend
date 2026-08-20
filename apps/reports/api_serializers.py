@@ -303,6 +303,7 @@ class ReportDashboardResponseSerializer(serializers.Serializer):
     range = serializers.JSONField(read_only=True)
     summary = serializers.JSONField(read_only=True)
     generation_trend = serializers.JSONField(read_only=True)
+    generation_trend_current_month = serializers.JSONField(read_only=True)
     by_definition = serializers.JSONField(read_only=True)
     by_format = serializers.JSONField(read_only=True)
     delivery_summary = serializers.JSONField(read_only=True)

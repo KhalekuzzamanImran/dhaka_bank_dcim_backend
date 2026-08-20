@@ -307,6 +307,40 @@ def _generation_trend(scope: DashboardScope) -> list[dict]:
     return trend
 
 
+def _current_month_generation_trend(scope: DashboardScope) -> list[dict]:
+    jobs_qs = _apply_scope(ReportJob.objects.all(), scope, organization_field="organization", data_center_field="data_center")
+    now_local = dj_timezone.now().astimezone(scope.timezone)
+    month_start_date = now_local.date().replace(day=1)
+    month_start = dj_timezone.make_aware(datetime.combine(month_start_date, time_cls.min), scope.timezone)
+    month_end = now_local
+    rows = (
+        jobs_qs.filter(created_at__gte=month_start, created_at__lte=month_end)
+        .annotate(day=TruncDate("created_at", tzinfo=scope.timezone))
+        .values("day")
+        .annotate(
+            total=Count("id"),
+            completed=Count("id", filter=Q(status="COMPLETED")),
+            failed=Count("id", filter=Q(status="FAILED")),
+        )
+        .order_by("day")
+    )
+    by_day = {row["day"]: row for row in rows}
+    trend = []
+    current_day = month_start_date
+    while current_day <= now_local.date():
+        row = by_day.get(current_day)
+        trend.append(
+            {
+                "date": current_day.isoformat(),
+                "total": int(row["total"]) if row else 0,
+                "completed": int(row["completed"]) if row else 0,
+                "failed": int(row["failed"]) if row else 0,
+            }
+        )
+        current_day += timedelta(days=1)
+    return trend
+
+
 def _reports_by_definition(scope: DashboardScope) -> list[dict]:
     jobs_qs = _apply_scope(ReportJob.objects.select_related("definition"), scope, organization_field="organization", data_center_field="data_center")
     rows = (
@@ -732,6 +766,7 @@ def get_reporting_dashboard(*, user, organization=None, data_center=None, start_
         },
         "summary": summary,
         "generation_trend": _generation_trend(scope),
+        "generation_trend_current_month": _current_month_generation_trend(scope),
         "by_definition": _reports_by_definition(scope),
         "by_format": _reports_by_format(scope),
         "delivery_summary": _delivery_summary(scope),

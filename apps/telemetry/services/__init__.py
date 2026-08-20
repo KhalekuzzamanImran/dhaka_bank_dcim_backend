@@ -20,6 +20,7 @@ from apps.telemetry.models import (
     TelemetryPoint,
 )
 from .ingestion import store_telemetry_point
+from .history import get_telemetry_history_rows, resolve_history_plan
 
 
 def _refresh_scopes(device):
@@ -145,4 +146,4 @@ def ingest_points(points, source="api"):
     return ingest_id, created
 
 
-__all__ = ["ingest_points", "store_telemetry_point"]
+__all__ = ["ingest_points", "store_telemetry_point", "get_telemetry_history_rows", "resolve_history_plan"]

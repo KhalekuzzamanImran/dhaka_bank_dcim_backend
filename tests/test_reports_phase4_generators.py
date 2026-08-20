@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import zipfile
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -18,6 +19,7 @@ from apps.reports.enums import ReportTriggerSource
 from apps.reports.generators import BaseReportGenerator, GeneratorContext, ReportDataset, ReportTable, get_generator_class, get_supported_formats, register_generator
 from apps.reports.models import ReportDefinition, ReportJob, ReportJobStatus, ReportTemplate
 from apps.reports.services.factory import build_report_template_snapshot, build_scope_snapshot, create_report_job
+from apps.reports.services.telemetry_history import fetch_telemetry_report_rows
 from apps.reports.services.execution import generate_report_job
 from apps.reports.services.definitions import get_active_definition_by_code
 from apps.telemetry.models import MetricCategory, MetricDataType, MetricDefinition, TelemetryPoint
@@ -259,6 +261,117 @@ class ReportPhase4GeneratorTestCase(TestCase):
         self.assertIn("24.6", content)
         self.assertIn("51.2", content)
 
+    @patch("apps.reports.services.telemetry_history._fetch_raw_rows")
+    @patch("apps.reports.services.telemetry_history._fetch_aggregate_rows")
+    @patch("apps.reports.services.telemetry_history._relation_exists", return_value=True)
+    @patch("apps.reports.services.telemetry_history._has_timescaledb", return_value=True)
+    def test_telemetry_report_rows_use_continuous_aggregates_for_long_ranges(
+        self,
+        _has_timescaledb,
+        _relation_exists,
+        fetch_aggregate_rows,
+        fetch_raw_rows,
+    ):
+        metric = MetricDefinition.objects.get(code="room_temperature")
+        now = timezone.now()
+        fetch_aggregate_rows.return_value = [
+            {
+                "time": now - timedelta(hours=2),
+                "organization_id": self.org.id,
+                "data_center_id": self.dc.id,
+                "device_id": self.device.id,
+                "metric_id": metric.id,
+                "avg_value": 18.25,
+                "min_value": 18.1,
+                "max_value": 18.4,
+                "last_observed_at": now - timedelta(hours=2),
+                "sample_count": 6,
+                "source": "telemetry_5m",
+                "quality": "BUCKETED",
+            }
+        ]
+
+        rows, metrics = fetch_telemetry_report_rows(
+            organization=self.org,
+            data_center=self.dc,
+            metric_codes=["room_temperature"],
+            parameters={
+                "date_from": (now - timedelta(days=18)).isoformat(),
+                "date_to": now.isoformat(),
+                "device_id": str(self.device.id),
+            },
+        )
+
+        self.assertEqual(fetch_raw_rows.call_count, 0)
+        self.assertEqual(fetch_aggregate_rows.call_count, 1)
+        self.assertEqual(len(metrics), 1)
+        self.assertEqual(rows[0]["source"], "telemetry_5m")
+        self.assertEqual(rows[0]["metric_code"], "room_temperature")
+        self.assertEqual(rows[0]["value"], 18.25)
+        self.assertEqual(rows[0]["quality"], "BUCKETED")
+
+    @patch("apps.reports.services.telemetry_history._fetch_raw_rows")
+    @patch("apps.reports.services.telemetry_history._fetch_aggregate_rows")
+    @patch("apps.reports.services.telemetry_history._relation_exists", return_value=True)
+    @patch("apps.reports.services.telemetry_history._has_timescaledb", return_value=True)
+    def test_telemetry_report_rows_fall_back_to_raw_when_aggregate_is_empty(
+        self,
+        _has_timescaledb,
+        _relation_exists,
+        fetch_aggregate_rows,
+        fetch_raw_rows,
+    ):
+        metric = MetricDefinition.objects.get(code="room_temperature")
+        now = timezone.now()
+        fetch_aggregate_rows.return_value = []
+        fetch_raw_rows.return_value = [
+            {
+                "time": now - timedelta(hours=2),
+                "organization_id": self.org.id,
+                "data_center_id": self.dc.id,
+                "device_id": self.device.id,
+                "device_name": self.device.name,
+                "device_code": self.device.code,
+                "room_name": self.room.name,
+                "room_code": self.room.code,
+                "rack_name": self.rack.name,
+                "rack_code": self.rack.code,
+                "device_model_name": self.device_model.name,
+                "device_type_name": self.device_type.name,
+                "metric_id": metric.id,
+                "metric_code": metric.code,
+                "metric_name": metric.name,
+                "unit": metric.unit,
+                "quality": "GOOD",
+                "source": "sensor",
+                "value_float": 18.4,
+                "value_integer": None,
+                "value_boolean": None,
+                "value_text": None,
+                "raw_value_text": "18.4",
+            }
+        ]
+
+        rows, metrics = fetch_telemetry_report_rows(
+            organization=self.org,
+            data_center=self.dc,
+            metric_codes=["room_temperature"],
+            parameters={
+                "date_from": (now - timedelta(hours=12)).isoformat(),
+                "date_to": now.isoformat(),
+                "device_id": str(self.device.id),
+            },
+        )
+
+        self.assertEqual(fetch_aggregate_rows.call_count, 1)
+        self.assertEqual(fetch_raw_rows.call_count, 1)
+        self.assertEqual(len(metrics), 1)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["source"], "sensor")
+        self.assertEqual(rows[0]["metric_code"], "room_temperature")
+        self.assertEqual(rows[0]["value"], 18.4)
+        self.assertEqual(rows[0]["quality"], "GOOD")
+
     def test_xlsx_generation_creates_valid_workbook(self):
         template = self._template(
             code="PHASE4_DEVICE_INVENTORY_XLSX",
@@ -277,6 +390,12 @@ class ReportPhase4GeneratorTestCase(TestCase):
             self.assertIn("xl/workbook.xml", names)
             self.assertIn("xl/worksheets/sheet1.xml", names)
             self.assertIn("xl/worksheets/sheet2.xml", names)
+            self.assertIn("xl/worksheets/sheet3.xml", names)
+            sheet1 = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+            self.assertIn("Report Info", archive.read("xl/workbook.xml").decode("utf-8"))
+            self.assertIn("organization", sheet1)
+            self.assertIn("data_center", sheet1)
+            self.assertIn("generated_at", sheet1)
 
     def test_pdf_generation_creates_valid_pdf(self):
         template = self._template(
@@ -294,6 +413,131 @@ class ReportPhase4GeneratorTestCase(TestCase):
             content = handle.read()
         self.assertTrue(content.startswith(b"%PDF-1.4"))
         self.assertIn(b"Confidential - Dhaka Bank DCIM report", content)
+
+    def test_pdf_generation_renders_custom_header_on_first_page_only(self):
+        template = self._template(
+            code="PHASE4_DEVICE_INVENTORY_PDF_LAYOUT",
+            definition=self._definition("DEVICE_INVENTORY"),
+            report_type="device_inventory",
+            output_format="pdf",
+            primary_format="PDF",
+        )
+        template.config = {
+            **template.config,
+            "report_header": {
+                "enabled": True,
+                "brand_banner": {
+                    "enabled": True,
+                    "label": "Dhaka Bank DCIM",
+                    "subtitle": "Operations",
+                },
+                "title": "Quarterly Operations Report",
+                "subtitle": "Primary Data Center",
+                "show_organization": True,
+                "show_data_center": True,
+                "show_generated_at": True,
+            },
+            "report_footer": {
+                "enabled": True,
+                "custom_text": "For authorized internal use only",
+                "show_confidentiality_note": True,
+                "show_page_number": True,
+            },
+        }
+        template.save(update_fields=["config", "updated_at"])
+
+        job = self._inventory_job(template)
+        generated = generate_report_job(job.id)
+        artifact = self._primary_artifact(generated)
+        self.assertIsNotNone(artifact)
+        with artifact.file.open("rb") as handle:
+            content = handle.read()
+        self.assertIn(b"Dhaka Bank DCIM", content)
+        self.assertIn(b"Operations", content)
+        self.assertIn(b"Quarterly Operations Report", content)
+        self.assertIn(b"Primary Data Center", content)
+        self.assertIn(b"For authorized internal use only", content)
+        self.assertIn(b"Confidential - Dhaka Bank DCIM report", content)
+        self.assertIn(b"Page 1 of", content)
+
+    def test_csv_generation_applies_default_columns_and_metadata_lines(self):
+        now = timezone.now()
+        temperature_metric = MetricDefinition.objects.get(code="pac_room_temperature")
+        TelemetryPoint.objects.create(
+            organization=self.org,
+            data_center=self.dc,
+            device=self.device,
+            metric=temperature_metric,
+            time=now - timedelta(minutes=20),
+            value_float=18.1,
+            raw_value_text="18.1",
+            quality="GOOD",
+            source="sensor",
+        )
+        template = self._template(
+            code="PHASE4_TELEMETRY_EXPORT_CSV_METADATA",
+            definition=self._definition("TELEMETRY_EXPORT"),
+            report_type="telemetry_export",
+            output_format="csv",
+            primary_format="CSV",
+            default_parameters={"metric_codes": ["pac_room_temperature"]},
+        )
+        template.config = {
+            **template.config,
+            "default_columns": ["TIMESTAMP", "DEVICE", "METRIC_CODE", "VALUE"],
+            "report_header": {
+                "enabled": True,
+                "title": "Telemetry Export",
+                "subtitle": "Historical telemetry export",
+                "brand_banner": {
+                    "enabled": True,
+                    "label": "Dhaka Bank DCIM",
+                    "subtitle": "Operational reporting",
+                },
+            },
+            "report_footer": {
+                "enabled": True,
+                "custom_text": "For authorized internal use only",
+                "show_confidentiality_note": True,
+            },
+        }
+        template.save(update_fields=["config", "updated_at"])
+        job = create_report_job(
+            definition=template.definition,
+            organization=self.org,
+            data_center=self.dc,
+            template=template,
+            requested_by=self.user,
+            trigger_source=ReportTriggerSource.MANUAL,
+            parameters={
+                "date_from": (now - timedelta(hours=1)).isoformat(),
+                "date_to": (now + timedelta(hours=1)).isoformat(),
+                "metric_codes": ["pac_room_temperature"],
+            },
+            queue_job=False,
+        ).job
+        generated = generate_report_job(job.id)
+        artifact = self._primary_artifact(generated)
+        self.assertIsNotNone(artifact)
+        with artifact.file.open("rb") as handle:
+            content = handle.read().decode("utf-8")
+
+        lines = [line for line in content.splitlines() if line and not line.startswith("#")]
+        self.assertGreaterEqual(len(lines), 2)
+        self.assertIn("timestamp,device,metric_code,value", lines)
+        self.assertIn("Dhaka Bank DCIM | Report Header", content)
+        self.assertIn("==========================================================================", content)
+        self.assertIn("--------------------------------------------------------------------------", content)
+        self.assertIn("Report Footer", content)
+        self.assertIn("Footer Text", content)
+        self.assertIn("For authorized internal use only", content)
+        self.assertIn("Confidentiality Note", content)
+        self.assertIn("Confidential - Dhaka Bank DCIM report", content)
+        self.assertNotIn("Brand Banner", content)
+        self.assertNotIn("Report Details", content)
+        self.assertNotIn("Generation", content)
+        self.assertNotIn("Page Number", content)
+        self.assertIn("18.1", content)
 
     def test_generation_uses_snapshot_and_completed_jobs_are_not_regenerated(self):
         temperature_metric = MetricDefinition.objects.get(code="pac_room_temperature")
@@ -359,6 +603,68 @@ class ReportPhase4GeneratorTestCase(TestCase):
         self.assertIsNotNone(regenerated_artifact)
         self.assertEqual(regenerated_artifact.file.name, artifact.file.name)
         self.assertEqual(regenerated.updated_at, updated_at)
+
+    def test_telemetry_export_pdf_handles_aggregate_sized_reports(self):
+        temperature_metric = MetricDefinition.objects.get(code="room_temperature")
+        humidity_metric = MetricDefinition.objects.get(code="room_humidity")
+        start = timezone.now() - timedelta(days=5)
+        end = start + timedelta(minutes=30 * 250)
+        for index in range(251):
+            stamp = start + timedelta(minutes=30 * index)
+            TelemetryPoint.objects.create(
+                organization=self.org,
+                data_center=self.dc,
+                device=self.device,
+                metric=temperature_metric,
+                time=stamp,
+                value_float=20.0 + (index % 4) * 0.1,
+                raw_value_text=str(20.0 + (index % 4) * 0.1),
+                quality="GOOD",
+                source="sensor",
+            )
+            TelemetryPoint.objects.create(
+                organization=self.org,
+                data_center=self.dc,
+                device=self.device,
+                metric=humidity_metric,
+                time=stamp,
+                value_float=48.0 + (index % 5) * 0.2,
+                raw_value_text=str(48.0 + (index % 5) * 0.2),
+                quality="GOOD",
+                source="sensor",
+            )
+
+        template = self._template(
+            code="PHASE4_TELEMETRY_EXPORT_PDF",
+            definition=self._definition("TELEMETRY_EXPORT"),
+            report_type="telemetry_export",
+            output_format="pdf",
+            primary_format="PDF",
+            default_parameters={"metric_codes": ["room_temperature", "room_humidity"]},
+        )
+        job = create_report_job(
+            definition=template.definition,
+            organization=self.org,
+            data_center=self.dc,
+            template=template,
+            requested_by=self.user,
+            trigger_source=ReportTriggerSource.MANUAL,
+            parameters={
+                "date_from": start.isoformat(),
+                "date_to": end.isoformat(),
+                "metric_codes": ["room_temperature", "room_humidity"],
+            },
+            queue_job=False,
+        ).job
+        generated = generate_report_job(job.id)
+        artifact = self._primary_artifact(generated)
+        self.assertIsNotNone(artifact)
+        self.assertEqual(generated.status, ReportJobStatus.COMPLETED)
+        self.assertEqual(artifact.format, "PDF")
+        with artifact.file.open("rb") as handle:
+            content = handle.read()
+        self.assertTrue(content.startswith(b"%PDF-1.4"))
+        self.assertIn(b"Telemetry Export", content)
 
     def test_unsupported_definition_format_is_rejected(self):
         class CsvOnlyGenerator(BaseReportGenerator):

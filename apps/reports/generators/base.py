@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Iterable, Mapping
@@ -79,11 +80,41 @@ class BaseReportGenerator:
         timestamp = context.generated_at.strftime("%Y%m%d_%H%M%S")
         return f"{prefix}_{context.job.pk}_{timestamp}.{output_format.lower()}"
 
+    def _apply_template_default_columns(self, context: GeneratorContext, dataset: ReportDataset) -> ReportDataset:
+        template_snapshot = context.template_snapshot if isinstance(context.template_snapshot, dict) else {}
+        configuration = template_snapshot.get("configuration") if isinstance(template_snapshot.get("configuration"), dict) else {}
+        default_columns = configuration.get("default_columns")
+        if not isinstance(default_columns, list) or not default_columns:
+            return dataset
+
+        primary_table = dataset.primary_table
+        if primary_table is None:
+            return dataset
+
+        column_lookup = {
+            str(column).strip().lower(): str(column).strip()
+            for column in primary_table.columns
+            if str(column).strip()
+        }
+        selected_columns = []
+        for column in default_columns:
+            candidate = str(column).strip()
+            canonical = column_lookup.get(candidate.lower())
+            if canonical and canonical not in selected_columns:
+                selected_columns.append(canonical)
+        if not selected_columns or selected_columns == list(primary_table.columns):
+            return dataset
+
+        updated_primary_table = replace(primary_table, columns=selected_columns)
+        tables = [updated_primary_table if table is primary_table else table for table in dataset.tables]
+        return replace(dataset, tables=tables)
+
     def render(self, context: GeneratorContext, dataset: ReportDataset, output_format: str, output_path: str) -> RenderedArtifact:
         from .csv_renderer import render_csv
         from .pdf_renderer import render_pdf
         from .xlsx_renderer import render_xlsx
 
+        dataset = self._apply_template_default_columns(context, dataset)
         normalized = str(output_format or "").strip().upper()
         if normalized == "CSV":
             return render_csv(dataset, context, output_path, self.get_filename(context, normalized))

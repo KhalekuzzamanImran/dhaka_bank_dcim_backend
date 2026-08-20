@@ -10,6 +10,7 @@ from apps.datacenters.models import DataCenter
 from apps.devices.models import Device, DeviceCategory, DeviceType
 from apps.organizations.models import Organization
 from apps.telemetry.models import MetricCategory, MetricDataType, MetricDefinition, TelemetryPoint
+from apps.telemetry.services.history import resolve_history_plan
 
 
 class TelemetryHistoryTests(TestCase):
@@ -110,9 +111,9 @@ class TelemetryHistoryTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["count"], 6)
+        self.assertEqual(response.json()["count"], 3)
         values = [row["value"] for row in response.json()["results"]]
-        self.assertEqual(values, [None, 31.0, None, 35.0, None, 41.0])
+        self.assertEqual(values, [31.0, 35.0, 41.0])
 
     def test_history_is_scoped_by_organization(self):
         self.client.force_authenticate(user=self.user)
@@ -143,3 +144,20 @@ class TelemetryHistoryTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
+
+    def test_history_plan_routes_expected_windows(self):
+        plan_6h = resolve_history_plan(self.now - timedelta(hours=6), self.now)
+        plan_24h = resolve_history_plan(self.now - timedelta(hours=24), self.now)
+        plan_7d = resolve_history_plan(self.now - timedelta(days=7), self.now)
+        plan_30d = resolve_history_plan(self.now - timedelta(days=30), self.now)
+        plan_90d = resolve_history_plan(self.now - timedelta(days=90), self.now)
+        plan_6m = resolve_history_plan(self.now - timedelta(days=183), self.now)
+        plan_1y = resolve_history_plan(self.now - timedelta(days=365), self.now)
+
+        self.assertEqual((plan_6h.source, plan_6h.target_bucket), ("raw", None))
+        self.assertEqual((plan_24h.source, plan_24h.target_bucket.total_seconds()), ("telemetry_5m", 300.0))
+        self.assertEqual((plan_7d.source, plan_7d.target_bucket.total_seconds()), ("telemetry_5m", 1800.0))
+        self.assertEqual((plan_30d.source, plan_30d.target_bucket.total_seconds()), ("telemetry_1h", 3600.0))
+        self.assertEqual((plan_90d.source, plan_90d.target_bucket.total_seconds()), ("telemetry_1h", 10800.0))
+        self.assertEqual((plan_6m.source, plan_6m.target_bucket.total_seconds()), ("telemetry_1h", 21600.0))
+        self.assertEqual((plan_1y.source, plan_1y.target_bucket.total_seconds()), ("telemetry_1d", 86400.0))

@@ -19,6 +19,7 @@ from ..models import (
     ReportScheduleRunStatus,
 )
 from .definitions import validate_definition_request
+from .device_metrics import get_device_for_user, get_device_supported_metric_codes
 from .permissions import ensure_data_center_access, ensure_organization_access, ensure_schedule_scope, ensure_template_scope
 from .templates import build_report_template_snapshot
 
@@ -235,6 +236,29 @@ def create_report_job(
 
     merged_parameters = _merge_parameters(definition, template, schedule, parameters, runtime_parameters)
     runtime_parameters = deepcopy(runtime_parameters or {})
+
+    if resolved_definition and str(getattr(resolved_definition, "code", "") or "").strip().upper() == "TELEMETRY_EXPORT":
+        selected_device_id = merged_parameters.get("device_id")
+        if selected_device_id not in (None, ""):
+            device = get_device_for_user(actor or requested_by, selected_device_id)
+            if device.organization_id != organization.id:
+                raise ValidationError({"device_id": "Selected device must belong to the selected organization."})
+            allowed_metric_codes = get_device_supported_metric_codes(device)
+            if not allowed_metric_codes:
+                raise ValidationError({"device_id": "Selected device does not expose any telemetry metrics."})
+            selected_metric_codes = merged_parameters.get("metric_codes") or []
+            if not isinstance(selected_metric_codes, list):
+                raise ValidationError({"metric_codes": "Metric codes must be a list."})
+            normalized_selected_metric_codes = [str(value).strip().upper() for value in selected_metric_codes if str(value).strip()]
+            if normalized_selected_metric_codes:
+                invalid_metric_codes = [code for code in normalized_selected_metric_codes if code not in allowed_metric_codes]
+                if invalid_metric_codes:
+                    raise ValidationError({
+                        "metric_codes": f"Selected metric code(s) are not valid for the chosen device: {', '.join(invalid_metric_codes)}."
+                    })
+                merged_parameters["metric_codes"] = normalized_selected_metric_codes
+            else:
+                merged_parameters["metric_codes"] = allowed_metric_codes
 
     template_snapshot = build_template_snapshot(template)
     parameters_snapshot = build_parameters_snapshot(merged_parameters)

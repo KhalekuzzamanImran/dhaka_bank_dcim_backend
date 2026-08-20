@@ -42,6 +42,7 @@ REPORT_DEFINITION_SEEDS = [
             "properties": {
                 "date_from": {"type": ["string", "null"]},
                 "date_to": {"type": ["string", "null"]},
+                "device_id": {"type": ["string", "null"]},
                 "metric_codes": {"type": "array", "items": {"type": "string"}},
                 "default_columns": {"type": "array", "items": {"type": "string"}},
                 "aggregation": {"type": ["string", "null"]},

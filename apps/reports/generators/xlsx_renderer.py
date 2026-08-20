@@ -53,35 +53,122 @@ def _escape_formula_injection(value: str) -> str:
     return value
 
 
-def _cell_xml(column_index: int, row_index: int, value) -> str:
+def _cell_xml(column_index: int, row_index: int, value, *, style_index: int = 0) -> str:
     cell_ref = f"{_column_letter(column_index)}{row_index}"
     if value in (None, ""):
         return ""
     if isinstance(value, bool):
-        return f'<c r="{cell_ref}" t="b"><v>{1 if value else 0}</v></c>'
+        style_attr = f' s="{style_index}"' if style_index else ""
+        return f'<c r="{cell_ref}"{style_attr} t="b"><v>{1 if value else 0}</v></c>'
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return f'<c r="{cell_ref}"><v>{value}</v></c>'
+        style_attr = f' s="{style_index}"' if style_index else ""
+        return f'<c r="{cell_ref}"{style_attr}><v>{value}</v></c>'
     if isinstance(value, datetime):
-        return f'<c r="{cell_ref}" s="1"><v>{_excel_serial(value)}</v></c>'
+        return f'<c r="{cell_ref}" s="{style_index or 1}"><v>{_excel_serial(value)}</v></c>'
     text = _escape_formula_injection(str(value))
-    return f'<c r="{cell_ref}" t="inlineStr"><is><t xml:space="preserve">{escape(text)}</t></is></c>'
+    style_attr = f' s="{style_index}"' if style_index else ""
+    return f'<c r="{cell_ref}"{style_attr} t="inlineStr"><is><t xml:space="preserve">{escape(text)}</t></is></c>'
+
+
+def _template_config(context: GeneratorContext) -> dict:
+    template_snapshot = context.template_snapshot if isinstance(context.template_snapshot, dict) else {}
+    configuration = template_snapshot.get("configuration")
+    return configuration if isinstance(configuration, dict) else {}
+
+
+def _as_bool(value, default=False) -> bool:
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _date_range_label(context: GeneratorContext) -> str | None:
+    start_value = context.parameters.get("date_from") or context.parameters.get("start_date")
+    end_value = context.parameters.get("date_to") or context.parameters.get("end_date")
+    if not start_value and not end_value:
+        return None
+    if start_value and end_value:
+        return f"{start_value} to {end_value}"
+    return str(start_value or end_value)
+
+
+def _report_info_rows(context: GeneratorContext) -> list[dict[str, str]]:
+    config = _template_config(context)
+    header_config = config.get("report_header") if isinstance(config.get("report_header"), dict) else {}
+    footer_config = config.get("report_footer") if isinstance(config.get("report_footer"), dict) else {}
+    banner_config = header_config.get("brand_banner") if isinstance(header_config.get("brand_banner"), dict) else {}
+
+    rows: list[dict[str, str]] = [
+        {"section": "banner", "label": "label", "value": str(banner_config.get("label") or getattr(context.organization, "name", None) or "Dhaka Bank DCIM")},
+        {"section": "banner", "label": "subtitle", "value": str(banner_config.get("subtitle") or "Operational reporting")},
+        {"section": "report", "label": "title", "value": str(header_config.get("title") or context.job.template_snapshot.get("name") or context.definition.code or "Report Export") if _as_bool(header_config.get("show_title"), True) else "--"},
+        {"section": "report", "label": "subtitle", "value": str(header_config.get("subtitle") or "--") if _as_bool(header_config.get("show_subtitle"), True) else "--"},
+        {"section": "report", "label": "type", "value": str(context.definition.code or "--")},
+        {"section": "report", "label": "output_format", "value": str(context.output_config_snapshot.get("primary_format") or context.output_config_snapshot.get("output_format") or "--")},
+        {"section": "report", "label": "generated_at", "value": context.generated_at.strftime("%d %b %Y, %H:%M")},
+        {"section": "scope", "label": "organization", "value": getattr(context.organization, "name", None) or "--"},
+        {"section": "scope", "label": "data_center", "value": getattr(context.data_center, "name", None) or "All"},
+    ]
+
+    device_label = None
+    selected_devices = context.scope_snapshot.get("selected_devices") if isinstance(context.scope_snapshot, dict) else []
+    if isinstance(selected_devices, list) and selected_devices:
+        first_device = selected_devices[0] if isinstance(selected_devices[0], dict) else {}
+        device_label = first_device.get("name") or first_device.get("code")
+    if device_label:
+        rows.append({"section": "scope", "label": "device", "value": str(device_label)})
+
+    date_range = _date_range_label(context)
+    if date_range:
+        rows.append({"section": "scope", "label": "date_range", "value": date_range})
+
+    if _as_bool(header_config.get("enabled"), True):
+        rows.extend(
+            [
+                {"section": "header", "label": "subtitle", "value": str(header_config.get("subtitle") or "") or "--"},
+                {"section": "header", "label": "show_organization", "value": "TRUE" if _as_bool(header_config.get("show_organization"), True) else "FALSE"},
+                {"section": "header", "label": "show_data_center", "value": "TRUE" if _as_bool(header_config.get("show_data_center"), True) else "FALSE"},
+                {"section": "header", "label": "show_device", "value": "TRUE" if _as_bool(header_config.get("show_device"), False) else "FALSE"},
+                {"section": "header", "label": "show_date_range", "value": "TRUE" if _as_bool(header_config.get("show_date_range"), True) else "FALSE"},
+                {"section": "header", "label": "show_generated_at", "value": "TRUE" if _as_bool(header_config.get("show_generated_at"), True) else "FALSE"},
+                {"section": "header", "label": "show_generated_by", "value": "TRUE" if _as_bool(header_config.get("show_generated_by"), False) else "FALSE"},
+            ]
+        )
+
+    if _as_bool(footer_config.get("enabled"), True):
+        rows.extend(
+            [
+                {"section": "footer", "label": "text", "value": str(footer_config.get("custom_text") or "") or "--"},
+                {"section": "footer", "label": "show_confidentiality_note", "value": "TRUE" if _as_bool(footer_config.get("show_confidentiality_note"), True) else "FALSE"},
+                {"section": "footer", "label": "show_generated_at", "value": "TRUE" if _as_bool(footer_config.get("show_generated_at"), False) else "FALSE"},
+                {"section": "footer", "label": "show_timezone", "value": "TRUE" if _as_bool(footer_config.get("show_timezone"), False) else "FALSE"},
+                {"section": "footer", "label": "show_page_number", "value": "TRUE" if _as_bool(footer_config.get("show_page_number"), True) else "FALSE"},
+            ]
+        )
+
+    return rows
 
 
 def _render_sheet(table: ReportTable) -> str:
     rows_xml = []
-    header_row = "".join(_cell_xml(idx, 1, column) for idx, column in enumerate(table.columns, start=1))
+    header_row = "".join(_cell_xml(idx, 1, column, style_index=2) for idx, column in enumerate(table.columns, start=1))
     rows_xml.append(f'<row r="1">{header_row}</row>')
     max_widths = [len(str(column)) for column in table.columns]
     row_index = 2
     for row in table.rows:
         cells = []
+        row_style = 3 if table.name == "Report Info" and row.get("section") in {"banner", "report"} else 0
         for idx, column in enumerate(table.columns, start=1):
             value = row.get(column)
             if value is None:
                 value = ""
             if isinstance(value, str) and len(value) > max_widths[idx - 1]:
                 max_widths[idx - 1] = len(value)
-            cells.append(_cell_xml(idx, row_index, value))
+            cells.append(_cell_xml(idx, row_index, value, style_index=row_style))
         rows_xml.append(f'<row r="{row_index}">{"".join(cells)}</row>')
         row_index += 1
 
@@ -115,6 +202,13 @@ def render_xlsx(dataset: ReportDataset, context: GeneratorContext, output_path: 
     if not tables:
         raise ValueError("The dataset does not contain any table to render.")
 
+    info_table = ReportTable(
+        name="Report Info",
+        title="Report Info",
+        columns=["section", "label", "value"],
+        rows=_report_info_rows(context),
+        primary=False,
+    )
     summary_table = ReportTable(
         name="Summary",
         title="Summary",
@@ -122,7 +216,7 @@ def render_xlsx(dataset: ReportDataset, context: GeneratorContext, output_path: 
         rows=dataset.summary_rows or [{"label": "status", "value": "No summary available"}],
         primary=False,
     )
-    sheets = [summary_table, *tables]
+    sheets = [info_table, summary_table, *tables]
     sheet_xml = [_render_sheet(table) for table in sheets]
     safe_names = [_safe_sheet_name(table.title or table.name) for table in sheets]
 
@@ -181,13 +275,23 @@ def render_xlsx(dataset: ReportDataset, context: GeneratorContext, output_path: 
             "xl/styles.xml",
             """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
-  <fills count="1"><fill><patternFill patternType="none"/></fill></fills>
+  <fonts count="3">
+    <font><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="3">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF0B5FFF"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFE8F1FF"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
   <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
   <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-  <cellXfs count="2">
+  <cellXfs count="4">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
     <xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+    <xf numFmtId="0" fontId="2" fillId="1" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
   </cellXfs>
   <numFmts count="1">
     <numFmt numFmtId="164" formatCode="yyyy-mm-dd hh:mm:ss"/>

@@ -95,7 +95,10 @@ def resolve_scope_selection(
 
     room_ids = [str(value).strip() for value in (params.get("room_ids") or params.get("rooms") or []) if str(value).strip()]
     rack_ids = [str(value).strip() for value in (params.get("rack_ids") or params.get("racks") or []) if str(value).strip()]
+    device_id = str(params.get("device_id") or params.get("device") or "").strip()
     device_ids = [str(value).strip() for value in (params.get("device_ids") or params.get("devices") or []) if str(value).strip()]
+    if device_id:
+        device_ids = [device_id, *device_ids]
 
     if room_ids:
         selected_rooms = list(

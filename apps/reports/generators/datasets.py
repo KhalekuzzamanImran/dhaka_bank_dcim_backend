@@ -110,14 +110,24 @@ def normalize_telemetry_metric_codes(value) -> list[str]:
     codes = normalize_list(value)
     if not codes:
         return []
+
+    from apps.telemetry.models import MetricDefinition
+
+    active_code_map = {
+        str(code).strip().lower(): str(code).strip()
+        for code in MetricDefinition.objects.filter(is_active=True).values_list("code", flat=True)
+        if str(code).strip()
+    }
+
     normalized: list[str] = []
     seen = set()
     for code in codes:
-        canonical = TELEMETRY_METRIC_CODE_ALIASES.get(code, code)
-        if canonical in seen:
+        canonical = TELEMETRY_METRIC_CODE_ALIASES.get(code, TELEMETRY_METRIC_CODE_ALIASES.get(code.lower(), code))
+        matched = active_code_map.get(str(canonical).strip().lower())
+        if not matched or matched in seen:
             continue
-        seen.add(canonical)
-        normalized.append(canonical)
+        seen.add(matched)
+        normalized.append(matched)
     return normalized
 
 

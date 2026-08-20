@@ -20,7 +20,9 @@ from apps.datacenters.models import Rack
 from apps.devices.models import Device, DeviceModel, DeviceType, Vendor
 from apps.notifications.models import Notification, NotificationChannel, NotificationStatus
 from apps.organizations.models import Organization
+from apps.reports.enums import ReportTriggerSource
 from apps.reports.models import ReportArtifact, ReportDefinition, ReportJob, ReportJobStatus, ReportSchedule, ReportScheduleRecipient, ReportTemplate
+from apps.reports.services.factory import create_report_job
 from apps.reports.services.definitions import seed_report_definitions
 from apps.reports.services.execution import generate_report_job
 from apps.reports.services.schedules import execute_report_schedule
@@ -28,6 +30,7 @@ from apps.reports.services.deliveries import create_report_deliveries_for_job
 from apps.telemetry.models import MetricCategory, MetricDataType, MetricDefinition, TelemetryPoint
 from apps.datacenters.models import Room
 from apps.notifications.models import NotificationDelivery
+from apps.devices.models import ModbusRegisterMapping, SNMPOIDMapping
 
 
 class ReportTestCase(TestCase):
@@ -447,6 +450,88 @@ class ReportTestCase(TestCase):
         self.assertIn("timestamp", payload["available_columns"])
         self.assertEqual(payload["maximum_date_range_days"], 31)
         self.assertNotIn("secret", str(payload).lower())
+
+    def test_telemetry_export_options_and_job_snapshot_use_selected_device_metrics(self):
+        self.client.force_authenticate(user=self.user)
+        load_metric = MetricDefinition.objects.create(
+            code="ups_load_percent",
+            name="UPS Load",
+            category=MetricCategory.POWER,
+            data_type=MetricDataType.FLOAT,
+            unit="%",
+            is_active=True,
+        )
+        voltage_metric = MetricDefinition.objects.create(
+            code="ups_output_voltage",
+            name="UPS Output Voltage",
+            category=MetricCategory.POWER,
+            data_type=MetricDataType.FLOAT,
+            unit="V",
+            is_active=True,
+        )
+        SNMPOIDMapping.objects.create(
+            device_type=self.device_type,
+            device_model=self.device_model,
+            metric=load_metric,
+            oid="1.3.6.1.4.1.1",
+            is_active=True,
+        )
+        ModbusRegisterMapping.objects.create(
+            device_type=self.device_type,
+            device_model=self.device_model,
+            metric=voltage_metric,
+            register_address=100,
+            data_type="float32",
+            is_active=True,
+        )
+        template = self._template(
+            code="TELEMETRY_EXPORT_DEVICE_TEMPLATE",
+            report_type="telemetry_export",
+            config={
+                "report_type": "telemetry_export",
+                "output_format": "csv",
+                "default_columns": ["timestamp", "metric_code", "value"],
+                "max_date_range_days": 31,
+            },
+        )
+
+        response = self.client.get(f"/api/v1/reports/templates/{template.id}/options/", {"device_id": str(self.device.id)})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["definition_code"], "TELEMETRY_EXPORT")
+        self.assertEqual(payload["maximum_date_range_days"], 31)
+        self.assertEqual(
+            [item["code"] for item in payload["device_metric_options"]],
+            sorted([load_metric.code.upper(), voltage_metric.code.upper()], key=lambda value: value.lower()),
+        )
+        self.assertEqual(
+            [item["code"] for item in payload["field_options"]["device_metric_options"]],
+            [item["code"] for item in payload["device_metric_options"]],
+        )
+
+        result = create_report_job(
+            definition=template.definition,
+            organization=self.org,
+            actor=self.user,
+            data_center=self.dc,
+            template=template,
+            trigger_source=ReportTriggerSource.MANUAL,
+            requested_by=self.user,
+            parameters={
+                "report_type": "telemetry_export",
+                "device_id": str(self.device.id),
+                "date_from": "2026-08-01",
+                "date_to": "2026-08-02",
+            },
+            queue_job=False,
+        )
+        self.assertTrue(result.created)
+        self.assertEqual(result.job.parameters["device_id"], str(self.device.id))
+        self.assertEqual(
+            result.job.parameters["metric_codes"],
+            sorted([load_metric.code.upper(), voltage_metric.code.upper()], key=lambda value: value.lower()),
+        )
+        self.assertEqual(result.job.scope_snapshot["selected_devices"][0]["id"], str(self.device.id))
 
     def test_report_template_options_returns_404_for_inaccessible_template(self):
         self.client.force_authenticate(user=self.user)
@@ -919,14 +1004,20 @@ class ReportTestCase(TestCase):
             message="Recent alert",
             triggered_at=now - timedelta(hours=1),
         )
-        job = self._job(
+        job = create_report_job(
+            definition=template.definition,
+            organization=self.org,
+            data_center=self.dc,
             template=template,
+            requested_by=self.user,
+            trigger_source=ReportTriggerSource.MANUAL,
             parameters={
                 "report_type": "alert_summary",
                 "date_from": (now - timedelta(hours=2)).isoformat(),
                 "date_to": (now + timedelta(hours=2)).isoformat(),
             },
-        )
+            queue_job=False,
+        ).job
         generated = generate_report_job(job.id)
         with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
@@ -973,6 +1064,47 @@ class ReportTestCase(TestCase):
             content = handle.read().decode("utf-8")
         self.assertIn("Today alert", content)
         self.assertNotIn("Yesterday alert", content)
+
+    def test_alert_summary_default_columns_are_applied_case_insensitively(self):
+        template = self._template(code="ALERT_SUMMARY_TEMPLATE_COLUMNS", report_type="alert_summary")
+        template.config = {
+            **template.config,
+            "default_columns": ["TRIGGERED_AT", "MESSAGE", "STATUS"],
+        }
+        template.save(update_fields=["config", "updated_at"])
+        now = timezone.now()
+        AlertEvent.objects.create(
+            organization=self.org,
+            data_center=self.dc,
+            device=self.device,
+            metric=None,
+            alert_rule=None,
+            severity=AlertSeverity.WARNING,
+            status=AlertStatus.OPEN,
+            message="Alert summary row",
+            triggered_at=now - timedelta(hours=1),
+        )
+        job = create_report_job(
+            definition=template.definition,
+            organization=self.org,
+            data_center=self.dc,
+            template=template,
+            requested_by=self.user,
+            trigger_source=ReportTriggerSource.MANUAL,
+            parameters={
+                "report_type": "alert_summary",
+                "date_from": (now - timedelta(hours=2)).isoformat(),
+                "date_to": (now + timedelta(hours=2)).isoformat(),
+            },
+            queue_job=False,
+        ).job
+        generated = generate_report_job(job.id)
+        with self._artifact_file(generated).open("rb") as handle:
+            content = handle.read().decode("utf-8")
+        rows = [line for line in content.splitlines() if line and not line.startswith("#")]
+        self.assertGreaterEqual(len(rows), 2)
+        self.assertEqual(rows[0], "triggered_at,message,status")
+        self.assertIn("Alert summary row", content)
 
     def test_notification_delivery_report_respects_date_range(self):
         template = self._template(code="NOTIF_TEMPLATE", report_type="notification_delivery")
@@ -1421,7 +1553,8 @@ class ReportTestCase(TestCase):
         with self._artifact_file(generated).open("rb") as handle:
             content = handle.read().decode("utf-8")
         self.assertIn("timestamp,organization,data_center,room,rack,device,device_model,device_type,metric_code,metric_name,value,unit,quality", content)
-        self.assertEqual(len(content.strip().splitlines()), 1)
+        rows = [line for line in content.splitlines() if line and not line.startswith("#")]
+        self.assertEqual(len(rows), 1)
 
     def test_invalid_date_range_fails_cleanly(self):
         template = self._template(code="INVALID_DATE_TEMPLATE", report_type="alert_summary")
