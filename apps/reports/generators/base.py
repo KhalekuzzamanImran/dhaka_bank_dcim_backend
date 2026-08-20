@@ -81,9 +81,11 @@ class BaseReportGenerator:
         return f"{prefix}_{context.job.pk}_{timestamp}.{output_format.lower()}"
 
     def _apply_template_default_columns(self, context: GeneratorContext, dataset: ReportDataset) -> ReportDataset:
+        parameters = context.parameters if isinstance(context.parameters, dict) else {}
+        parameter_default_columns = parameters.get("default_columns")
         template_snapshot = context.template_snapshot if isinstance(context.template_snapshot, dict) else {}
         configuration = template_snapshot.get("configuration") if isinstance(template_snapshot.get("configuration"), dict) else {}
-        default_columns = configuration.get("default_columns")
+        default_columns = parameter_default_columns if isinstance(parameter_default_columns, list) and parameter_default_columns else configuration.get("default_columns")
         if not isinstance(default_columns, list) or not default_columns:
             return dataset
 

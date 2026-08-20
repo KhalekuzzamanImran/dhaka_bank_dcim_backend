@@ -588,11 +588,14 @@ class ReportScheduleReadSerializer(serializers.ModelSerializer):
     recipients = serializers.SerializerMethodField(read_only=True)
     sms_recipients = serializers.SerializerMethodField(read_only=True)
     send_sms = serializers.SerializerMethodField(read_only=True)
+    recipient_count = serializers.SerializerMethodField(read_only=True)
     created_by = serializers.SerializerMethodField(read_only=True)
     updated_by = serializers.SerializerMethodField(read_only=True)
     last_result = serializers.SerializerMethodField(read_only=True)
+    last_sent_at = serializers.DateTimeField(read_only=True)
     last_failure_at = serializers.SerializerMethodField(read_only=True)
     delivery_summary = serializers.SerializerMethodField(read_only=True)
+    validation_warnings = serializers.SerializerMethodField(read_only=True)
     allowed_actions = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
@@ -622,11 +625,14 @@ class ReportScheduleReadSerializer(serializers.ModelSerializer):
             "recipients",
             "sms_recipients",
             "send_sms",
+            "recipient_count",
             "primary_format",
             "attachment_formats",
             "last_result",
+            "last_sent_at",
             "last_failure_at",
             "delivery_summary",
+            "validation_warnings",
             "created_by",
             "updated_by",
             "created_at",
@@ -675,6 +681,11 @@ class ReportScheduleReadSerializer(serializers.ModelSerializer):
     def get_send_sms(self, obj):
         return bool(getattr(obj, "send_sms", False))
 
+    def get_recipient_count(self, obj):
+        structured = getattr(obj, "structured_recipients", None)
+        rows = structured.all() if structured is not None else []
+        return sum(1 for row in rows if getattr(row, "is_active", False))
+
     def get_created_by(self, obj):
         return _user_summary(getattr(obj, "created_by", None))
 
@@ -711,6 +722,60 @@ class ReportScheduleReadSerializer(serializers.ModelSerializer):
             },
             "channels": {},
         }
+
+    def get_validation_warnings(self, obj):
+        warnings = []
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        allowed_actions = [str(action).lower() for action in report_schedule_allowed_actions(user, obj)]
+        if "edit" not in allowed_actions and "update" not in allowed_actions:
+            warnings.append({
+                "code": "permission",
+                "level": "info",
+                "label": "Read-only access",
+                "detail": "You can view this schedule but cannot change it.",
+            })
+
+        structured = getattr(obj, "structured_recipients", None)
+        rows = list(structured.all()) if structured is not None else []
+        active_recipients = [row for row in rows if getattr(row, "is_active", False)]
+        if not active_recipients:
+            warnings.append({
+                "code": "recipients",
+                "level": "warning",
+                "label": "No active recipients",
+                "detail": "Add at least one active email or SMS recipient before enabling this schedule.",
+            })
+
+        if obj.start_at and obj.end_at and obj.end_at < obj.start_at:
+            warnings.append({
+                "code": "date_range",
+                "level": "warning",
+                "label": "Invalid date range",
+                "detail": "The schedule end date must be after the start date.",
+            })
+
+        supported_formats = []
+        if obj.template and obj.template.definition and isinstance(obj.template.definition.supported_formats, list):
+            supported_formats = [str(value).strip().upper() for value in obj.template.definition.supported_formats if str(value).strip()]
+        current_format = str(obj.primary_format or obj.output_format or "").strip().upper()
+        if current_format and supported_formats and current_format not in supported_formats:
+            warnings.append({
+                "code": "format",
+                "level": "warning",
+                "label": "Format compatibility",
+                "detail": f"{current_format} is not listed as a supported format for this template definition.",
+            })
+
+        if not obj.delivery_time:
+            warnings.append({
+                "code": "time",
+                "level": "warning",
+                "label": "Missing delivery time",
+                "detail": "Set a delivery time so the schedule can run automatically.",
+            })
+
+        return warnings
 
     def get_allowed_actions(self, obj):
         request = self.context.get("request")
@@ -853,6 +918,8 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
             raise serializers.ValidationError({"template": "A report template is required."})
         if not template.definition_id or not template.definition.is_active:
             raise serializers.ValidationError({"definition": "Selected report definition is inactive or unavailable."})
+        if start_at and end_at and end_at < start_at:
+            raise serializers.ValidationError({"end_at": "End date must be after start date."})
 
         raw_recipients = attrs.get("recipients") or []
         raw_sms_recipients = attrs.get("sms_recipients") or []
