@@ -422,7 +422,10 @@ def render_pdf(dataset: ReportDataset, context: GeneratorContext, output_path: s
         for table in (dataset.tables or [])
     ]
     total_rows = sum(len(table.rows) for table in tables)
-    if total_rows and total_rows > row_limit:
+    # Some generators intentionally disable the PDF row cap by passing 0/None.
+    # That keeps large-but-valid reports renderable while still allowing other
+    # generators to enforce a smaller safe threshold when needed.
+    if row_limit and total_rows and total_rows > row_limit:
         raise ValueError("PDF output is limited to smaller reports. Use CSV or XLSX for larger exports.")
 
     header_lines = _build_header_lines(context, dataset)

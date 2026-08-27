@@ -136,28 +136,41 @@ def build_device_activity_feed(device, *, active_limit: int = DEFAULT_ACTIVE_LIM
     recent_device_events_qs = DeviceEvent.objects.select_related("organization", "data_center", "device").filter(device=device).order_by("-occurred_at")
     recent_trap_events_qs = SNMPTrapEvent.objects.select_related("organization", "data_center", "device").filter(device=device).order_by("-received_at")
 
-    recent_items: list[dict] = []
+    alert_event_logs = []
     for log in recent_alert_logs_qs[: max(0, int(recent_limit or 0))]:
         item = _alert_log_payload(log)
         item["_sort_timestamp"] = log.created_at
-        recent_items.append(item)
+        alert_event_logs.append(item)
+
+    device_events = []
     for event in recent_device_events_qs[: max(0, int(recent_limit or 0))]:
         item = _device_event_payload(event)
         item["_sort_timestamp"] = event.occurred_at
-        recent_items.append(item)
+        device_events.append(item)
+
+    snmp_trap_events = []
     for event in recent_trap_events_qs[: max(0, int(recent_limit or 0))]:
         item = _trap_event_payload(event)
         item["_sort_timestamp"] = event.received_at
-        recent_items.append(item)
+        snmp_trap_events.append(item)
 
+    recent_items: list[dict] = [*alert_event_logs, *device_events, *snmp_trap_events]
     recent_events = _sort_recent_events(recent_items)[: max(0, int(recent_limit or 0))]
-    for item in recent_events:
-        item.pop("_sort_timestamp", None)
+
+    for collection in (alert_event_logs, device_events, snmp_trap_events, recent_events):
+        for item in collection:
+            item.pop("_sort_timestamp", None)
 
     return {
         "device_id": str(device.pk),
         "active_alarms_count": len(active_alerts),
         "recent_events_count": len(recent_events),
+        "alert_event_logs_count": len(alert_event_logs),
+        "device_events_count": len(device_events),
+        "snmp_trap_events_count": len(snmp_trap_events),
         "active_alarms": active_alerts,
+        "alert_event_logs": alert_event_logs,
+        "device_events": device_events,
+        "snmp_trap_events": snmp_trap_events,
         "recent_events": recent_events,
     }

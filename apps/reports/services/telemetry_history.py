@@ -66,8 +66,12 @@ def _device_queryset(*, organization, data_center=None, parameters: dict | None 
     )
     if data_center is not None:
         qs = qs.filter(data_center_id=data_center.id)
-    if parameters.get("device_id"):
-        qs = qs.filter(pk=parameters["device_id"])
+    device_ids = [str(value).strip() for value in (parameters.get("device_ids") or parameters.get("devices") or []) if str(value).strip()]
+    device_id = str(parameters.get("device_id") or parameters.get("device") or "").strip()
+    if device_id:
+        device_ids = [device_id, *device_ids]
+    if device_ids:
+        qs = qs.filter(pk__in=list(dict.fromkeys(device_ids)))
     if parameters.get("room_id"):
         qs = qs.filter(room_id=parameters["room_id"])
     if parameters.get("rack_id"):

@@ -11,7 +11,7 @@ from apps.notifications.models import NotificationChannel, NotificationStatus
 from apps.telemetry.models import MetricDefinition
 
 from ..constants import normalize_key
-from .device_metrics import get_device_for_user, get_device_metric_options
+from .device_metrics import get_device_for_user, get_device_metric_options, get_device_metric_options_for_devices, get_devices_for_user
 
 
 SUPPORTED_TEMPLATE_OUTPUT_FORMATS = ["csv", "xlsx", "pdf"]
@@ -347,6 +347,8 @@ def validate_report_template_config(config, *, existing_config: dict | None = No
 
     normalized = deepcopy(existing_config or {})
     normalized.update(config)
+    incoming_output_format = "output_format" in config
+    incoming_allowed_output_formats = "allowed_output_formats" in config
     output_format = str(normalized.get("output_format", "csv")).strip()
     normalized_output_format = normalize_key(output_format).upper()
     if normalized_output_format not in {"CSV", "XLSX", "PDF"}:
@@ -359,7 +361,12 @@ def validate_report_template_config(config, *, existing_config: dict | None = No
         raise ValidationError({
             "allowed_output_formats": "Unsupported output format. Supported formats are CSV, XLSX, and PDF.",
         })
-    normalized["allowed_output_formats"] = [value.lower() for value in normalized_allowed_output_formats] or [normalized["output_format"]]
+    if incoming_allowed_output_formats:
+        normalized["allowed_output_formats"] = [value.lower() for value in normalized_allowed_output_formats] or [normalized["output_format"]]
+    elif incoming_output_format:
+        normalized["allowed_output_formats"] = [normalized["output_format"]]
+    else:
+        normalized["allowed_output_formats"] = [value.lower() for value in normalized_allowed_output_formats] or [normalized["output_format"]]
 
     resolved_definition_code = str(definition_code or "").strip().upper()
     options = REPORT_TEMPLATE_OPTIONS.get(resolved_definition_code, {})
@@ -409,7 +416,7 @@ def validate_report_template_config(config, *, existing_config: dict | None = No
     return normalized
 
 
-def build_report_template_options(template, *, user=None, device_id=None) -> dict:
+def build_report_template_options(template, *, user=None, device_id=None, device_ids=None) -> dict:
     definition_code = str(getattr(getattr(template, "definition", None), "code", None) or "").strip().upper()
     if not definition_code:
         raise ValidationError({"definition": "Unsupported report definition."})
@@ -454,18 +461,40 @@ def build_report_template_options(template, *, user=None, device_id=None) -> dic
             }
             for device_type in DeviceType.objects.all().order_by("name")
         ]
-    if definition_code == "TELEMETRY_EXPORT" and device_id not in (None, ""):
-        device = get_device_for_user(user, device_id)
-        response["device_summary"] = {
-            "id": str(device.pk),
-            "name": getattr(device, "name", None),
-            "code": getattr(device, "code", None),
-            "device_type": getattr(getattr(device, "device_type", None), "name", None),
-            "device_model": getattr(getattr(device, "device_model", None), "name", None),
-            "status": getattr(device, "status", None),
-        }
-        response["device_metric_options"] = get_device_metric_options(device)
-        field_options["device_metric_options"] = response["device_metric_options"]
+    if definition_code == "TELEMETRY_EXPORT":
+        normalized_device_ids = [
+            str(value).strip()
+            for value in ([device_id] if device_id not in (None, "") else []) + list(device_ids or [])
+            if str(value).strip()
+        ]
+        if normalized_device_ids:
+            devices = get_devices_for_user(user, normalized_device_ids)
+            if len(devices) != len(set(normalized_device_ids)):
+                raise ValidationError({"device_ids": "One or more device selections are invalid or inaccessible."})
+            device_metric_option_groups = []
+            response["device_summaries"] = [
+                {
+                    "id": str(device.pk),
+                    "name": getattr(device, "name", None),
+                    "code": getattr(device, "code", None),
+                    "device_type": getattr(getattr(device, "device_type", None), "name", None),
+                    "device_model": getattr(getattr(device, "device_model", None), "name", None),
+                    "status": getattr(device, "status", None),
+                }
+                for device in devices
+            ]
+            if len(devices) == 1:
+                response["device_summary"] = response["device_summaries"][0]
+            for device, device_summary in zip(devices, response["device_summaries"]):
+                metric_options = get_device_metric_options(device)
+                device_metric_option_groups.append({
+                    "device_summary": device_summary,
+                    "metric_options": metric_options,
+                })
+            response["device_metric_option_groups"] = device_metric_option_groups
+            response["device_metric_options"] = get_device_metric_options_for_devices(devices)
+            field_options["device_metric_options"] = response["device_metric_options"]
+            field_options["device_metric_option_groups"] = response["device_metric_option_groups"]
 
     response["field_options"] = field_options
     return response

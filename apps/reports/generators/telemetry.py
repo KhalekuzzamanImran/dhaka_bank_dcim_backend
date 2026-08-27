@@ -26,7 +26,9 @@ class TelemetryExportGenerator(BaseReportGenerator):
     definition_code = "TELEMETRY_EXPORT"
     generator_key = "telemetry_export"
     supported_formats = ("CSV", "XLSX", "PDF")
-    row_limit_for_pdf = 5000
+    # Telemetry exports can be legitimately large; PDF should paginate instead
+    # of hard-failing and the UI already warns when CSV/XLSX is a better fit.
+    row_limit_for_pdf = 0
 
     def build_dataset(self, context: GeneratorContext) -> ReportDataset:
         rows, metrics = _telemetry_rows(context)

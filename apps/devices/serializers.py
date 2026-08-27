@@ -31,6 +31,12 @@ class DeviceSerializer(serializers.ModelSerializer):
 class DeviceDetailSerializer(DeviceSerializer):
     active_alarms_count = serializers.SerializerMethodField()
     active_alarms = serializers.SerializerMethodField()
+    alert_event_logs_count = serializers.SerializerMethodField()
+    alert_event_logs = serializers.SerializerMethodField()
+    device_events_count = serializers.SerializerMethodField()
+    device_events = serializers.SerializerMethodField()
+    snmp_trap_events_count = serializers.SerializerMethodField()
+    snmp_trap_events = serializers.SerializerMethodField()
     recent_events_count = serializers.SerializerMethodField()
     recent_events = serializers.SerializerMethodField()
 
@@ -38,6 +44,12 @@ class DeviceDetailSerializer(DeviceSerializer):
         fields = DeviceSerializer.Meta.fields + [
             "active_alarms_count",
             "active_alarms",
+            "alert_event_logs_count",
+            "alert_event_logs",
+            "device_events_count",
+            "device_events",
+            "snmp_trap_events_count",
+            "snmp_trap_events",
             "recent_events_count",
             "recent_events",
         ]
@@ -56,6 +68,24 @@ class DeviceDetailSerializer(DeviceSerializer):
 
     def get_active_alarms(self, obj):
         return self._activity_feed(obj)["active_alarms"]
+
+    def get_alert_event_logs_count(self, obj):
+        return self._activity_feed(obj)["alert_event_logs_count"]
+
+    def get_alert_event_logs(self, obj):
+        return self._activity_feed(obj)["alert_event_logs"]
+
+    def get_device_events_count(self, obj):
+        return self._activity_feed(obj)["device_events_count"]
+
+    def get_device_events(self, obj):
+        return self._activity_feed(obj)["device_events"]
+
+    def get_snmp_trap_events_count(self, obj):
+        return self._activity_feed(obj)["snmp_trap_events_count"]
+
+    def get_snmp_trap_events(self, obj):
+        return self._activity_feed(obj)["snmp_trap_events"]
 
     def get_recent_events_count(self, obj):
         return self._activity_feed(obj)["recent_events_count"]

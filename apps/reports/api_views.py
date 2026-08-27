@@ -240,6 +240,7 @@ class ReportTemplateViewSet(ScopedModelViewSet):
                 template,
                 user=request.user,
                 device_id=request.query_params.get("device_id"),
+                device_ids=request.query_params.getlist("device_ids"),
             )
         except ValidationError as exc:
             raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages)

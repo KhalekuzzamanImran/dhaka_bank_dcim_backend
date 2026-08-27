@@ -78,3 +78,33 @@ def get_device_metric_options(device: Device) -> list[dict]:
 
 def get_device_supported_metric_codes(device: Device) -> list[str]:
     return [option["code"] for option in get_device_metric_options(device)]
+
+
+def get_devices_for_user(user, device_ids) -> list[Device]:
+    normalized_ids = [str(value).strip() for value in (device_ids or []) if str(value).strip()]
+    if not normalized_ids:
+        return []
+    devices = (
+        get_accessible_devices_for_user(user)
+        .select_related("organization", "data_center", "device_type", "device_model")
+        .filter(pk__in=normalized_ids)
+    )
+    return list(devices)
+
+
+def get_device_metric_options_for_devices(devices: list[Device]) -> list[dict]:
+    if not devices:
+        return []
+    deduped: dict[str, dict] = {}
+    for device in devices:
+        for option in get_device_metric_options(device):
+            code = str(option.get("code") or "").strip().upper()
+            if not code:
+                continue
+            if code not in deduped:
+                deduped[code] = option
+    return sorted(deduped.values(), key=lambda item: (item["name"].lower(), item["code"]))
+
+
+def get_devices_supported_metric_codes(devices: list[Device]) -> list[str]:
+    return [option["code"] for option in get_device_metric_options_for_devices(devices)]

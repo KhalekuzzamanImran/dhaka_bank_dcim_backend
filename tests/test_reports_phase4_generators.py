@@ -666,6 +666,64 @@ class ReportPhase4GeneratorTestCase(TestCase):
         self.assertTrue(content.startswith(b"%PDF-1.4"))
         self.assertIn(b"Telemetry Export", content)
 
+    @patch("apps.reports.generators.telemetry.fetch_telemetry_report_rows")
+    def test_telemetry_export_pdf_accepts_large_row_counts(self, mock_fetch_rows):
+        metric = MetricDefinition.objects.get(code="room_temperature")
+        now = timezone.now()
+        mock_fetch_rows.return_value = (
+            [
+                {
+                    "timestamp": now,
+                    "organization": self.org.name,
+                    "data_center": self.dc.name,
+                    "room": self.room.name,
+                    "rack": self.rack.name,
+                    "device": self.device.name,
+                    "device_model": self.device_model.name,
+                    "device_type": self.device_type.name,
+                    "metric_code": metric.code,
+                    "metric_name": metric.name,
+                    "value": 18.5,
+                    "unit": metric.unit,
+                    "quality": "GOOD",
+                }
+                for _ in range(5001)
+            ],
+            [metric],
+        )
+
+        template = self._template(
+            code="PHASE4_TELEMETRY_EXPORT_PDF_LARGE",
+            definition=self._definition("TELEMETRY_EXPORT"),
+            report_type="telemetry_export",
+            output_format="pdf",
+            primary_format="PDF",
+            default_parameters={"metric_codes": ["room_temperature"]},
+        )
+        job = create_report_job(
+            definition=template.definition,
+            organization=self.org,
+            data_center=self.dc,
+            template=template,
+            requested_by=self.user,
+            trigger_source=ReportTriggerSource.MANUAL,
+            parameters={
+                "date_from": (now - timedelta(hours=1)).isoformat(),
+                "date_to": (now + timedelta(hours=1)).isoformat(),
+                "metric_codes": ["room_temperature"],
+            },
+            queue_job=False,
+        ).job
+        generated = generate_report_job(job.id)
+        artifact = self._primary_artifact(generated)
+        self.assertIsNotNone(artifact)
+        self.assertEqual(generated.status, ReportJobStatus.COMPLETED)
+        self.assertEqual(artifact.format, "PDF")
+        with artifact.file.open("rb") as handle:
+            content = handle.read()
+        self.assertTrue(content.startswith(b"%PDF-1.4"))
+        self.assertIn(b"Telemetry Export", content)
+
     def test_unsupported_definition_format_is_rejected(self):
         class CsvOnlyGenerator(BaseReportGenerator):
             definition_code = "PHASE4_CSV_ONLY"

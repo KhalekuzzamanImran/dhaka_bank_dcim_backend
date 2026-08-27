@@ -113,6 +113,7 @@ REPORT_TEMPLATE_SEEDS = [
             "required_filters": ["date_from", "date_to"],
             "optional_filters": [
                 "device_id",
+                "device_ids",
                 "device_model_id",
                 "device_type_id",
                 "data_center_id",
