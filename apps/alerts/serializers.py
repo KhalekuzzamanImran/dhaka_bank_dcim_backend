@@ -74,8 +74,11 @@ class AlertEventBaseSerializer(serializers.ModelSerializer):
     data_center_name = serializers.CharField(source="data_center.name", read_only=True)
     device_name = serializers.CharField(source="device.name", read_only=True)
     device_code = serializers.CharField(source="device.code", read_only=True)
+    device_type_name = serializers.CharField(source="device.device_type.name", read_only=True)
     metric_code = serializers.CharField(source="metric.code", read_only=True)
     metric_name = serializers.CharField(source="metric.name", read_only=True)
+    metric_unit = serializers.CharField(source="metric.unit", read_only=True)
+    alert_rule = AlertRuleSerializer(read_only=True)
     alert_rule_name = serializers.CharField(source="alert_rule.name", read_only=True)
     acknowledged_by_name = serializers.SerializerMethodField()
     resolved_by_name = serializers.SerializerMethodField()
@@ -90,6 +93,7 @@ class AlertEventBaseSerializer(serializers.ModelSerializer):
             "id",
             "severity",
             "status",
+            "device_type_name",
             "message",
             "triggered_at",
             "last_seen_at",
@@ -109,6 +113,7 @@ class AlertEventBaseSerializer(serializers.ModelSerializer):
             "metric",
             "metric_code",
             "metric_name",
+            "metric_unit",
             "alert_rule",
             "alert_rule_name",
             "acknowledged_by",
@@ -117,6 +122,10 @@ class AlertEventBaseSerializer(serializers.ModelSerializer):
             "resolved_by_name",
             "age_seconds",
             "is_active",
+            "value_float",
+            "value_integer",
+            "value_boolean",
+            "value_text",
         )
         read_only_fields = fields
 
@@ -164,6 +173,14 @@ class AlertEventLogSerializer(serializers.ModelSerializer):
     metric_code = serializers.CharField(source="alert_event.metric.code", read_only=True)
     triggered_at = serializers.DateTimeField(source="alert_event.triggered_at", read_only=True)
     resolved_at = serializers.DateTimeField(source="alert_event.resolved_at", read_only=True)
+    alert_rule_name = serializers.CharField(source="alert_event.alert_rule.name", read_only=True, default=None, allow_null=True)
+    alert_rule = AlertRuleSerializer(source="alert_event.alert_rule", read_only=True, default=None, allow_null=True)
+    metric_unit = serializers.CharField(source="alert_event.metric.unit", read_only=True, default=None, allow_null=True)
+    value_float = serializers.FloatField(source="alert_event.value_float", read_only=True, default=None, allow_null=True)
+    value_integer = serializers.IntegerField(source="alert_event.value_integer", read_only=True, default=None, allow_null=True)
+    value_boolean = serializers.BooleanField(source="alert_event.value_boolean", read_only=True, default=None, allow_null=True)
+    value_text = serializers.CharField(source="alert_event.value_text", read_only=True, default=None, allow_null=True)
+    event_name = serializers.CharField(source="alert_event.metadata.trap_event_name", read_only=True, default=None, allow_null=True)
 
     class Meta:
         model = AlertEventLog
@@ -190,6 +207,14 @@ class AlertEventLogSerializer(serializers.ModelSerializer):
             "metadata",
             "created_at",
             "updated_at",
+            "alert_rule_name",
+            "alert_rule",
+            "metric_unit",
+            "value_float",
+            "value_integer",
+            "value_boolean",
+            "value_text",
+            "event_name",
         )
         read_only_fields = fields
 

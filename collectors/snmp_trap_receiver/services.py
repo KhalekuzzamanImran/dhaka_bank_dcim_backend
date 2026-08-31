@@ -210,6 +210,22 @@ def process_snmp_trap(*, source_ip, trap_oid, raw_varbinds):
                 trap_oid=trap_oid,
                 raw_payload=raw_varbinds or {},
             )
+        if mapping.resolves_event_code:
+            from apps.alerts.models import AlertEvent, AlertStatus
+            from apps.alerts.services.engine import resolve_alert
+
+            active_alerts = AlertEvent.objects.filter(
+                device=device,
+                metadata__trap_event_code=mapping.resolves_event_code,
+                status__in=[AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED],
+            )
+            for active_alert in active_alerts:
+                resolve_alert(
+                    active_alert,
+                    latest=None,
+                    resolution_type="AUTO",
+                    comment=f"Automatically resolved by clearing trap: {mapping.event_name} ({mapping.event_code})",
+                )
         if is_pac_confirmation:
             from .tasks import process_pac_trap_alarm_confirmation_task
 

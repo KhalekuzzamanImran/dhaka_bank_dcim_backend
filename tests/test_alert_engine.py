@@ -1541,3 +1541,81 @@ def test_pending_web_notifications_are_delivered():
     deliver_pending_notifications()
     notification.refresh_from_db()
     assert notification.status == NotificationStatus.SENT
+
+
+@pytest.mark.django_db
+def test_alert_event_filtering_by_device_and_device_type():
+    # Setup roles and users
+    org = Organization.objects.create(name="Org", code="ORG")
+    dc = DataCenter.objects.create(organization=org, name="DC", code="DC")
+    
+    ups_type = DeviceType.objects.create(name="UPS", code="UPS", category="POWER")
+    pac_type = DeviceType.objects.create(name="PAC", code="PAC", category="COOLING")
+    
+    vendor = Vendor.objects.create(name="Vendor", code="VENDOR")
+    ups_model = DeviceModel.objects.create(vendor=vendor, device_type=ups_type, name="UPS Model", model_number="UPS-M1")
+    pac_model = DeviceModel.objects.create(vendor=vendor, device_type=pac_type, name="PAC Model", model_number="PAC-M1")
+    
+    ups_device = Device.objects.create(organization=org, data_center=dc, device_type=ups_type, device_model=ups_model, name="UPS-01", code="UPS-01")
+    pac_device = Device.objects.create(organization=org, data_center=dc, device_type=pac_type, device_model=pac_model, name="PAC-01", code="PAC-01")
+    
+    metric = MetricDefinition.objects.create(code="ON_BATTERY", name="On Battery", category=MetricCategory.STATUS, data_type=MetricDataType.INTEGER, is_active=True)
+    
+    ups_rule = AlertRule.objects.create(
+        organization=org,
+        data_center=dc,
+        device=ups_device,
+        metric=metric,
+        name="UPS alert rule",
+        operator="EQ",
+        threshold_integer=1,
+        severity=AlertSeverity.CRITICAL,
+        duration_seconds=0,
+        is_active=True,
+    )
+    pac_rule = AlertRule.objects.create(
+        organization=org,
+        data_center=dc,
+        device=pac_device,
+        metric=metric,
+        name="PAC alert rule",
+        operator="EQ",
+        threshold_integer=1,
+        severity=AlertSeverity.WARNING,
+        duration_seconds=0,
+        is_active=True,
+    )
+    
+    evaluate_latest(_latest(ups_device, metric, 1))
+    evaluate_latest(_latest(pac_device, metric, 1))
+    
+    assert AlertEvent.objects.filter(device=ups_device).exists()
+    assert AlertEvent.objects.filter(device=pac_device).exists()
+    
+    role = _role("ALERT_MANAGER", "Alert Manager", ["alert.view"])
+    user = User.objects.create_user(username="alert-manager", password="test12345", is_active=True)
+    _make_access(user, role, organization=org)
+    
+    client = APIClient()
+    client.force_authenticate(user=user)
+    
+    # 1. Filter /api/v1/alerts/alert-events/ by device_type
+    response = client.get(f"/api/v1/alerts/alert-events/?device_type={ups_type.id}")
+    assert response.status_code == 200
+    results = _json_results(response)
+    assert len(results) == 1
+    assert results[0]["device_name"] == "UPS-01"
+    
+    # 2. Filter /api/v1/alerts/alert-events/ by device
+    response = client.get(f"/api/v1/alerts/alert-events/?device={pac_device.id}")
+    assert response.status_code == 200
+    results = _json_results(response)
+    assert len(results) == 1
+    assert results[0]["device_name"] == "PAC-01"
+
+    # 3. Filter /api/v1/alerts/alert-events/recent/ by device_type
+    response = client.get(f"/api/v1/alerts/alert-events/recent/?device_type={pac_type.id}")
+    assert response.status_code == 200
+    assert len(response.data) > 0
+    for log in response.data:
+        assert log["device_type_name"] == "PAC"

@@ -48,6 +48,7 @@ class SNMPTrapOIDMapping(TimeStampedModel):
     severity = models.CharField(max_length=20, choices=TrapSeverity.choices, default=TrapSeverity.INFO)
     message_template = models.TextField(blank=True, null=True)
     create_alert = models.BooleanField(default=True)
+    resolves_event_code = models.CharField(max_length=150, blank=True, null=True, db_index=True)
     is_active = models.BooleanField(default=True)
 
     class Meta:

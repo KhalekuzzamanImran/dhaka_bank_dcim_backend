@@ -13,9 +13,9 @@ class SNMPTrapSourceAdmin(admin.ModelAdmin):
 
 @admin.register(SNMPTrapOIDMapping)
 class SNMPTrapOIDMappingAdmin(admin.ModelAdmin):
-    list_display = ("trap_oid", "event_code", "event_name", "severity", "device_type", "vendor", "device_model", "create_alert", "is_active", "created_at")
+    list_display = ("trap_oid", "event_code", "event_name", "resolves_event_code", "severity", "device_type", "vendor", "device_model", "create_alert", "is_active", "created_at")
     list_filter = ("severity", "create_alert", "is_active", "device_type", "vendor")
-    search_fields = ("trap_oid", "event_code", "event_name", "message_template")
+    search_fields = ("trap_oid", "event_code", "event_name", "resolves_event_code", "message_template")
     ordering = ("-created_at", "-updated_at")
 
 

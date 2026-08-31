@@ -13,7 +13,7 @@ from apps.datacenters.models import DataCenter
 from apps.devices.models import Device, DeviceModel, DeviceType, Vendor
 from apps.organizations.models import Organization
 from apps.telemetry.models import DeviceEvent
-from apps.traps.models import SNMPMIBDefinition, SNMPTrapEvent, SNMPTrapOIDMapping, SNMPTrapSource, TrapResolutionSource
+from apps.traps.models import SNMPMIBDefinition, SNMPTrapEvent, SNMPTrapOIDMapping, SNMPTrapSource, TrapResolutionSource, TrapSeverity
 from apps.traps.services import MIBRegistry, import_snmp_mib_file, invalidate_mib_registry_cache
 from collectors.snmp_trap_receiver.services import process_snmp_trap
 
@@ -222,3 +222,53 @@ def test_unknown_trap_remains_unknown_and_updates_review_alert(tmp_path):
     alert = AlertEvent.objects.get(device=device, metadata__trap_oid="1.3.6.1.4.1.318.0.999")
     assert alert.occurrence_count == 2
     assert "No matching MIB definition" in alert.message
+
+
+@pytest.mark.django_db
+def test_generic_trap_resolution():
+    org, dc, device = _build_device()
+
+    # 1. Create mapping for trigger trap (OID 1.3.6.1.4.1.318.0.5 -> ups_on_battery)
+    SNMPTrapOIDMapping.objects.create(
+        device_type=device.device_type,
+        vendor=device.device_model.vendor,
+        device_model=device.device_model,
+        trap_oid="1.3.6.1.4.1.318.0.5",
+        event_code="ups_on_battery",
+        event_name="UPS On Battery",
+        severity=TrapSeverity.CRITICAL,
+        message_template="UPS has switched to battery backup power.",
+        create_alert=True,
+    )
+
+    # 2. Create mapping for resolution trap (OID 1.3.6.1.4.1.318.0.9 -> ups_power_restored, resolves ups_on_battery)
+    SNMPTrapOIDMapping.objects.create(
+        device_type=device.device_type,
+        vendor=device.device_model.vendor,
+        device_model=device.device_model,
+        trap_oid="1.3.6.1.4.1.318.0.9",
+        event_code="ups_power_restored",
+        event_name="UPS Power Restored",
+        severity=TrapSeverity.INFO,
+        message_template="Utility power has been restored.",
+        create_alert=False,
+        resolves_event_code="ups_on_battery",
+    )
+
+    # 3. Ingest trigger trap -> should create open alert
+    process_snmp_trap(
+        source_ip=device.ip_address,
+        trap_oid="1.3.6.1.4.1.318.0.5",
+        raw_varbinds={},
+    )
+    assert AlertEvent.objects.filter(device=device, metadata__trap_event_code="ups_on_battery", status=AlertStatus.OPEN).exists()
+
+    # 4. Ingest resolution trap -> should resolve the open alert
+    process_snmp_trap(
+        source_ip=device.ip_address,
+        trap_oid="1.3.6.1.4.1.318.0.9",
+        raw_varbinds={},
+    )
+    
+    assert not AlertEvent.objects.filter(device=device, metadata__trap_event_code="ups_on_battery", status=AlertStatus.OPEN).exists()
+    assert AlertEvent.objects.filter(device=device, metadata__trap_event_code="ups_on_battery", status=AlertStatus.RESOLVED).exists()

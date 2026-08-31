@@ -63,6 +63,7 @@ def build_alert_summary(queryset, business_timezone=None):
         "critical_open": active_qs.filter(severity=AlertSeverity.CRITICAL).count(),
         "warning_open": active_qs.filter(severity=AlertSeverity.WARNING).count(),
         "acknowledged_total": queryset.filter(status=AlertStatus.ACKNOWLEDGED).count(),
+        "resolved_total": queryset.filter(status=AlertStatus.RESOLVED).count(),
         "resolved_today": queryset.filter(status=AlertStatus.RESOLVED, resolved_at__gte=start_of_day, resolved_at__lt=end_of_day).count(),
         "unacknowledged_critical": queryset.filter(status=AlertStatus.OPEN, severity=AlertSeverity.CRITICAL).count(),
         "by_severity": _severity_dict(active_qs),
@@ -108,7 +109,8 @@ def build_recent_alerts(queryset, limit=10, context=None):
     return serializer.data
 
 
-def build_recent_alert_logs(queryset, limit=10, context=None):
+def build_recent_alert_logs(queryset, limit=200, context=None, days=30):
+    since = timezone.now() - timedelta(days=days)
     log_queryset = (
         AlertEventLog.objects.select_related(
             "alert_event",
@@ -120,6 +122,7 @@ def build_recent_alert_logs(queryset, limit=10, context=None):
             "actor",
         )
         .filter(alert_event__in=queryset)
+        .filter(created_at__gte=since)
         .filter(action__in=[
             AlertEventLogAction.OPENED,
             AlertEventLogAction.ACKNOWLEDGED,

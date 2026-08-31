@@ -1,3 +1,4 @@
+import django_filters
 from django.db.models import Prefetch
 from zoneinfo import ZoneInfo
 from rest_framework.views import APIView
@@ -79,13 +80,21 @@ class AlertRuleViewSet(ScopedModelViewSet):
     filterset_fields = ["organization", "data_center", "device_type", "device", "metric", "severity", "is_active"]
 
 
+class AlertEventFilter(django_filters.FilterSet):
+    device_type = django_filters.UUIDFilter(field_name="device__device_type")
+
+    class Meta:
+        model = AlertEvent
+        fields = ["organization", "data_center", "device", "metric", "severity", "status"]
+
+
 class AlertEventViewSet(ScopedModelViewSet):
     access_scope = "mixed"
     queryset = _alert_event_queryset()
     serializer_class = AlertEventDetailSerializer
     permission_module = "alert"
     audit_resource_type = "AlertEvent"
-    filterset_fields = ["organization", "data_center", "device", "metric", "severity", "status"]
+    filterset_class = AlertEventFilter
     search_fields = ["message"]
 
     def get_serializer_class(self):
@@ -117,20 +126,20 @@ class AlertEventViewSet(ScopedModelViewSet):
 
     @action(detail=False, methods=["get"])
     def summary(self, request):
-        qs = self.get_queryset()
+        qs = self.filter_queryset(self.get_queryset())
         return Response(build_dashboard_payload(qs, business_timezone=_summary_timezone_for_queryset(qs)))
 
     @action(detail=False, methods=["get"])
     def active_by_severity(self, request):
-        return Response(build_active_by_severity(self.get_queryset()))
+        return Response(build_active_by_severity(self.filter_queryset(self.get_queryset())))
 
     @action(detail=False, methods=["get"])
     def top_devices(self, request):
-        return Response(build_top_devices(self.get_queryset()))
+        return Response(build_top_devices(self.filter_queryset(self.get_queryset())))
 
     @action(detail=False, methods=["get"])
     def recent(self, request):
-        return Response(build_recent_alert_logs(self.get_queryset(), limit=20, context=self.get_serializer_context()))
+        return Response(build_recent_alert_logs(self.filter_queryset(self.get_queryset()), limit=200, context=self.get_serializer_context()))
 
 
 class AlertSummaryAPIView(APIView):
@@ -138,6 +147,9 @@ class AlertSummaryAPIView(APIView):
 
     def get(self, request):
         qs = get_alert_queryset_for_user(request.user)
+        filterset = AlertEventFilter(request.GET, queryset=qs)
+        if filterset.is_valid():
+            qs = filterset.qs
         return Response(build_dashboard_payload(qs, business_timezone=_summary_timezone_for_queryset(qs)))
 
 
@@ -145,18 +157,30 @@ class AlertActiveBySeverityAPIView(APIView):
     permission_module = "alert"
 
     def get(self, request):
-        return Response(build_active_by_severity(get_alert_queryset_for_user(request.user)))
+        qs = get_alert_queryset_for_user(request.user)
+        filterset = AlertEventFilter(request.GET, queryset=qs)
+        if filterset.is_valid():
+            qs = filterset.qs
+        return Response(build_active_by_severity(qs))
 
 
 class AlertTopDevicesAPIView(APIView):
     permission_module = "alert"
 
     def get(self, request):
-        return Response(build_top_devices(get_alert_queryset_for_user(request.user)))
+        qs = get_alert_queryset_for_user(request.user)
+        filterset = AlertEventFilter(request.GET, queryset=qs)
+        if filterset.is_valid():
+            qs = filterset.qs
+        return Response(build_top_devices(qs))
 
 
 class AlertRecentAPIView(APIView):
     permission_module = "alert"
 
     def get(self, request):
-        return Response(build_recent_alert_logs(get_alert_queryset_for_user(request.user), limit=20, context={"request": request}))
+        qs = get_alert_queryset_for_user(request.user)
+        filterset = AlertEventFilter(request.GET, queryset=qs)
+        if filterset.is_valid():
+            qs = filterset.qs
+        return Response(build_recent_alert_logs(qs, limit=200, context={"request": request}))

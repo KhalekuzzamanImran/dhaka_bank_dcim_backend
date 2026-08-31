@@ -18,8 +18,8 @@ class SNMPTrapOIDMappingViewSet(AuditModelViewSet):
     serializer_class = SNMPTrapOIDMappingSerializer
     permission_module = "traps"
     audit_resource_type = "SNMPTrapOIDMapping"
-    filterset_fields = ["device_type", "vendor", "device_model", "trap_oid", "severity", "create_alert", "is_active"]
-    search_fields = ["trap_oid", "event_code", "event_name"]
+    filterset_fields = ["device_type", "vendor", "device_model", "trap_oid", "severity", "create_alert", "resolves_event_code", "is_active"]
+    search_fields = ["trap_oid", "event_code", "event_name", "resolves_event_code"]
 
 
 class SNMPTrapEventViewSet(ScopedModelViewSet):
