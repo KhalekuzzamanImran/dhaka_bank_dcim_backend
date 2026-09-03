@@ -32,6 +32,14 @@ RESERVED_RUNTIME_PARAMETER_KEYS = {
     "data_center_id",
     "data_center_name",
     "delivery_channels",
+    "reporting_period",
+    "relative_date_range",
+    "send_only_on_success",
+    "notify_on_failure",
+    "send_on_success",
+    "send_sms",
+    "recipients",
+    "sms_recipients",
 }
 
 

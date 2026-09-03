@@ -188,8 +188,12 @@ def _merge_parameters(definition, template, schedule, parameters, runtime_parame
     if runtime_parameters:
         merged.update(deepcopy(runtime_parameters))
 
-    # Resolve dynamic device scopes from template config
-    if template and isinstance(template.config, dict):
+    # Resolve dynamic device scopes from template config only when not explicitly overridden by schedule or parameters
+    has_explicit_devices = bool(
+        (schedule and isinstance(schedule.parameter_overrides, dict) and (schedule.parameter_overrides.get("device_ids") or schedule.parameter_overrides.get("device_id")))
+        or (parameters and (parameters.get("device_ids") or parameters.get("device_id")))
+    )
+    if not has_explicit_devices and template and isinstance(template.config, dict):
         device_scope = template.config.get("device_scope", "single_device")
         if device_scope == "device_type":
             device_type = template.config.get("device_type")
