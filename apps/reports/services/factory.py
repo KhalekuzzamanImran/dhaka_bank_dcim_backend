@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import timedelta
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
@@ -159,6 +160,22 @@ def build_source_event_snapshot(source_event) -> dict:
     return deepcopy(source_event or {})
 
 
+def _resolve_relative_date_range(relative_range: str | None, now=None) -> tuple[datetime, datetime] | None:
+    if not relative_range or str(relative_range).lower().strip() == "custom":
+        return None
+    now = now or timezone.now()
+    code = str(relative_range).lower().strip()
+    if code in ("last_24h", "last_24_hours", "24h", "today"):
+        return now - timedelta(hours=24), now
+    elif code in ("last_7d", "last_7_days", "7d", "week"):
+        return now - timedelta(days=7), now
+    elif code in ("last_30d", "last_30_days", "30d", "month"):
+        return now - timedelta(days=30), now
+    elif code in ("last_90d", "last_90_days", "90d", "quarter"):
+        return now - timedelta(days=90), now
+    return None
+
+
 def _merge_parameters(definition, template, schedule, parameters, runtime_parameters):
     merged = {}
     merged.update(_definition_default_parameters(definition))
@@ -170,6 +187,51 @@ def _merge_parameters(definition, template, schedule, parameters, runtime_parame
         merged.update(deepcopy(parameters))
     if runtime_parameters:
         merged.update(deepcopy(runtime_parameters))
+
+    # Resolve dynamic device scopes from template config
+    if template and isinstance(template.config, dict):
+        device_scope = template.config.get("device_scope", "single_device")
+        if device_scope == "device_type":
+            device_type = template.config.get("device_type")
+            if device_type:
+                from apps.devices.models import Device
+                devices_qs = Device.objects.filter(
+                    device_type__name__iexact=device_type,
+                    is_active=True
+                )
+                if template.organization:
+                    devices_qs = devices_qs.filter(organization=template.organization)
+                merged["device_ids"] = [str(pk) for pk in devices_qs.values_list("id", flat=True)]
+                if "device_id" in merged:
+                    del merged["device_id"]
+        elif device_scope == "all_devices":
+            from apps.devices.models import Device
+            devices_qs = Device.objects.filter(is_active=True)
+            if template.organization:
+                devices_qs = devices_qs.filter(organization=template.organization)
+            merged["device_ids"] = [str(pk) for pk in devices_qs.values_list("id", flat=True)]
+            if "device_id" in merged:
+                del merged["device_id"]
+
+        # Resolve dynamic date range from template config
+        relative_range = template.config.get("relative_date_range")
+        if relative_range and relative_range != "custom":
+            has_runtime_dates = bool(
+                runtime_parameters
+                and (
+                    runtime_parameters.get("date_from")
+                    or runtime_parameters.get("start_date")
+                    or runtime_parameters.get("date_to")
+                    or runtime_parameters.get("end_date")
+                )
+            )
+            if not has_runtime_dates:
+                range_tuple = _resolve_relative_date_range(relative_range)
+                if range_tuple:
+                    start_dt, end_dt = range_tuple
+                    merged["date_from"] = start_dt.isoformat()
+                    merged["date_to"] = end_dt.isoformat()
+
     return merged
 
 

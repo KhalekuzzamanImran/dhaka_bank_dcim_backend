@@ -172,5 +172,15 @@ class SNMPClient:
         for start in range(0, len(requested), batch_size):
             batch = requested[start:start + batch_size]
             batch_results = self._request(batch)
+            if len(batch_results) > 0 and isinstance(batch_results[0], Exception):
+                logger.info("SNMP batch GET failed, falling back to individual requests for batch: %s", batch)
+                individual_results = []
+                for oid in batch:
+                    try:
+                        res = self.get(oid)
+                        individual_results.append(res)
+                    except Exception as exc:
+                        individual_results.append(exc)
+                batch_results = individual_results
             results.update(dict(zip(batch, batch_results)))
         return results

@@ -2,12 +2,70 @@ from __future__ import annotations
 
 import hashlib
 import os
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
+from django.utils import timezone
+from django.utils.dateparse import parse_date, parse_datetime
+
 from .base import GeneratorContext, ReportDataset, ReportTable, RenderedArtifact
 from .datasets import format_cell_value
+
+
+@dataclass
+class PageLayout:
+    page_width: int = 595
+    page_height: int = 842
+    orientation: str = "portrait"
+    target_line_width: int = 98
+    table_font_size: float = 9.0
+    table_leading: float = 11.0
+
+
+def _resolve_page_layout(context: GeneratorContext, tables: list[ReportTable]) -> PageLayout:
+    config = _get_template_config(context)
+    orientation = str(config.get("pdf_orientation") or "portrait").strip().lower()
+    page_size = str(config.get("pdf_page_size") or "A4").strip().upper()
+
+    if page_size == "LETTER":
+        base_w, base_h = 612, 792
+    elif page_size == "A3":
+        base_w, base_h = 842, 1191
+    else:  # A4
+        base_w, base_h = 595, 842
+
+    is_landscape = (orientation == "landscape")
+    if is_landscape:
+        page_width, page_height = max(base_w, base_h), min(base_w, base_h)
+        target_line_width = 145 if page_size != "A3" else 210
+        table_font_size = 9.0
+        table_leading = 11.0
+    else:
+        page_width, page_height = min(base_w, base_h), max(base_w, base_h)
+        max_cols = max((len(t.columns) for t in tables), default=0)
+        if max_cols >= 8:
+            target_line_width = 135
+            table_font_size = 6.5
+            table_leading = 8.5
+        elif max_cols >= 6:
+            target_line_width = 118
+            table_font_size = 7.5
+            table_leading = 9.5
+        else:
+            target_line_width = 98
+            table_font_size = 9.0
+            table_leading = 11.0
+
+    return PageLayout(
+        page_width=page_width,
+        page_height=page_height,
+        orientation=orientation,
+        target_line_width=target_line_width,
+        table_font_size=table_font_size,
+        table_leading=table_leading,
+    )
 
 
 def _artifact_metadata(path: str, filename: str) -> RenderedArtifact:
@@ -155,12 +213,86 @@ def _format_timestamp(value: datetime | None, timezone_name: str | None = None) 
     return value.strftime("%d %b %Y, %H:%M")
 
 
-def _device_scope_label(context: GeneratorContext) -> str | None:
+def _format_date_or_datetime(value, tz=None) -> str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        parsed_dt = parse_datetime(value)
+        if parsed_dt is not None:
+            value = parsed_dt
+        else:
+            parsed_d = parse_date(value)
+            if parsed_d is not None:
+                return parsed_d.strftime("%Y-%m-%d")
+            return value
+
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d")
+
+    if isinstance(value, datetime):
+        try:
+            if timezone.is_naive(value):
+                value = timezone.make_aware(value, tz or timezone.get_current_timezone())
+            elif tz is not None:
+                value = value.astimezone(tz)
+            else:
+                value = timezone.localtime(value)
+        except Exception:
+            pass
+        if value.hour == 0 and value.minute == 0 and value.second == 0 and value.microsecond == 0:
+            return value.strftime("%Y-%m-%d")
+        return value.strftime("%Y-%m-%d %H:%M")
+
+    return str(value)
+
+
+def _device_scope_label(context: GeneratorContext, dataset: ReportDataset | None = None) -> str | None:
     scope_snapshot = context.scope_snapshot if isinstance(context.scope_snapshot, dict) else {}
     selected_devices = scope_snapshot.get("selected_devices") if isinstance(scope_snapshot, dict) else []
+    config = _get_template_config(context)
+    device_scope = config.get("device_scope")
+    device_type = config.get("device_type")
+
+    names = []
     if isinstance(selected_devices, list) and selected_devices:
-        first = selected_devices[0] if isinstance(selected_devices[0], dict) else {}
-        return first.get("name") or first.get("code")
+        for d in selected_devices:
+            if isinstance(d, dict):
+                name = d.get("name") or d.get("code")
+                if name and str(name) not in names:
+                    names.append(str(name))
+            elif hasattr(d, "name"):
+                name = str(d.name)
+                if name and name not in names:
+                    names.append(name)
+
+    if dataset and dataset.tables:
+        table_devices = []
+        for table in dataset.tables:
+            for row in (table.rows or []):
+                if isinstance(row, dict) and row.get("device"):
+                    dev_name = str(row["device"]).strip()
+                    if dev_name and dev_name not in table_devices:
+                        table_devices.append(dev_name)
+        if table_devices and len(table_devices) > len(names):
+            names = table_devices
+
+    if names:
+        if len(names) == 1:
+            return names[0]
+        elif len(names) <= 4:
+            return ", ".join(names)
+        else:
+            if device_scope == "device_type" and device_type:
+                return f"All {device_type} ({len(names)} devices)"
+            elif device_scope == "all_devices":
+                return f"All Devices ({len(names)} devices)"
+            return f"{', '.join(names[:3])} (+{len(names) - 3} more)"
+
+    if device_scope == "all_devices":
+        return "All Devices"
+    elif device_scope == "device_type" and device_type:
+        return f"All {device_type}"
+
     params = context.parameters if isinstance(context.parameters, dict) else {}
     device_id = params.get("device_id")
     if device_id:
@@ -174,23 +306,12 @@ def _date_range_label(context: GeneratorContext) -> str | None:
     end_value = params.get("date_to") or params.get("end_date")
     if not start_value and not end_value:
         return None
-    def _coerce(value):
-        if value in (None, ""):
-            return None
-        if isinstance(value, datetime):
-            return value
-        if isinstance(value, date):
-            return datetime.combine(value, datetime.min.time())
-        return str(value)
-    start = _coerce(start_value)
-    end = _coerce(end_value)
-    if isinstance(start, datetime):
-        start = _format_timestamp(start)
-    if isinstance(end, datetime):
-        end = _format_timestamp(end)
-    if start and end:
-        return f"{start} to {end}"
-    return start or end
+    tz = getattr(context, "timezone", None) or timezone.get_current_timezone()
+    start_str = _format_date_or_datetime(start_value, tz=tz)
+    end_str = _format_date_or_datetime(end_value, tz=tz)
+    if start_str and end_str:
+        return f"{start_str} to {end_str}"
+    return start_str or end_str
 
 
 def _build_header_lines(context: GeneratorContext, dataset: ReportDataset) -> list[str]:
@@ -215,7 +336,7 @@ def _build_header_lines(context: GeneratorContext, dataset: ReportDataset) -> li
         data_center_name = getattr(context.data_center, "name", None) or "All"
         lines.append(f"Data center: {data_center_name}")
     if _as_bool(header_config.get("show_device"), False):
-        device_label = _device_scope_label(context)
+        device_label = _device_scope_label(context, dataset)
         if device_label:
             lines.append(f"Device: {device_label}")
     if _as_bool(header_config.get("show_date_range"), True):
@@ -280,67 +401,83 @@ def _build_page_stream(
     body_lines: list[str],
     footer_lines: list[str],
     *,
+    layout: PageLayout,
     include_header: bool,
     page_number: int,
     total_pages: int,
 ) -> bytes:
-    y = 806 if include_header else 806
+    y = layout.page_height - 36
+    margin_x = 24
+    usable_width = layout.page_width - (2 * margin_x)
     commands = [
         "BT",
     ]
 
-    def add_text(text: str, *, size: int, x: int, y_pos: int, color: tuple[float, float, float] | None = None, font: str = "F1"):
+    def add_text(text: str, *, size: float, x: float, y_pos: float, color: tuple[float, float, float] | None = None, font: str = "F1"):
         if color is not None:
             commands.append(f"{color[0]} {color[1]} {color[2]} rg")
         commands.append(f"/{font} {size} Tf")
         commands.append(f"1 0 0 1 {x} {y_pos} Tm")
-        commands.append(f"({_escape_pdf_text(text[:120])}) Tj")
+        commands.append(f"({_escape_pdf_text(text)}) Tj")
 
-    def add_line(text: str, *, size: int, leading: int, x: int = 24, font: str = "F1"):
+    def add_line(text: str, *, size: float, leading: float, x: float = 24, font: str = "F1"):
         nonlocal y
         add_text(text, size=size, x=x, y_pos=y, color=(0, 0, 0), font=font)
         y -= leading
 
     if include_header and banner:
+        banner_y = layout.page_height - 72
         commands.append("0.94 0.97 1 rg")
-        commands.append("24 770 547 24 re")
+        commands.append(f"{margin_x} {banner_y} {usable_width} 24 re")
         commands.append("f")
         commands.append("0.00 0.45 0.85 rg")
-        commands.append("24 770 34 24 re")
+        commands.append(f"{margin_x} {banner_y} 34 24 re")
         commands.append("f")
-        add_text(str(banner.get("badge") or "DB"), size=9, x=31, y_pos=779, color=(1, 1, 1), font="F3")
-        add_text(str(banner.get("label") or "Dhaka Bank DCIM"), size=11, x=72, y_pos=786, color=(0.08, 0.12, 0.2), font="F3")
-        add_text(str(banner.get("subtitle") or "Operational reporting"), size=8, x=72, y_pos=775, color=(0.38, 0.42, 0.5))
-        y -= 54
+        add_text(str(banner.get("badge") or "DB"), size=9, x=margin_x + 7, y_pos=banner_y + 9, color=(1, 1, 1), font="F3")
+        add_text(str(banner.get("label") or "Dhaka Bank DCIM"), size=11, x=margin_x + 48, y_pos=banner_y + 16, color=(0.08, 0.12, 0.2), font="F3")
+        add_text(str(banner.get("subtitle") or "Operational reporting"), size=8, x=margin_x + 48, y_pos=banner_y + 5, color=(0.38, 0.42, 0.5))
+        y = banner_y - 18
 
     if include_header and header_lines:
         add_line(header_lines[0], size=14, leading=18, font="F3")
         for line in header_lines[1:]:
             add_line(line, size=9, leading=12, font="F3")
-        y -= 2
+        y -= 4
 
+    min_body_y = 68
     for line in body_lines:
         if line.startswith("+") or line.startswith("|") or line.startswith("-"):
-            add_line(line, size=9, leading=11, font="F2")
+            add_line(line, size=layout.table_font_size, leading=layout.table_leading, font="F2")
         else:
             add_line(line, size=10, leading=12, font="F3")
-        if y <= 84:
+        if y <= min_body_y:
             break
 
+    rule_y = 48
+    rule_end = layout.page_width - margin_x
     commands.append("0.80 0.84 0.90 RG")
-    commands.append("24 52 m 571 52 l S")
-    footer_y = 38
+    commands.append(f"{margin_x} {rule_y} m {rule_end} {rule_y} l S")
+
+    footer_y = 34
     if footer_lines:
-        for line in footer_lines[:3]:
-            add_text(line, size=7, x=24, y_pos=footer_y, color=(0.25, 0.28, 0.34), font="F1")
-            footer_y -= 12
-    add_text(f"Page {page_number} of {total_pages}", size=8, x=495, y_pos=18, color=(0.25, 0.28, 0.34), font="F1")
+        for line in footer_lines[:2]:
+            add_text(line, size=7, x=margin_x, y_pos=footer_y, color=(0.25, 0.28, 0.34), font="F1")
+            footer_y -= 10
+
+    page_num_x = layout.page_width - margin_x - 80
+    add_text(f"Page {page_number} of {total_pages}", size=8, x=page_num_x, y_pos=18, color=(0.25, 0.28, 0.34), font="F1")
     commands.append("ET")
     content = "\n".join(commands).encode("utf-8")
     return content
 
 
-def _write_pdf(output_path: str, pages: list[tuple[dict | None, list[str], list[str], list[str]]], title: str, footer: str) -> None:
+def _write_pdf(
+    output_path: str,
+    pages: list[tuple[dict | None, list[str], list[str], list[str], bool]],
+    title: str,
+    footer: str,
+    layout: PageLayout,
+) -> None:
     objects: list[bytes] = []
 
     def add_object(payload: bytes) -> int:
@@ -357,6 +494,7 @@ def _write_pdf(output_path: str, pages: list[tuple[dict | None, list[str], list[
             header_lines,
             body_lines,
             footer_lines,
+            layout=layout,
             include_header=include_header,
             page_number=page_index,
             total_pages=len(pages),
@@ -364,7 +502,7 @@ def _write_pdf(output_path: str, pages: list[tuple[dict | None, list[str], list[
         content_id = add_object(f"<< /Length {len(stream)} >>\nstream\n".encode("utf-8") + stream + b"\nendstream")
         page_id = add_object(
             (
-                "<< /Type /Page /Parent 0 0 R /MediaBox [0 0 595 842] "
+                f"<< /Type /Page /Parent 0 0 R /MediaBox [0 0 {layout.page_width} {layout.page_height}] "
                 f"/Resources << /Font << /F1 {font_id} 0 R /F2 {mono_font_id} 0 R /F3 {bold_font_id} 0 R >> >> /Contents {content_id} 0 R >>"
             ).encode("utf-8")
         )
@@ -422,12 +560,10 @@ def render_pdf(dataset: ReportDataset, context: GeneratorContext, output_path: s
         for table in (dataset.tables or [])
     ]
     total_rows = sum(len(table.rows) for table in tables)
-    # Some generators intentionally disable the PDF row cap by passing 0/None.
-    # That keeps large-but-valid reports renderable while still allowing other
-    # generators to enforce a smaller safe threshold when needed.
     if row_limit and total_rows and total_rows > row_limit:
         raise ValueError("PDF output is limited to smaller reports. Use CSV or XLSX for larger exports.")
 
+    layout = _resolve_page_layout(context, tables)
     header_lines = _build_header_lines(context, dataset)
     header_banner = _build_header_banner(context)
     footer_lines = _build_footer_lines(context)
@@ -442,15 +578,15 @@ def render_pdf(dataset: ReportDataset, context: GeneratorContext, output_path: s
     for table in tables:
         if table.title or table.name:
             body_lines.append(str(table.title or table.name))
-        body_lines.extend(_build_pretty_table_lines(table))
+        body_lines.extend(_build_pretty_table_lines(table, target_line_width=layout.target_line_width))
         body_lines.append("")
 
     if dataset.warnings:
         body_lines.append("Warnings")
         body_lines.extend(f"- {warning}" for warning in dataset.warnings)
 
-    first_page_limit = max(30, 54 - len(header_lines) - (2 if header_banner else 0))
-    remaining_limit = 60
+    first_page_limit = max(18, int((layout.page_height - 180 - len(header_lines) * 12) / layout.table_leading))
+    remaining_limit = max(25, int((layout.page_height - 90) / layout.table_leading))
     body_pages: list[list[str]] = []
     remaining_lines = list(body_lines)
     if remaining_lines:
@@ -470,5 +606,6 @@ def render_pdf(dataset: ReportDataset, context: GeneratorContext, output_path: s
         pages,
         title=dataset.title,
         footer="Confidential - Dhaka Bank DCIM report",
+        layout=layout,
     )
     return _artifact_metadata(output_path, filename)

@@ -263,6 +263,24 @@ REPORT_TEMPLATE_OPTIONS = {
     },
 }
 
+REPORT_TEMPLATE_OPTIONS["ALERT_EXPORT"] = REPORT_TEMPLATE_OPTIONS["ALERT_DETAIL"]
+REPORT_TEMPLATE_OPTIONS["ROOM_ENVIRONMENT"] = REPORT_TEMPLATE_OPTIONS["ENVIRONMENTAL_TREND"]
+REPORT_TEMPLATE_OPTIONS["ENVIRONMENTAL_TRENDS"] = REPORT_TEMPLATE_OPTIONS["ENVIRONMENTAL_TREND"]
+
+DEFINITION_CODE_ALIASES = {
+    "ALERT_EXPORT": "ALERT_DETAIL",
+    "ALERT_SUMMARY": "ALERT_SUMMARY",
+    "ALERT_DETAIL": "ALERT_DETAIL",
+    "TELEMETRY_EXPORT": "TELEMETRY_EXPORT",
+    "DEVICE_INVENTORY": "DEVICE_INVENTORY",
+    "NOTIFICATION_DELIVERY": "NOTIFICATION_DELIVERY",
+    "AUDIT_EXPORT": "AUDIT_EXPORT",
+    "ENVIRONMENTAL_TREND": "ENVIRONMENTAL_TREND",
+    "ENVIRONMENTAL_TRENDS": "ENVIRONMENTAL_TREND",
+    "ROOM_ENVIRONMENT": "ENVIRONMENTAL_TREND",
+    "UPS_PERFORMANCE": "UPS_PERFORMANCE",
+}
+
 
 def _as_list(value) -> list[str]:
     if value in (None, ""):
@@ -413,11 +431,52 @@ def validate_report_template_config(config, *, existing_config: dict | None = No
             raise ValidationError({"default_date_range": "Must be a dictionary/object."})
         normalized["default_date_range"] = dict(default_date_range)
 
+    if "pdf_orientation" in normalized and normalized["pdf_orientation"] not in (None, ""):
+        orient = str(normalized["pdf_orientation"]).strip().lower()
+        if orient in ("portrait", "landscape"):
+            normalized["pdf_orientation"] = orient
+
+    if "pdf_page_size" in normalized and normalized["pdf_page_size"] not in (None, ""):
+        psize = str(normalized["pdf_page_size"]).strip().upper()
+        if psize in ("A4", "LETTER", "A3"):
+            normalized["pdf_page_size"] = psize
+
+    if "csv_delimiter" in normalized and normalized["csv_delimiter"] not in (None, ""):
+        delimit = str(normalized["csv_delimiter"])
+        if delimit in (",", ";", "\t", "\\t", "|", ":"):
+            normalized["csv_delimiter"] = "\t" if delimit == "\\t" else delimit
+
+    if "csv_encoding" in normalized and normalized["csv_encoding"] not in (None, ""):
+        enc = str(normalized["csv_encoding"]).strip().upper()
+        normalized["csv_encoding"] = enc
+
+    if "csv_include_headers" in normalized:
+        normalized["csv_include_headers"] = bool(normalized["csv_include_headers"])
+
+    if "csv_include_metadata" in normalized:
+        normalized["csv_include_metadata"] = bool(normalized["csv_include_metadata"])
+
+    if "xlsx_sheet_name" in normalized and normalized["xlsx_sheet_name"] not in (None, ""):
+        normalized["xlsx_sheet_name"] = str(normalized["xlsx_sheet_name"]).strip()[:31]
+
+    if "xlsx_freeze_header" in normalized:
+        normalized["xlsx_freeze_header"] = bool(normalized["xlsx_freeze_header"])
+
+    if "xlsx_auto_filter" in normalized:
+        normalized["xlsx_auto_filter"] = bool(normalized["xlsx_auto_filter"])
+
+    if "xlsx_auto_size" in normalized:
+        normalized["xlsx_auto_size"] = bool(normalized["xlsx_auto_size"])
+
+    if "xlsx_include_summary" in normalized:
+        normalized["xlsx_include_summary"] = bool(normalized["xlsx_include_summary"])
+
     return normalized
 
 
 def build_report_template_options(template, *, user=None, device_id=None, device_ids=None) -> dict:
-    definition_code = str(getattr(getattr(template, "definition", None), "code", None) or "").strip().upper()
+    raw_definition_code = str(getattr(getattr(template, "definition", None), "code", None) or "").strip().upper()
+    definition_code = DEFINITION_CODE_ALIASES.get(raw_definition_code, raw_definition_code)
     if not definition_code:
         raise ValidationError({"definition": "Unsupported report definition."})
 
@@ -438,7 +497,7 @@ def build_report_template_options(template, *, user=None, device_id=None, device
         maximum_date_range_days = options.get("maximum_date_range_days")
 
     response = {
-        "definition_code": definition_code,
+        "definition_code": raw_definition_code or definition_code,
         "supported_output_formats": definition_supported_formats or list(SUPPORTED_TEMPLATE_OUTPUT_FORMATS),
         "available_columns": list(options.get("available_columns", [])),
         "required_fields": list(options.get("required_fields", [])),

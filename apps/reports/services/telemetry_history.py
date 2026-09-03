@@ -338,7 +338,7 @@ def _decorate_rows(*, rows: list[dict], devices_by_id: dict[str, Device], metric
 
 def fetch_telemetry_report_rows(*, organization, data_center=None, metric_codes: list[str] | None = None, parameters: dict | None = None):
     parameters = parameters or {}
-    metric_codes = [str(code).strip() for code in (metric_codes or []) if str(code).strip()]
+    metric_codes = [str(code).strip().lower() for code in (metric_codes or []) if str(code).strip()]
     if not metric_codes:
         return [], []
 
