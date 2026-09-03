@@ -29,7 +29,7 @@ from ..models import (
 )
 from .deliveries import create_report_deliveries_for_job, execute_report_delivery, report_delivery_summary
 from .definitions import get_active_definition_by_code
-from .factory import create_report_job
+from .factory import create_report_job, _resolve_relative_date_range
 from .execution import generate_report_job
 from .deliveries import create_report_deliveries_for_job, execute_report_delivery
 
@@ -331,7 +331,16 @@ def execute_report_schedule(
     if not schedule:
         raise ValueError(f"Report schedule {schedule_id} does not exist.")
 
-    if schedule.status != ReportScheduleStatus.ACTIVE:
+    if schedule.status == ReportScheduleStatus.DISABLED:
+        message = "Cannot run a disabled report schedule."
+        ReportSchedule.objects.filter(pk=schedule.pk).update(
+            last_delivery_status="FAILED",
+            last_error_message=message,
+            updated_at=timezone.now(),
+        )
+        raise ValueError(message)
+
+    if schedule.status != ReportScheduleStatus.ACTIVE and trigger_source != "MANUAL":
         log_report_event(logger, "Skipping inactive report schedule", schedule=schedule, trigger_source=trigger_source)
         return schedule
 
@@ -400,8 +409,19 @@ def execute_report_schedule(
     has_date_from = parameters.get("date_from") not in (None, "") or parameters.get("start_date") not in (None, "")
     has_date_to = parameters.get("date_to") not in (None, "") or parameters.get("end_date") not in (None, "")
     if not has_date_from and not has_date_to:
-        parameters["date_from"] = window_start_dt.isoformat()
-        parameters["date_to"] = window_end_dt.isoformat()
+        relative_range = (
+            parameters.get("reporting_period")
+            or parameters.get("relative_date_range")
+            or (template and isinstance(template.config, dict) and template.config.get("relative_date_range"))
+        )
+        range_tuple = _resolve_relative_date_range(relative_range) if relative_range else None
+        if range_tuple:
+            start_dt, end_dt = range_tuple
+            parameters["date_from"] = start_dt.isoformat()
+            parameters["date_to"] = end_dt.isoformat()
+        else:
+            parameters["date_from"] = window_start_dt.isoformat()
+            parameters["date_to"] = window_end_dt.isoformat()
 
     parameters_snapshot = deepcopy(parameters)
     template_snapshot = {}

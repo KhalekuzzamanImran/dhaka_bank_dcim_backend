@@ -320,8 +320,22 @@ def _build_header_lines(context: GeneratorContext, dataset: ReportDataset) -> li
     if not _as_bool(header_config.get("enabled"), True):
         return []
 
-    title = str(header_config.get("title") or dataset.title or "").strip()
-    subtitle = str(header_config.get("subtitle") or dataset.subtitle or "").strip()
+    schedule_name = getattr(getattr(context.job, "schedule", None), "name", None)
+    definition_code = str(getattr(context.definition, "code", "")).lower()
+    is_telem_def = "telemetry" in definition_code
+
+    raw_title = header_config.get("title")
+    if raw_title and "telemetry" in raw_title.lower() and not is_telem_def:
+        raw_title = None
+
+    template_name = getattr(getattr(context.job, "template", None), "name", None) or (getattr(context, "template_snapshot", None) or {}).get("name")
+    title = str(schedule_name or raw_title or template_name or dataset.title or "").strip()
+
+    raw_subtitle = header_config.get("subtitle")
+    if raw_subtitle and ("telemetry" in raw_subtitle.lower() or "ups" in raw_subtitle.lower()) and not is_telem_def:
+        raw_subtitle = None
+
+    subtitle = str(raw_subtitle or dataset.subtitle or "").strip()
     lines: list[str] = []
     if title and _as_bool(header_config.get("show_title"), True):
         lines.append(title)

@@ -293,8 +293,17 @@ def _render_sheet(
             row_index += 1
 
         # 2. Report Title
+        schedule_name = getattr(getattr(context.job, "schedule", None), "name", None)
+        definition_code = str(getattr(context.definition, "code", "")).lower()
+        is_telem_def = "telemetry" in definition_code
+
+        raw_title = header_config.get("title")
+        if raw_title and "telemetry" in raw_title.lower() and not is_telem_def:
+            raw_title = None
+
         job_template_snap = getattr(getattr(context, "job", None), "template_snapshot", {}) if isinstance(getattr(getattr(context, "job", None), "template_snapshot", None), dict) else {}
-        title = str(header_config.get("title") or job_template_snap.get("name") or getattr(context.definition, "code", None) or dataset.title or "Report Export").strip()
+        template_name = getattr(getattr(context.job, "template", None), "name", None) or job_template_snap.get("name")
+        title = str(schedule_name or raw_title or template_name or getattr(context.definition, "code", None) or dataset.title or "Report Export").strip()
         if title and _as_bool(header_config.get("show_title"), True):
             title_cells = f'<c r="A{row_index}" s="4" t="inlineStr"><is><t>{escape(title)}</t></is></c>' + pad_header_row(row_index, 2, style=8)
             rows_xml.append(f'<row r="{row_index}" ht="22" customHeight="1">{title_cells}</row>')
@@ -303,7 +312,11 @@ def _render_sheet(
             row_index += 1
 
         # 3. Subtitle
-        sub = str(header_config.get("subtitle") or dataset.subtitle or "").strip()
+        raw_subtitle = header_config.get("subtitle")
+        if raw_subtitle and ("telemetry" in raw_subtitle.lower() or "ups" in raw_subtitle.lower()) and not is_telem_def:
+            raw_subtitle = None
+
+        sub = str(raw_subtitle or dataset.subtitle or "").strip()
         if sub and _as_bool(header_config.get("show_subtitle"), True):
             sub_cells = f'<c r="A{row_index}" s="5" t="inlineStr"><is><t>{escape(sub)}</t></is></c>' + pad_header_row(row_index, 2, style=8)
             rows_xml.append(f'<row r="{row_index}" ht="18" customHeight="1">{sub_cells}</row>')

@@ -165,13 +165,13 @@ def _resolve_relative_date_range(relative_range: str | None, now=None) -> tuple[
         return None
     now = now or timezone.now()
     code = str(relative_range).lower().strip()
-    if code in ("last_24h", "last_24_hours", "24h", "today"):
+    if code in ("last_24h", "last_24_hours", "24h", "today", "previous_day", "yesterday"):
         return now - timedelta(hours=24), now
-    elif code in ("last_7d", "last_7_days", "7d", "week"):
+    elif code in ("last_7d", "last_7_days", "7d", "week", "previous_week"):
         return now - timedelta(days=7), now
-    elif code in ("last_30d", "last_30_days", "30d", "month"):
+    elif code in ("last_30d", "last_30_days", "30d", "month", "previous_month"):
         return now - timedelta(days=30), now
-    elif code in ("last_90d", "last_90_days", "90d", "quarter"):
+    elif code in ("last_90d", "last_90_days", "90d", "quarter", "previous_quarter"):
         return now - timedelta(days=90), now
     return None
 
@@ -193,48 +193,60 @@ def _merge_parameters(definition, template, schedule, parameters, runtime_parame
         (schedule and isinstance(schedule.parameter_overrides, dict) and (schedule.parameter_overrides.get("device_ids") or schedule.parameter_overrides.get("device_id")))
         or (parameters and (parameters.get("device_ids") or parameters.get("device_id")))
     )
-    if not has_explicit_devices and template and isinstance(template.config, dict):
-        device_scope = template.config.get("device_scope", "single_device")
-        if device_scope == "device_type":
-            device_type = template.config.get("device_type")
-            if device_type:
+    if template and isinstance(template.config, dict):
+        if not has_explicit_devices:
+            device_scope = template.config.get("device_scope", "single_device")
+            if device_scope == "device_type":
+                device_type = template.config.get("device_type")
+                if device_type:
+                    from apps.devices.models import Device
+                    devices_qs = Device.objects.filter(
+                        device_type__name__iexact=device_type,
+                        is_active=True
+                    )
+                    if template.organization:
+                        devices_qs = devices_qs.filter(organization=template.organization)
+                    merged["device_ids"] = [str(pk) for pk in devices_qs.values_list("id", flat=True)]
+                    if "device_id" in merged:
+                        del merged["device_id"]
+            elif device_scope == "all_devices":
                 from apps.devices.models import Device
-                devices_qs = Device.objects.filter(
-                    device_type__name__iexact=device_type,
-                    is_active=True
-                )
+                devices_qs = Device.objects.filter(is_active=True)
                 if template.organization:
                     devices_qs = devices_qs.filter(organization=template.organization)
                 merged["device_ids"] = [str(pk) for pk in devices_qs.values_list("id", flat=True)]
                 if "device_id" in merged:
                     del merged["device_id"]
-        elif device_scope == "all_devices":
-            from apps.devices.models import Device
-            devices_qs = Device.objects.filter(is_active=True)
-            if template.organization:
-                devices_qs = devices_qs.filter(organization=template.organization)
-            merged["device_ids"] = [str(pk) for pk in devices_qs.values_list("id", flat=True)]
-            if "device_id" in merged:
-                del merged["device_id"]
 
-        # Resolve dynamic date range from template config
-        relative_range = template.config.get("relative_date_range")
-        if relative_range and relative_range != "custom":
-            has_runtime_dates = bool(
-                runtime_parameters
-                and (
-                    runtime_parameters.get("date_from")
-                    or runtime_parameters.get("start_date")
-                    or runtime_parameters.get("date_to")
-                    or runtime_parameters.get("end_date")
-                )
+        # Resolve dynamic date range from schedule overrides, parameters, or template config
+        has_dates = bool(
+            merged.get("date_from")
+            or merged.get("start_date")
+            or merged.get("date_to")
+            or merged.get("end_date")
+        )
+        if not has_dates:
+            relative_range = (
+                merged.get("reporting_period")
+                or merged.get("relative_date_range")
+                or template.config.get("relative_date_range")
             )
-            if not has_runtime_dates:
-                range_tuple = _resolve_relative_date_range(relative_range)
-                if range_tuple:
-                    start_dt, end_dt = range_tuple
-                    merged["date_from"] = start_dt.isoformat()
-                    merged["date_to"] = end_dt.isoformat()
+            if relative_range and str(relative_range).lower().strip() != "custom":
+                has_runtime_dates = bool(
+                    runtime_parameters
+                    and (
+                        runtime_parameters.get("date_from")
+                        or runtime_parameters.get("start_date")
+                        or runtime_parameters.get("date_to")
+                        or runtime_parameters.get("end_date")
+                    )
+                )
+                if not has_runtime_dates:
+                    range_tuple = _resolve_relative_date_range(relative_range)
+                    if range_tuple:
+                        start_dt, end_dt = range_tuple
+                        merged["date_from"] = start_dt.isoformat()
+                        merged["date_to"] = end_dt.isoformat()
 
     return merged
 

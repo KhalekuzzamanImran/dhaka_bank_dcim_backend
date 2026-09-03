@@ -48,7 +48,15 @@ def _alert_rows(context: GeneratorContext):
         statuses = [value.upper() for value in normalize_list(parameters.get("status")) if value]
         if statuses:
             qs = qs.filter(status__in=statuses)
-    if parameters.get("device_id"):
+    device_ids = parameters.get("device_ids")
+    if device_ids:
+        if isinstance(device_ids, list):
+            valid_ids = [d for d in device_ids if d]
+            if valid_ids:
+                qs = qs.filter(device_id__in=valid_ids)
+        elif isinstance(device_ids, str):
+            qs = qs.filter(device_id=device_ids)
+    elif parameters.get("device_id"):
         qs = qs.filter(device_id=parameters["device_id"])
 
     return qs

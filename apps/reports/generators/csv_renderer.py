@@ -185,10 +185,25 @@ def _metadata_lines(context: GeneratorContext, dataset: ReportDataset) -> list[s
         "# ==========================================================================",
     ]
 
-    title = str(header_config.get("title") or context.job.template_snapshot.get("name") or context.definition.code or dataset.title or "Report Export")
+    schedule_name = getattr(getattr(context.job, "schedule", None), "name", None)
+    definition_code = str(getattr(context.definition, "code", "")).lower()
+    is_telem_def = "telemetry" in definition_code
+
+    raw_title = header_config.get("title")
+    if raw_title and "telemetry" in raw_title.lower() and not is_telem_def:
+        raw_title = None
+
+    template_name = getattr(getattr(context.job, "template", None), "name", None) or (getattr(context, "template_snapshot", None) or {}).get("name")
+    title = str(schedule_name or raw_title or template_name or context.definition.code or dataset.title or "Report Export").strip()
     lines.append(f"# Report Title    : {title}")
-    if header_config.get("subtitle") or dataset.subtitle:
-        lines.append(f"# Subtitle        : {header_config.get('subtitle') or dataset.subtitle}")
+
+    raw_subtitle = header_config.get("subtitle")
+    if raw_subtitle and ("telemetry" in raw_subtitle.lower() or "ups" in raw_subtitle.lower()) and not is_telem_def:
+        raw_subtitle = None
+
+    resolved_subtitle = str(raw_subtitle or dataset.subtitle or "").strip()
+    if resolved_subtitle:
+        lines.append(f"# Subtitle        : {resolved_subtitle}")
     if _as_bool(header_config.get("show_organization"), True):
         org_name = getattr(context.organization, "name", None) or "Dhaka Bank"
         lines.append(f"# Organization    : {org_name}")
