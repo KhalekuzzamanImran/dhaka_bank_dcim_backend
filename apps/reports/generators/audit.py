@@ -10,6 +10,7 @@ class AuditExportGenerator(BaseReportGenerator):
     definition_code = "AUDIT_EXPORT"
     generator_key = "audit_export"
     supported_formats = ("CSV", "XLSX", "PDF")
+    row_limit_for_pdf = 0
 
     def build_dataset(self, context: GeneratorContext) -> ReportDataset:
         from apps.audit.models import AuditAction, AuditLog

@@ -256,21 +256,25 @@ class ReportTemplateViewSet(ScopedModelViewSet):
             parameters = {}
         if not isinstance(parameters, dict):
             return Response({"parameters": ["Parameters must be a dictionary/object."]}, status=status.HTTP_400_BAD_REQUEST)
-        result = create_report_job(
-            definition=template.definition,
-            organization=template.organization,
-            actor=request.user,
-            data_center=None,
-            template=template,
-            schedule=None,
-            trigger_source=ReportTriggerSource.MANUAL,
-            requested_by=request.user,
-            parameters=parameters,
-            runtime_parameters={},
-            recipients=None,
-            source_event={},
-            queue_job=True,
-        )
+        try:
+            result = create_report_job(
+                definition=template.definition,
+                organization=template.organization,
+                actor=request.user,
+                data_center=None,
+                template=template,
+                schedule=None,
+                trigger_source=ReportTriggerSource.MANUAL,
+                requested_by=request.user,
+                parameters=parameters,
+                runtime_parameters={},
+                recipients=None,
+                source_event={},
+                queue_job=True,
+            )
+        except (ValidationError, ValueError, DRFValidationError) as exc:
+            detail = getattr(exc, "message_dict", None) or getattr(exc, "detail", None) or str(exc)
+            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
         _safe_write_audit(
             "REPORT_GENERATION_REQUESTED",
             "ReportTemplate",

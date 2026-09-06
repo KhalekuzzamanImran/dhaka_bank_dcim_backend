@@ -116,7 +116,8 @@ class AlertDetailGenerator(BaseReportGenerator):
 
     def get_filename(self, context: GeneratorContext, output_format: str) -> str:
         prefix = slugify(context.definition.name or context.definition.code or "report") or "report"
-        timestamp = context.generated_at.strftime("%Y%m%d_%H%M%S")
+        gen_time = getattr(context, "local_generated_at", None) or getattr(context, "generated_at", None)
+        timestamp = gen_time.strftime("%Y%m%d_%H%M%S") if gen_time else context.generated_at.strftime("%Y%m%d_%H%M%S")
         return f"{prefix}_{context.job.pk}_{timestamp}.{output_format.lower()}"
 
     def build_dataset(self, context: GeneratorContext) -> ReportDataset:

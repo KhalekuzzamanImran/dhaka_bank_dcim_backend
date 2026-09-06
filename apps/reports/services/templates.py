@@ -138,6 +138,12 @@ def update_report_template(template, *, actor=None, organization=None, data_cent
     template.description = description if description is not None else template.description
     template.config = config
     if default_parameters is not None:
+        if config.get("relative_date_range") and str(config.get("relative_date_range")).lower().strip() != "custom":
+            if isinstance(default_parameters, dict):
+                default_parameters.pop("date_from", None)
+                default_parameters.pop("date_to", None)
+                default_parameters.pop("start_date", None)
+                default_parameters.pop("end_date", None)
         template.default_parameters = default_parameters
     if primary_format is not None:
         template.primary_format = primary_format

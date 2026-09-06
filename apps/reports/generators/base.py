@@ -19,6 +19,17 @@ class GeneratorContext:
     timezone: Any
     generated_at: datetime
 
+    @property
+    def local_generated_at(self) -> datetime:
+        from django.utils import timezone
+        tz = self.timezone or timezone.get_current_timezone()
+        try:
+            if timezone.is_naive(self.generated_at):
+                return timezone.make_aware(self.generated_at, tz)
+            return timezone.localtime(self.generated_at, tz)
+        except Exception:
+            return self.generated_at
+
 
 @dataclass(slots=True)
 class ReportTable:
@@ -62,7 +73,7 @@ class BaseReportGenerator:
     definition_code: str = ""
     generator_key: str = ""
     supported_formats: tuple[str, ...] = ("CSV",)
-    row_limit_for_pdf: int = 1000
+    row_limit_for_pdf: int = 0
 
     def validate_parameters(self, context: GeneratorContext) -> None:  # pragma: no cover - default hook
         return None
@@ -77,7 +88,8 @@ class BaseReportGenerator:
         from django.utils.text import slugify
 
         prefix = slugify(context.definition.code or context.output_config_snapshot.get("definition_code") or "report") or "report"
-        timestamp = context.generated_at.strftime("%Y%m%d_%H%M%S")
+        gen_time = getattr(context, "local_generated_at", None) or context.generated_at
+        timestamp = gen_time.strftime("%Y%m%d_%H%M%S")
         return f"{prefix}_{context.job.pk}_{timestamp}.{output_format.lower()}"
 
     def _apply_template_default_columns(self, context: GeneratorContext, dataset: ReportDataset) -> ReportDataset:

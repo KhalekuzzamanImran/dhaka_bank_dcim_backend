@@ -38,16 +38,22 @@ def _parse_date_range(parameters: dict | None):
 
             dt = dt_cls.combine(value, dt_time.max if is_end else dt_time.min)
         else:
-            parsed_dt = parse_datetime(str(value))
-            if parsed_dt is not None:
-                dt = parsed_dt
-            else:
-                parsed_date = parse_date(str(value))
-                if parsed_date is None:
-                    raise ValueError(f"Invalid date value: {value!r}")
+            val_str = str(value).strip()
+            parsed_date = parse_date(val_str)
+            if parsed_date is not None and "T" not in val_str and " " not in val_str:
                 from datetime import time as dt_time, datetime as dt_cls
 
                 dt = dt_cls.combine(parsed_date, dt_time.max if is_end else dt_time.min)
+            else:
+                parsed_dt = parse_datetime(val_str)
+                if parsed_dt is not None:
+                    dt = parsed_dt
+                else:
+                    if parsed_date is None:
+                        raise ValueError(f"Invalid date value: {value!r}")
+                    from datetime import time as dt_time, datetime as dt_cls
+
+                    dt = dt_cls.combine(parsed_date, dt_time.max if is_end else dt_time.min)
         if timezone.is_naive(dt):
             dt = timezone.make_aware(dt, timezone.get_current_timezone())
         return dt

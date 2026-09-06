@@ -85,7 +85,16 @@ def _artifact_metadata(path: str, filename: str) -> RenderedArtifact:
 
 
 def _escape_pdf_text(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    cleaned = (
+        str(value)
+        .replace("—", "-")
+        .replace("–", "-")
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+        .replace("\u201c", '"')
+        .replace("\u201d", '"')
+    )
+    return cleaned.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
 
 def _safe_text(value) -> str:
@@ -358,7 +367,9 @@ def _build_header_lines(context: GeneratorContext, dataset: ReportDataset) -> li
         if date_range:
             lines.append(f"Date range: {date_range}")
     if _as_bool(header_config.get("show_generated_at"), True):
-        lines.append(f"Generated at: {context.generated_at.strftime('%d %b %Y, %H:%M')}")
+        gen_time = getattr(context, "local_generated_at", None) or getattr(context, "generated_at", None)
+        gen_str = gen_time.strftime("%d %b %Y, %H:%M") if gen_time else "--"
+        lines.append(f"Generated at: {gen_str}")
     if _as_bool(header_config.get("show_generated_by"), False):
         generated_by = getattr(getattr(context.job, "requested_by", None), "full_name", None) or getattr(getattr(context.job, "requested_by", None), "username", None)
         if generated_by:
@@ -394,14 +405,19 @@ def _build_footer_lines(context: GeneratorContext) -> list[str]:
     if not _as_bool(footer_config.get("enabled"), True):
         return []
 
+    definition_code = str(getattr(context.definition, "code", "")).lower()
+    is_alert_def = "alert" in definition_code
+
     lines: list[str] = []
     custom_text = str(footer_config.get("custom_text") or "").strip()
-    if custom_text:
+    if custom_text and not is_alert_def:
         lines.append(custom_text)
-    if _as_bool(footer_config.get("show_confidentiality_note"), True):
+    if _as_bool(footer_config.get("show_confidentiality_note"), True) and not is_alert_def:
         lines.append("Confidential - Dhaka Bank DCIM report")
     if _as_bool(footer_config.get("show_generated_at"), False):
-        lines.append(f"Generated at: {context.generated_at.strftime('%d %b %Y, %H:%M')}")
+        gen_time = getattr(context, "local_generated_at", None) or getattr(context, "generated_at", None)
+        gen_str = gen_time.strftime("%d %b %Y, %H:%M") if gen_time else "--"
+        lines.append(f"Generated at: {gen_str}")
     if _as_bool(footer_config.get("show_timezone"), False):
         tz_name = getattr(context.timezone, "key", None) or getattr(context.timezone, "zone", None) or str(context.timezone)
         if tz_name:
@@ -557,7 +573,7 @@ def _write_pdf(
         )
 
 
-def render_pdf(dataset: ReportDataset, context: GeneratorContext, output_path: str, filename: str, *, row_limit: int = 1000) -> RenderedArtifact:
+def render_pdf(dataset: ReportDataset, context: GeneratorContext, output_path: str, filename: str, *, row_limit: int = 0) -> RenderedArtifact:
     if not dataset.tables and not dataset.summary_rows:
         raise ValueError("The dataset does not contain any content to render.")
 

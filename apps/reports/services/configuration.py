@@ -425,7 +425,16 @@ def validate_report_template_config(config, *, existing_config: dict | None = No
             field_name="max_date_range_days",
         )
 
-    if "default_date_range" in normalized and normalized["default_date_range"] not in (None, ""):
+    if "default_date_range" in config and config["default_date_range"] in (None, "", {}):
+        normalized.pop("default_date_range", None)
+    elif normalized.get("relative_date_range") and str(normalized.get("relative_date_range")).lower().strip() != "custom":
+        normalized.pop("default_date_range", None)
+        if isinstance(normalized.get("default_parameters"), dict):
+            normalized["default_parameters"].pop("date_from", None)
+            normalized["default_parameters"].pop("date_to", None)
+            normalized["default_parameters"].pop("start_date", None)
+            normalized["default_parameters"].pop("end_date", None)
+    elif "default_date_range" in normalized and normalized["default_date_range"] not in (None, ""):
         default_date_range = normalized["default_date_range"]
         if not isinstance(default_date_range, dict):
             raise ValidationError({"default_date_range": "Must be a dictionary/object."})
@@ -442,9 +451,14 @@ def validate_report_template_config(config, *, existing_config: dict | None = No
             normalized["pdf_page_size"] = psize
 
     if "csv_delimiter" in normalized and normalized["csv_delimiter"] not in (None, ""):
-        delimit = str(normalized["csv_delimiter"])
-        if delimit in (",", ";", "\t", "\\t", "|", ":"):
-            normalized["csv_delimiter"] = "\t" if delimit == "\\t" else delimit
+        raw_delimit = str(normalized["csv_delimiter"])
+        clean_delimit = raw_delimit.strip().lower()
+        if clean_delimit == "default":
+            normalized["csv_delimiter"] = ","
+        elif raw_delimit == "\t" or clean_delimit in ("\\t", "tab"):
+            normalized["csv_delimiter"] = "\t"
+        elif raw_delimit.strip() in (",", ";", "|", ":"):
+            normalized["csv_delimiter"] = raw_delimit.strip()
 
     if "csv_encoding" in normalized and normalized["csv_encoding"] not in (None, ""):
         enc = str(normalized["csv_encoding"]).strip().upper()

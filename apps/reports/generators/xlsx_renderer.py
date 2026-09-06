@@ -4,7 +4,7 @@ import hashlib
 import os
 import re
 import zipfile
-from datetime import date, datetime
+from datetime import date, datetime, time
 from xml.sax.saxutils import escape
 
 from django.utils import timezone
@@ -45,7 +45,12 @@ def _column_letter(index: int) -> str:
     return result or "A"
 
 
-def _excel_serial(value: datetime) -> float:
+def _excel_serial(value: datetime, tz=None) -> float:
+    try:
+        if not timezone.is_naive(value):
+            value = timezone.localtime(value, tz or timezone.get_current_timezone())
+    except Exception:
+        pass
     delta = value.replace(tzinfo=None) - _EXCEL_EPOCH
     return delta.days + (delta.seconds / 86400) + (delta.microseconds / 86400000000)
 
@@ -56,7 +61,7 @@ def _escape_formula_injection(value: str) -> str:
     return value
 
 
-def _cell_xml(column_index: int, row_index: int, value, *, style_index: int = 0) -> str:
+def _cell_xml(column_index: int, row_index: int, value, *, style_index: int = 0, tz=None) -> str:
     cell_ref = f"{_column_letter(column_index)}{row_index}"
     if value in (None, ""):
         return ""
@@ -66,8 +71,16 @@ def _cell_xml(column_index: int, row_index: int, value, *, style_index: int = 0)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         style_attr = f' s="{style_index}"' if style_index else ""
         return f'<c r="{cell_ref}"{style_attr}><v>{value}</v></c>'
+    if isinstance(value, str):
+        parsed_dt = parse_datetime(value)
+        if parsed_dt is not None:
+            value = parsed_dt
     if isinstance(value, datetime):
-        return f'<c r="{cell_ref}" s="{style_index or 1}"><v>{_excel_serial(value)}</v></c>'
+        return f'<c r="{cell_ref}" s="{style_index or 1}"><v>{_excel_serial(value, tz=tz)}</v></c>'
+    if isinstance(value, date):
+        delta = datetime.combine(value, time.min) - _EXCEL_EPOCH
+        serial = delta.days + (delta.seconds / 86400)
+        return f'<c r="{cell_ref}" s="{style_index or 1}"><v>{serial}</v></c>'
     text = _escape_formula_injection(str(value))
     style_attr = f' s="{style_index}"' if style_index else ""
     return f'<c r="{cell_ref}"{style_attr} t="inlineStr"><is><t xml:space="preserve">{escape(text)}</t></is></c>'
@@ -210,7 +223,7 @@ def _report_info_rows(context: GeneratorContext, dataset: ReportDataset | None =
         {"section": "report", "label": "subtitle", "value": str(header_config.get("subtitle") or dataset_sub or "--") if _as_bool(header_config.get("show_subtitle"), True) else "--"},
         {"section": "report", "label": "type", "value": str(def_code or "--")},
         {"section": "report", "label": "output_format", "value": str(output_cfg.get("primary_format") or output_cfg.get("output_format") or "--")},
-        {"section": "report", "label": "generated_at", "value": context.generated_at.strftime("%d %b %Y, %H:%M") if hasattr(context, "generated_at") and context.generated_at else "--"},
+        {"section": "report", "label": "generated_at", "value": (getattr(context, "local_generated_at", None) or getattr(context, "generated_at", None)).strftime("%d %b %Y, %H:%M") if hasattr(context, "generated_at") and context.generated_at else "--"},
         {"section": "scope", "label": "organization", "value": getattr(context.organization, "name", None) or "--"},
         {"section": "scope", "label": "data_center", "value": getattr(context.data_center, "name", None) or "All"},
     ]
@@ -257,7 +270,7 @@ def _render_sheet(
     *,
     is_primary: bool = False,
     freeze_header: bool = True,
-    auto_filter: bool = True,
+    auto_filter: bool = False,
     auto_size: bool = True,
 ) -> str:
     rows_xml = []
@@ -270,6 +283,7 @@ def _render_sheet(
 
     num_cols = max(1, len(table.columns))
     last_col = _column_letter(num_cols)
+    tz = getattr(context, "timezone", None) or timezone.get_current_timezone()
 
     if is_primary and header_enabled:
         # Helper to fill remaining columns in a header row with clean white background
@@ -345,7 +359,8 @@ def _render_sheet(
                 meta_items.append(("Date range", dr))
 
         if _as_bool(header_config.get("show_generated_at"), True):
-            meta_items.append(("Generated at", context.generated_at.strftime("%d %b %Y, %H:%M") if hasattr(context, "generated_at") and context.generated_at else "--"))
+            gen_time = getattr(context, "local_generated_at", None) or getattr(context, "generated_at", None)
+            meta_items.append(("Generated at", gen_time.strftime("%d %b %Y, %H:%M") if gen_time else "--"))
 
         if _as_bool(header_config.get("show_generated_by"), True):
             gen_by = getattr(getattr(context.job, "requested_by", None), "full_name", None) or getattr(getattr(context.job, "requested_by", None), "username", None)
@@ -385,10 +400,27 @@ def _render_sheet(
             value = row.get(column)
             if value is None:
                 value = ""
-            val_str = str(value)
+            if isinstance(value, datetime):
+                try:
+                    loc_dt = timezone.localtime(value, tz) if not timezone.is_naive(value) else value
+                    val_str = loc_dt.strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    val_str = str(value)
+            elif isinstance(value, str):
+                parsed_dt = parse_datetime(value)
+                if parsed_dt is not None:
+                    try:
+                        loc_dt = timezone.localtime(parsed_dt, tz) if not timezone.is_naive(parsed_dt) else parsed_dt
+                        val_str = loc_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        val_str = str(value)
+                else:
+                    val_str = str(value)
+            else:
+                val_str = str(value)
             if len(val_str) > max_widths[idx - 1]:
                 max_widths[idx - 1] = len(val_str)
-            cells.append(_cell_xml(idx, row_index, value, style_index=row_style))
+            cells.append(_cell_xml(idx, row_index, value, style_index=row_style, tz=tz))
         rows_xml.append(f'<row r="{row_index}">{"".join(cells)}</row>')
         row_index += 1
 
@@ -437,7 +469,7 @@ def render_xlsx(dataset: ReportDataset, context: GeneratorContext, output_path: 
     config = _template_config(context)
     custom_sheet_name = str(config.get("xlsx_sheet_name") or "").strip()
     freeze_header = _as_bool(config.get("xlsx_freeze_header"), True)
-    auto_filter = _as_bool(config.get("xlsx_auto_filter"), True)
+    auto_filter = False
     auto_size = _as_bool(config.get("xlsx_auto_size"), True)
     include_summary = _as_bool(config.get("xlsx_include_summary"), True)
 

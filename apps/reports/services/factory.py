@@ -219,20 +219,21 @@ def _merge_parameters(definition, template, schedule, parameters, runtime_parame
                     del merged["device_id"]
 
         # Resolve dynamic date range from schedule overrides, parameters, or template config
-        has_dates = bool(
-            merged.get("date_from")
-            or merged.get("start_date")
-            or merged.get("date_to")
-            or merged.get("end_date")
+        relative_range = (
+            (runtime_parameters and (runtime_parameters.get("relative_date_range") or runtime_parameters.get("reporting_period")))
+            or (parameters and (parameters.get("relative_date_range") or parameters.get("reporting_period")))
+            or (schedule and isinstance(schedule.parameter_overrides, dict) and (schedule.parameter_overrides.get("relative_date_range") or schedule.parameter_overrides.get("reporting_period")))
+            or (template and isinstance(template.config, dict) and template.config.get("relative_date_range"))
+            or merged.get("reporting_period")
+            or merged.get("relative_date_range")
         )
-        if not has_dates:
-            relative_range = (
-                merged.get("reporting_period")
-                or merged.get("relative_date_range")
-                or template.config.get("relative_date_range")
-            )
-            if relative_range and str(relative_range).lower().strip() != "custom":
-                has_runtime_dates = bool(
+        is_custom = str(relative_range or "").lower().strip() == "custom"
+        schema_props = (definition.parameter_schema or {}).get("properties", {}) if definition and isinstance(definition.parameter_schema, dict) else {}
+        supports_date_range = "date_from" in schema_props or "start_date" in schema_props or not schema_props
+
+        if supports_date_range:
+            if relative_range and not is_custom:
+                has_runtime_custom_dates = bool(
                     runtime_parameters
                     and (
                         runtime_parameters.get("date_from")
@@ -240,13 +241,15 @@ def _merge_parameters(definition, template, schedule, parameters, runtime_parame
                         or runtime_parameters.get("date_to")
                         or runtime_parameters.get("end_date")
                     )
+                    and str(runtime_parameters.get("relative_date_range") or "").lower().strip() == "custom"
                 )
-                if not has_runtime_dates:
+                if not has_runtime_custom_dates:
                     range_tuple = _resolve_relative_date_range(relative_range)
                     if range_tuple:
                         start_dt, end_dt = range_tuple
                         merged["date_from"] = start_dt.isoformat()
                         merged["date_to"] = end_dt.isoformat()
+                        merged["relative_date_range"] = relative_range
 
     return merged
 

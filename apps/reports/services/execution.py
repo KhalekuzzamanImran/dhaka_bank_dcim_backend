@@ -96,6 +96,14 @@ def _build_context(job: ReportJob, definition) -> GeneratorContext:
     template_snapshot = deepcopy(job.template_snapshot if isinstance(job.template_snapshot, dict) else {})
     scope_snapshot = deepcopy(job.scope_snapshot if isinstance(job.scope_snapshot, dict) else {})
     output_config_snapshot = deepcopy(_get_output_config(job))
+    tz = timezone.get_current_timezone()
+    schedule = getattr(job, "schedule", None)
+    if schedule and getattr(schedule, "timezone", None):
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(schedule.timezone)
+        except Exception:
+            pass
     return GeneratorContext(
         job=job,
         definition=definition,
@@ -105,8 +113,8 @@ def _build_context(job: ReportJob, definition) -> GeneratorContext:
         template_snapshot=template_snapshot,
         scope_snapshot=scope_snapshot,
         output_config_snapshot=output_config_snapshot,
-        timezone=timezone.get_current_timezone(),
-        generated_at=timezone.now(),
+        timezone=tz,
+        generated_at=timezone.localtime(timezone.now(), tz),
     )
 
 
