@@ -235,6 +235,12 @@ class ReportPhase6CApiTestCase(TestCase):
         self.assertEqual(preview.status_code, 200)
         self.assertIn("results", preview.json())
 
+        delete_response = self.client.delete(f"/api/v1/reports/schedules/{schedule_id}/")
+        self.assertEqual(delete_response.status_code, 204)
+        get_after_delete = self.client.get(f"/api/v1/reports/schedules/{schedule_id}/")
+        self.assertEqual(get_after_delete.status_code, 404)
+        self.assertFalse(ReportSchedule.objects.filter(id=schedule_id).exists())
+
     def test_jobs_artifacts_and_deliveries_are_normalized(self):
         self._auth()
         template = ReportTemplate.objects.create(

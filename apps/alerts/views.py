@@ -183,4 +183,4 @@ class AlertRecentAPIView(APIView):
         filterset = AlertEventFilter(request.GET, queryset=qs)
         if filterset.is_valid():
             qs = filterset.qs
-        return Response(build_recent_alert_logs(qs, limit=200, context={"request": request}))
+        return Response(build_recent_alert_logs(qs, limit=200, context={"request": request}, days=7))

@@ -368,15 +368,16 @@ class ReportScheduleViewSet(ScopedModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         schedule = self.get_object()
-        schedule.status = ReportScheduleStatus.DISABLED
-        schedule.save(update_fields=["status", "updated_at"])
+        schedule_pk = schedule.pk
+        organization = schedule.organization
+        schedule.delete()
         _safe_write_audit(
-            "REPORT_SCHEDULE_DISABLED",
+            "DELETE",
             "ReportSchedule",
-            schedule.pk,
-            organization=schedule.organization,
+            schedule_pk,
+            organization=organization,
             actor=request.user,
-            message="Report schedule disabled.",
+            message="Report schedule deleted.",
         )
         return Response(status=status.HTTP_204_NO_CONTENT)
 

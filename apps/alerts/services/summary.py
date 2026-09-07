@@ -109,7 +109,7 @@ def build_recent_alerts(queryset, limit=10, context=None):
     return serializer.data
 
 
-def build_recent_alert_logs(queryset, limit=200, context=None, days=30):
+def build_recent_alert_logs(queryset, limit=200, context=None, days=7):
     since = timezone.now() - timedelta(days=days)
     log_queryset = (
         AlertEventLog.objects.select_related(
