@@ -140,15 +140,25 @@ def _mark_success(device, polling_config, at):
 
 def _mark_failure(device, polling_config, error_message, at):
     failure_count = (polling_config.consecutive_failures + 1) if polling_config else 1
-    status = DeviceStatus.DEGRADED if failure_count < 3 else DeviceStatus.OFFLINE
+    stale_after = max(1, int(polling_config.polling_profile.stale_after_seconds or 180)) if polling_config else 180
+    degraded_after = 120
     previous_status = device.status
+    elapsed = (at - device.last_seen_at).total_seconds() if device.last_seen_at else None
+
+    if (elapsed is not None and elapsed >= stale_after) or failure_count >= 3 or (device.last_seen_at is None and failure_count >= 3):
+        status = DeviceStatus.OFFLINE
+    elif (elapsed is not None and elapsed >= degraded_after) or failure_count >= 2 or (device.last_seen_at is None and failure_count >= 2):
+        status = DeviceStatus.DEGRADED
+    else:
+        status = previous_status or DeviceStatus.ONLINE
+
     Device.objects.filter(pk=device.pk).update(status=status)
-    if status == DeviceStatus.OFFLINE:
+    if status != previous_status:
         publish_device_status_update(
             device,
             status=status,
             previous_status=previous_status,
-            reason=str(error_message or "")[:500] or "poll failure",
+            reason=str(error_message or "")[:500] or f"transitioned to {status}",
             source="modbus_worker",
             observed_at=at,
         )

@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 import hashlib
+import logging
 from typing import Any
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.core.cache import cache
 from django.utils import timezone
+
+logger = logging.getLogger(__name__)
+
 
 LIVE_UPDATES_REVISION_KEY = "live-updates:revision"
 LIVE_UPDATES_LAST_EVENT_KEY = "live-updates:last-event"
@@ -138,6 +142,75 @@ def publish_device_status_update(
             "source": source,
         },
     )
+
+    # Record persistent DeviceEvent and AlertEvent for connectivity/outage tracking
+    try:
+        from apps.telemetry.models import DeviceEvent, DeviceEventSeverity
+        from apps.alerts.models import AlertEvent, AlertSeverity, AlertStatus
+
+        dev_org_id = getattr(device, "organization_id", None)
+        dev_dc_id = getattr(device, "data_center_id", None)
+        dev_pk = getattr(device, "pk", None)
+        dev_name = getattr(device, "name", "Device")
+        timestamp = observed_at or now
+
+        if dev_org_id and dev_dc_id and dev_pk:
+            # 1. DeviceEvent audit log for every transition
+            code_map = {
+                "OFFLINE": ("DEVICE_OFFLINE", "Device Offline", DeviceEventSeverity.CRITICAL),
+                "DEGRADED": ("DEVICE_DEGRADED", "Device Communication Degraded", DeviceEventSeverity.WARNING),
+                "ONLINE": ("DEVICE_ONLINE", "Device Online", DeviceEventSeverity.INFO),
+            }
+            if normalized_status in code_map and normalized_status != str(previous_status or "").upper():
+                ecode, ename, esev = code_map[normalized_status]
+                DeviceEvent.objects.create(
+                    organization_id=dev_org_id,
+                    data_center_id=dev_dc_id,
+                    device_id=dev_pk,
+                    event_code=ecode,
+                    event_name=ename,
+                    severity=esev,
+                    message=f"{dev_name} is {normalized_status.lower()}: {reason or 'status updated'}",
+                    occurred_at=timestamp,
+                    raw_payload={
+                        "status": normalized_status,
+                        "previous_status": str(previous_status or ""),
+                        "reason": reason,
+                        "source": source,
+                    },
+                )
+
+            # 2. AlertEvent outage lifecycle ("from sometime to sometime")
+            if normalized_status == "OFFLINE":
+                has_open_alert = AlertEvent.objects.filter(
+                    device_id=dev_pk,
+                    status__in=[AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED],
+                    message__icontains="offline",
+                ).exists()
+                if not has_open_alert:
+                    AlertEvent.objects.create(
+                        organization_id=dev_org_id,
+                        data_center_id=dev_dc_id,
+                        device_id=dev_pk,
+                        severity=AlertSeverity.CRITICAL,
+                        status=AlertStatus.OPEN,
+                        message=f"{dev_name} is offline / unreachable ({reason or 'connectivity lost'})",
+                        triggered_at=timestamp,
+                        last_seen_at=timestamp,
+                    )
+            elif normalized_status == "ONLINE":
+                AlertEvent.objects.filter(
+                    device_id=dev_pk,
+                    status__in=[AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED],
+                    message__icontains="offline",
+                ).update(
+                    status=AlertStatus.RESOLVED,
+                    resolved_at=timestamp,
+                    resolution_type="AUTO",
+                )
+    except Exception as exc:
+        logger.warning("Failed to record device status transition events: %s", exc)
+
     return event
 
 

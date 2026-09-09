@@ -173,6 +173,10 @@ class SNMPClient:
             batch = requested[start:start + batch_size]
             batch_results = self._request(batch)
             if len(batch_results) > 0 and isinstance(batch_results[0], Exception):
+                if isinstance(batch_results[0], SNMPTimeoutError):
+                    # Host is completely unreachable; mark remaining requested OIDs as timed out and stop immediately
+                    results.update({oid: batch_results[0] for oid in requested[start:]})
+                    break
                 logger.info("SNMP batch GET failed, falling back to individual requests for batch: %s", batch)
                 individual_results = []
                 for oid in batch:

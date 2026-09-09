@@ -30,13 +30,14 @@ def get_queue(protocol, priority):
 
 @shared_task(queue="scheduler", soft_time_limit=30, time_limit=45)
 def reconcile_stale_devices():
-    """Mark polled devices offline when their heartbeat has expired.
+    """Mark polled devices degraded (after 120s) or offline (after 180s) when heartbeat has expired.
 
     This covers worker outages and devices that stop responding without a
     poll-failure callback reaching the device row.
     """
     now = timezone.now()
     marked_offline = 0
+    marked_degraded = 0
     try:
         configs = DevicePollingConfig.objects.select_related("device", "polling_profile").filter(
             is_enabled=True,
@@ -47,31 +48,50 @@ def reconcile_stale_devices():
             last_seen = config.device.last_seen_at
             if not last_seen:
                 continue
+            elapsed = (now - last_seen).total_seconds()
             stale_after = max(1, int(config.polling_profile.stale_after_seconds or 180))
-            if (now - last_seen).total_seconds() < stale_after:
-                continue
-            previous_status = config.device.status
-            updated = Device.objects.filter(
-                pk=config.device_id,
-                status__in=[DeviceStatus.ONLINE, DeviceStatus.DEGRADED],
-            ).update(status=DeviceStatus.OFFLINE, updated_at=now)
-            marked_offline += updated
-            if updated:
-                publish_device_status_update(
-                    config.device,
-                    status=DeviceStatus.OFFLINE,
-                    previous_status=previous_status,
-                    reason="stale heartbeat",
-                    source="scheduler",
-                    observed_at=now,
-                )
+            degraded_after = 120
+
+            if elapsed >= stale_after:
+                previous_status = config.device.status
+                if previous_status != DeviceStatus.OFFLINE:
+                    updated = Device.objects.filter(
+                        pk=config.device_id,
+                    ).exclude(status=DeviceStatus.OFFLINE).update(status=DeviceStatus.OFFLINE, updated_at=now)
+                    if updated:
+                        marked_offline += updated
+                        publish_device_status_update(
+                            config.device,
+                            status=DeviceStatus.OFFLINE,
+                            previous_status=previous_status,
+                            reason=f"stale heartbeat ({int(elapsed)}s elapsed)",
+                            source="scheduler",
+                            observed_at=now,
+                        )
+            elif elapsed >= degraded_after:
+                previous_status = config.device.status
+                if previous_status == DeviceStatus.ONLINE:
+                    updated = Device.objects.filter(
+                        pk=config.device_id,
+                        status=DeviceStatus.ONLINE,
+                    ).update(status=DeviceStatus.DEGRADED, updated_at=now)
+                    if updated:
+                        marked_degraded += updated
+                        publish_device_status_update(
+                            config.device,
+                            status=DeviceStatus.DEGRADED,
+                            previous_status=previous_status,
+                            reason=f"heartbeat delayed ({int(elapsed)}s elapsed)",
+                            source="scheduler",
+                            observed_at=now,
+                        )
     except (ProgrammingError, OperationalError) as exc:
         logger.warning("Stale-device reconciliation skipped because database schema is not ready: %s", exc)
-        return {"marked_offline": 0, "skipped": True, "reason": "database_schema_not_ready"}
+        return {"marked_offline": 0, "marked_degraded": 0, "skipped": True, "reason": "database_schema_not_ready"}
 
-    if marked_offline:
-        logger.warning("Marked %s stale devices offline", marked_offline)
-    return {"marked_offline": marked_offline, "time": now.isoformat()}
+    if marked_offline or marked_degraded:
+        logger.warning("Reconciled stale devices: %s offline, %s degraded", marked_offline, marked_degraded)
+    return {"marked_offline": marked_offline, "marked_degraded": marked_degraded, "time": now.isoformat()}
 
 
 @shared_task(queue="scheduler", soft_time_limit=30, time_limit=45)

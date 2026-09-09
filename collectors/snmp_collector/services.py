@@ -149,22 +149,33 @@ def _mark_success(device: Device, polling_config: Optional[DevicePollingConfig],
 def _mark_failure(device: Device, polling_config: Optional[DevicePollingConfig], error_message: str, at):
     failure_count = 1
     stale_after = 180
+    degraded_after = 120
     interval = 60
     previous_status = device.status
     if polling_config:
         failure_count = polling_config.consecutive_failures + 1
-        stale_after = polling_config.polling_profile.stale_after_seconds
-        interval = polling_config.polling_profile.interval_seconds
-    status = DeviceStatus.DEGRADED
-    if device.last_seen_at is None or (at - device.last_seen_at).total_seconds() >= stale_after or failure_count >= 3:
+        stale_after = max(1, int(polling_config.polling_profile.stale_after_seconds or 180))
+        interval = max(1, int(polling_config.polling_profile.interval_seconds or 60))
+
+    elapsed = (at - device.last_seen_at).total_seconds() if device.last_seen_at else None
+
+    # After 3rd poll failure or stale_after (180s): OFFLINE
+    # After 2nd poll failure or 120s: DEGRADED
+    # 1st poll failure (< 120s): keep previous_status (ONLINE) to tolerate transient packet drop
+    if (elapsed is not None and elapsed >= stale_after) or failure_count >= 3 or (device.last_seen_at is None and failure_count >= 3):
         status = DeviceStatus.OFFLINE
+    elif (elapsed is not None and elapsed >= degraded_after) or failure_count >= 2 or (device.last_seen_at is None and failure_count >= 2):
+        status = DeviceStatus.DEGRADED
+    else:
+        status = previous_status or DeviceStatus.ONLINE
+
     Device.objects.filter(pk=device.pk).update(status=status)
-    if status == DeviceStatus.OFFLINE:
+    if status != previous_status:
         publish_device_status_update(
             device,
             status=status,
             previous_status=previous_status,
-            reason=str(error_message or "")[:500] or "poll failure",
+            reason=str(error_message or "")[:500] or f"transitioned to {status}",
             source="snmp_worker",
             observed_at=at,
         )
