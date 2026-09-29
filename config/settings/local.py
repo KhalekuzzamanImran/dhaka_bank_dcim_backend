@@ -5,4 +5,4 @@ DEBUG = True
 # so the notification task tests can assert the retry contract directly.
 CELERY_TASK_EAGER_PROPAGATES = True
 DATA_UPLOAD_MAX_NUMBER_FIELDS = 10000
-
+QUERY_MONITORING_ENABLED = True

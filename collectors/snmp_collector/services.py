@@ -125,13 +125,19 @@ def _quality_for_metric(metric_data_type: str, payload: Dict[str, Any]) -> str:
 
 def _mark_success(device: Device, polling_config: Optional[DevicePollingConfig], at):
     updates = {"status": DeviceStatus.ONLINE, "last_seen_at": at}
-    previous_status = device.status
-    updated = Device.objects.filter(pk=device.pk).update(**updates)
-    if updated and str(previous_status or "").upper() != DeviceStatus.ONLINE:
+    current_status = Device.objects.filter(pk=device.pk).values_list("status", flat=True).first()
+    from apps.alerts.models import AlertEvent, AlertStatus
+    has_open_offline_alert = AlertEvent.objects.filter(
+        device_id=device.pk,
+        status__in=[AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED],
+        message__icontains="offline",
+    ).exists()
+    Device.objects.filter(pk=device.pk).update(**updates)
+    if str(current_status or "").upper() != DeviceStatus.ONLINE or has_open_offline_alert:
         publish_device_status_update(
             device,
             status=DeviceStatus.ONLINE,
-            previous_status=previous_status,
+            previous_status=current_status or device.status,
             reason="poll success",
             source="snmp_worker",
             observed_at=at,
@@ -170,7 +176,17 @@ def _mark_failure(device: Device, polling_config: Optional[DevicePollingConfig],
         status = previous_status or DeviceStatus.ONLINE
 
     Device.objects.filter(pk=device.pk).update(status=status)
-    if status != previous_status:
+    needs_status_publish = (status != previous_status)
+    if status == DeviceStatus.OFFLINE and not needs_status_publish:
+        from apps.alerts.models import AlertEvent, AlertStatus
+        if not AlertEvent.objects.filter(
+            device_id=device.pk,
+            status__in=[AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED],
+            message__icontains="offline",
+        ).exists():
+            needs_status_publish = True
+
+    if needs_status_publish:
         publish_device_status_update(
             device,
             status=status,

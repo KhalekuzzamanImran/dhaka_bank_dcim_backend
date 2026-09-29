@@ -196,6 +196,7 @@ class AlertEvent(TimeStampedModel):
         indexes = [
             models.Index(fields=["organization", "data_center"]),
             models.Index(fields=["device", "status"]),
+            models.Index(fields=["device", "status", "triggered_at"], name="alert_event_device_status_time"),
             models.Index(fields=["severity", "status"]),
             models.Index(fields=["triggered_at"]),
             models.Index(fields=["status"]),
@@ -266,6 +267,7 @@ class AlertEventLog(TimeStampedModel):
         db_table = "alert_event_logs"
         indexes = [
             models.Index(fields=["alert_event", "action"]),
+            models.Index(fields=["alert_event", "created_at"], name="alert_event_log_event_created"),
             models.Index(fields=["created_at"]),
         ]
 

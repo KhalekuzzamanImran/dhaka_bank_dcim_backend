@@ -87,12 +87,18 @@ def ingest_points(points, source="api"):
             defaults={**common, "last_seen_at": ts},
         )
         telemetry_deltas.append(telemetry_delta_from_latest(latest, observed_at=ts))
-        previous_status = device.status
+        current_status = Device.objects.filter(pk=device.pk).values_list("status", flat=True).first()
+        from apps.alerts.models import AlertEvent, AlertStatus
+        has_open_offline_alert = AlertEvent.objects.filter(
+            device_id=device.pk,
+            status__in=[AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED],
+            message__icontains="offline",
+        ).exists()
         updated = Device.objects.filter(pk=device.pk).update(last_seen_at=ts, status=DeviceStatus.ONLINE)
-        if updated and str(previous_status or "").upper() != DeviceStatus.ONLINE:
+        if (updated and str(current_status or "").upper() != DeviceStatus.ONLINE) or has_open_offline_alert:
             device_status_updates[str(device.pk)] = {
                 "device": device,
-                "previous_status": previous_status,
+                "previous_status": current_status or device.status,
                 "observed_at": ts,
             }
         created.append(point)

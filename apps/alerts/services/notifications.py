@@ -120,10 +120,12 @@ def _logical_dedupe_key(alert, user, action: str, *, policy=None) -> str:
 
 
 def _logical_metadata(alert, action: str, *, policy=None) -> dict:
+    is_resolved = (action == "RESOLVED" or getattr(alert, "status", None) == "RESOLVED")
     metadata = {
         "alert_event_id": str(alert.pk),
         "alert_status": alert.status,
-        "severity": alert.severity,
+        "severity": "INFO" if is_resolved else alert.severity,
+        "original_severity": alert.severity,
         "device_id": str(alert.device_id) if alert.device_id else None,
         "metric_id": str(alert.metric_id) if alert.metric_id else None,
         "action": action,

@@ -146,7 +146,12 @@ def publish_device_status_update(
     # Record persistent DeviceEvent and AlertEvent for connectivity/outage tracking
     try:
         from apps.telemetry.models import DeviceEvent, DeviceEventSeverity
-        from apps.alerts.models import AlertEvent, AlertSeverity, AlertStatus
+        from apps.alerts.models import AlertEvent, AlertEventLog, AlertEventLogAction, AlertSeverity, AlertStatus
+        from apps.alerts.services.engine import create_alert_log
+        from apps.alerts.services.notifications import (
+            create_notifications_for_alert_opened,
+            create_notifications_for_alert_resolved,
+        )
 
         dev_org_id = getattr(device, "organization_id", None)
         dev_dc_id = getattr(device, "data_center_id", None)
@@ -188,7 +193,7 @@ def publish_device_status_update(
                     message__icontains="offline",
                 ).exists()
                 if not has_open_alert:
-                    AlertEvent.objects.create(
+                    alert = AlertEvent.objects.create(
                         organization_id=dev_org_id,
                         data_center_id=dev_dc_id,
                         device_id=dev_pk,
@@ -197,17 +202,79 @@ def publish_device_status_update(
                         message=f"{dev_name} is offline / unreachable ({reason or 'connectivity lost'})",
                         triggered_at=timestamp,
                         last_seen_at=timestamp,
+                        metadata={
+                            "alert_type": "DEVICE_OFFLINE",
+                            "status": normalized_status,
+                            "reason": reason,
+                            "source": source,
+                        },
+                    )
+                    create_alert_log(
+                        alert,
+                        AlertEventLogAction.OPENED,
+                        new_status=AlertStatus.OPEN,
+                        message=alert.message,
+                        metadata={"alert_type": "DEVICE_OFFLINE", "source": source},
+                    )
+                    try:
+                        create_notifications_for_alert_opened(alert)
+                    except Exception as notif_exc:
+                        logger.exception("Failed to dispatch notifications for offline alert=%s: %s", alert.pk, notif_exc)
+
+                    publish_live_update(
+                        event_type="alert_event",
+                        resource_type="AlertEvent",
+                        resource_id=alert.pk,
+                        scopes=["alerts", *device_scopes(device)],
+                        metadata={
+                            "created": True,
+                            "status": alert.status,
+                            "device_id": str(dev_pk),
+                            "severity": alert.severity,
+                        },
                     )
             elif normalized_status == "ONLINE":
-                AlertEvent.objects.filter(
-                    device_id=dev_pk,
-                    status__in=[AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED],
-                    message__icontains="offline",
-                ).update(
-                    status=AlertStatus.RESOLVED,
-                    resolved_at=timestamp,
-                    resolution_type="AUTO",
+                offline_alerts = list(
+                    AlertEvent.objects.filter(
+                        device_id=dev_pk,
+                        status__in=[AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED],
+                        message__icontains="offline",
+                    )
                 )
+                for alert in offline_alerts:
+                    old_status = alert.status
+                    alert.status = AlertStatus.RESOLVED
+                    alert.resolved_at = timestamp
+                    alert.resolution_type = "AUTO"
+                    alert.last_seen_at = timestamp
+                    alert.save(update_fields=["status", "resolved_at", "resolution_type", "last_seen_at", "updated_at"])
+
+                    create_alert_log(
+                        alert,
+                        AlertEventLogAction.RESOLVED,
+                        old_status=old_status,
+                        new_status=AlertStatus.RESOLVED,
+                        message=f"{dev_name} is back online",
+                        metadata={"resolution_type": "AUTO", "source": source},
+                    )
+                    try:
+                        create_notifications_for_alert_resolved(alert)
+                    except Exception as notif_exc:
+                        logger.exception("Failed to dispatch notifications for resolved alert=%s: %s", alert.pk, notif_exc)
+
+                    publish_live_update(
+                        event_type="alert_event",
+                        resource_type="AlertEvent",
+                        resource_id=alert.pk,
+                        scopes=["alerts", *device_scopes(device)],
+                        metadata={
+                            "created": False,
+                            "status": AlertStatus.RESOLVED,
+                            "device_id": str(dev_pk),
+                            "severity": "INFO",
+                            "original_severity": alert.severity,
+                        },
+                    )
     except Exception as exc:
         logger.warning("Failed to record device status transition events: %s", exc)
 
@@ -250,17 +317,16 @@ def publish_live_update(*, event_type: str, resource_type: str, resource_id: Any
             # Telemetry callers provide organization/data-center/device audience
             # scopes. Other existing event types retain the legacy global group
             # until their audience model is migrated independently.
-            audience = list(delivery_scopes or [])
+            audience = {value for value in (delivery_scopes or []) if value}
             if not audience:
-                audience = [
+                audience = {
                     value for value in event["scopes"]
                     if value.startswith(("organization:", "data_center:", "device:"))
-                ]
-            if not audience and event_type not in GLOBAL_EVENT_TYPES:
-                return event
-            audience = audience or ["global"]
+                }
+            # Global subscribers (admins, superusers) must receive all live updates.
+            audience.add("global")
             message = {"type": "live.update", "event": event}
-            for audience_scope in set(audience):
+            for audience_scope in audience:
                 async_to_sync(channel_layer.group_send)(
                     live_update_group_name(audience_scope),
                     message,

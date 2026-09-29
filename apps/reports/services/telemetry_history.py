@@ -17,9 +17,9 @@ from apps.telemetry.services.history import floor_datetime, resolve_history_plan
 NUMERIC_METRIC_TYPES = {MetricDataType.FLOAT, MetricDataType.INTEGER, MetricDataType.BOOLEAN}
 
 MIRROR_AGGREGATES = {
-    "telemetry_5m": "telemetry_points_ts_5m",
-    "telemetry_1h": "telemetry_points_ts_1h",
-    "telemetry_1d": "telemetry_points_ts_1d",
+    "telemetry_5m": "telemetry_5m",
+    "telemetry_1h": "telemetry_1h",
+    "telemetry_1d": "telemetry_1d",
 }
 
 

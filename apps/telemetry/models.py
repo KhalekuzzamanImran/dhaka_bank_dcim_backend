@@ -106,4 +106,4 @@ class DeviceEvent(TimeStampedModel):
     raw_payload = models.JSONField(default=dict, blank=True)
     class Meta:
         db_table = "device_events"
-        indexes = [models.Index(fields=["organization", "data_center"]), models.Index(fields=["device"]), models.Index(fields=["severity"]), models.Index(fields=["occurred_at"])]
+        indexes = [models.Index(fields=["organization", "data_center"]), models.Index(fields=["device"]), models.Index(fields=["device", "occurred_at"], name="device_event_device_time_idx"), models.Index(fields=["severity"]), models.Index(fields=["occurred_at"])]

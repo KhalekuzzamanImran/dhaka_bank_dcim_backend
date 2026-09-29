@@ -250,3 +250,22 @@ def test_cb_fun_logs_malformed_packet_and_does_not_queue(monkeypatch, caplog):
     assert remainder == b""
     assert delay_calls == []
     assert "bad BER packet" in caplog.text
+
+
+def test_decode_snmp_trap_message_handles_negative_timeticks_firmware_bug():
+    from collectors.snmp_trap_receiver.parsing import decode_snmp_trap_message
+
+    # SNMPv1 Trap packet where TimeTicks is encoded with 4 bytes [0x86, 0xfe, 0x99, 0x9a]
+    # without a leading 0x00 byte, causing BER decoders to see negative integer -2030134886.
+    raw_packet = bytes.fromhex(
+        "302a02010004067075626c6963a41d06072b06010401823e4004ac19d292020106020101430486fe999a3000"
+    )
+
+    trap_oid, raw_varbinds, remainder = decode_snmp_trap_message(raw_packet, ("172.25.210.146", 162))
+
+    assert trap_oid == "1.3.6.1.4.1.318.0.1"
+    assert remainder == b""
+    assert raw_varbinds["_snmp_version"] == "SNMPv1"
+    assert raw_varbinds["_snmp_v1_timestamp"] == 2264832410
+    assert raw_varbinds["_transport_source_ip"] == "172.25.210.146"
+

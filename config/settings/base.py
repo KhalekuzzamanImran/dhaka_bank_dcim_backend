@@ -34,6 +34,7 @@ MIDDLEWARE = [
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'apps.common.middleware.RequestContextMiddleware',
+    'apps.common.query_monitoring.QueryMonitoringMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -116,6 +117,18 @@ REPORT_ARTIFACT_MAX_BYTES = config('REPORT_ARTIFACT_MAX_BYTES', default=50 * 102
 REPORT_DASHBOARD_CACHE_SECONDS = config('REPORT_DASHBOARD_CACHE_SECONDS', default=30, cast=int)
 REPORT_GENERATION_TIMEOUT_SECONDS = config('REPORT_GENERATION_TIMEOUT_SECONDS', default=3600, cast=int)
 REPORT_DOWNLOAD_TIMEOUT_SECONDS = config('REPORT_DOWNLOAD_TIMEOUT_SECONDS', default=30, cast=int)
+# Query monitoring is intentionally opt-in. EXPLAIN ANALYZE executes a SELECT
+# a second time, so it must only be enabled during controlled diagnostics.
+QUERY_MONITORING_ENABLED = config('QUERY_MONITORING_ENABLED', default=False, cast=bool)
+QUERY_MONITORING_SLOW_MS = config('QUERY_MONITORING_SLOW_MS', default=100, cast=float)
+QUERY_MONITORING_EXPLAIN_ENABLED = config('QUERY_MONITORING_EXPLAIN_ENABLED', default=False, cast=bool)
+QUERY_MONITORING_EXPLAIN_SLOW_MS = config('QUERY_MONITORING_EXPLAIN_SLOW_MS', default=250, cast=float)
+QUERY_MONITORING_EXPLAIN_PATHS = tuple(
+    item.strip()
+    for item in config('QUERY_MONITORING_EXPLAIN_PATHS', default='').split(',')
+    if item.strip()
+)
+QUERY_MONITORING_MAX_SQL_LENGTH = config('QUERY_MONITORING_MAX_SQL_LENGTH', default=4000, cast=int)
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 def _csv_setting(name, default=''):

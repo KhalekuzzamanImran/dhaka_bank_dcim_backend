@@ -108,6 +108,7 @@ class SNMPTrapEvent(TimeStampedModel):
             models.Index(fields=["source_ip"]),
             models.Index(fields=["trap_oid"]),
             models.Index(fields=["device"]),
+            models.Index(fields=["device", "received_at"], name="snmp_trap_event_device_time"),
             models.Index(fields=["received_at"]),
             models.Index(fields=["is_mapped"]),
             models.Index(fields=["is_processed"]),

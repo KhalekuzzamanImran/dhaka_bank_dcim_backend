@@ -39,7 +39,7 @@ def reconcile_stale_devices():
     marked_offline = 0
     marked_degraded = 0
     try:
-        configs = DevicePollingConfig.objects.select_related("device", "polling_profile").filter(
+        configs = DevicePollingConfig.objects.select_related("device", "device__device_type", "polling_profile").filter(
             is_enabled=True,
             device__is_active=True,
             polling_profile__is_active=True,
@@ -54,10 +54,20 @@ def reconcile_stale_devices():
 
             if elapsed >= stale_after:
                 previous_status = config.device.status
-                if previous_status != DeviceStatus.OFFLINE:
+                needs_offline = (previous_status != DeviceStatus.OFFLINE)
+                if not needs_offline:
+                    from apps.alerts.models import AlertEvent, AlertStatus
+                    has_open_alert = AlertEvent.objects.filter(
+                        device_id=config.device_id,
+                        status__in=[AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED],
+                        message__icontains="offline",
+                    ).exists()
+                    if not has_open_alert:
+                        needs_offline = True
+                if needs_offline:
                     updated = Device.objects.filter(
                         pk=config.device_id,
-                    ).exclude(status=DeviceStatus.OFFLINE).update(status=DeviceStatus.OFFLINE, updated_at=now)
+                    ).update(status=DeviceStatus.OFFLINE, updated_at=now)
                     if updated:
                         marked_offline += updated
                         publish_device_status_update(

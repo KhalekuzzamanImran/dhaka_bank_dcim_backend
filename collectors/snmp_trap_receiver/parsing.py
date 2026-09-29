@@ -17,7 +17,59 @@ SNMPV1_GENERIC_TRAP_OIDS = {
 }
 
 
+def _patch_pysnmp_unsigned_types():
+    """Relax pyasn1 unsigned 32/64-bit integer constraints to handle buggy firmware.
+
+    Many network devices (such as Rack PDUs, UPSs, and switches) encode 32-bit
+    unsigned integers (TimeTicks, Counter32, Gauge32) with the high bit set without
+    a leading 0x00 pad byte. BER decodes these as negative integers (e.g. -2030124646),
+    which violates pyasn1's ValueRangeConstraint(0, 4294967295) and crashes decoding.
+    Masking with 0xFFFFFFFF recovers the correct 32-bit unsigned value (e.g. 2264842650).
+    """
+    try:
+        import pysnmp.proto.rfc1155 as rfc1155
+        import pysnmp.proto.rfc1902 as rfc1902
+
+        def _patch_type(cls, bitmask: int):
+            if getattr(cls, "_dcim_unsigned_patched", False):
+                return
+            orig_init = cls.__init__
+
+            def _safe_init(self, *args, **kwargs):
+                if args:
+                    val = args[0]
+                    if isinstance(val, int) and val < 0:
+                        args = (val & bitmask, *args[1:])
+                elif "value" in kwargs:
+                    val = kwargs["value"]
+                    if isinstance(val, int) and val < 0:
+                        kwargs["value"] = val & bitmask
+                orig_init(self, *args, **kwargs)
+
+            cls.__init__ = _safe_init
+            cls._dcim_unsigned_patched = True
+
+        for u32_cls in (
+            rfc1155.TimeTicks,
+            rfc1155.Counter,
+            rfc1155.Gauge,
+            rfc1902.TimeTicks,
+            rfc1902.Counter32,
+            rfc1902.Gauge32,
+            rfc1902.Unsigned32,
+        ):
+            _patch_type(u32_cls, 0xFFFFFFFF)
+
+        _patch_type(rfc1902.Counter64, 0xFFFFFFFFFFFFFFFF)
+    except Exception as exc:
+        logger.warning("Could not apply pyasn1 unsigned integer patch: %s", exc)
+
+
+_patch_pysnmp_unsigned_types()
+
+
 def _load_pysnmp_modules():
+    _patch_pysnmp_unsigned_types()
     from pyasn1.codec.ber import decoder
     from pysnmp.proto import api
 

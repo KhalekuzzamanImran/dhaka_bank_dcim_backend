@@ -10,6 +10,7 @@ from .models import (
     AlertEscalationPolicy,
     AlertEvent,
     AlertEventLog,
+    AlertEventLogAction,
     AlertRule,
     AlertSeverity,
     AlertStatus,
@@ -166,7 +167,7 @@ class AlertEventLogSerializer(serializers.ModelSerializer):
     action_label = serializers.SerializerMethodField()
     alert_message = serializers.CharField(source="alert_event.message", read_only=True)
     alert_status = serializers.CharField(source="new_status", read_only=True)
-    severity = serializers.CharField(source="alert_event.severity", read_only=True)
+    severity = serializers.SerializerMethodField()
     device_name = serializers.CharField(source="alert_event.device.name", read_only=True)
     device_code = serializers.CharField(source="alert_event.device.code", read_only=True)
     device_type_name = serializers.CharField(source="alert_event.device.device_type.name", read_only=True)
@@ -223,6 +224,11 @@ class AlertEventLogSerializer(serializers.ModelSerializer):
 
     def get_action_label(self, obj):
         return obj.get_action_display()
+
+    def get_severity(self, obj) -> str:
+        if obj.action == AlertEventLogAction.RESOLVED or obj.new_status == AlertStatus.RESOLVED:
+            return "INFO"
+        return getattr(obj.alert_event, "severity", "INFO") if obj.alert_event else "INFO"
 
 
 class AlertCommentSerializer(serializers.ModelSerializer):
