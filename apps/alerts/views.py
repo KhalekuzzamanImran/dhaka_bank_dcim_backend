@@ -3,6 +3,7 @@ from django.db.models import Prefetch
 from zoneinfo import ZoneInfo
 from rest_framework.views import APIView
 from rest_framework.decorators import action
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
 from apps.common.access import filter_queryset_for_user
@@ -12,6 +13,7 @@ from .models import AlertComment, AlertEvent, AlertEventLog, AlertRule
 from .serializers import (
     AlertAcknowledgeSerializer,
     AlertEventDetailSerializer,
+    AlertEventLogSerializer,
     AlertEventListSerializer,
     AlertResolveSerializer,
     AlertRuleSerializer,
@@ -21,8 +23,15 @@ from .services.summary import (
     build_active_by_severity,
     build_dashboard_payload,
     build_recent_alert_logs,
+    get_recent_alert_log_queryset,
     build_top_devices,
 )
+
+
+class AlertRecentPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 100
 
 
 def _alert_event_queryset(*, include_children=False):
@@ -185,4 +194,8 @@ class AlertRecentAPIView(APIView):
         filterset = AlertEventFilter(request.GET, queryset=qs)
         if filterset.is_valid():
             qs = filterset.qs
-        return Response(build_recent_alert_logs(qs, limit=200, context={"request": request}, days=7))
+        log_queryset = get_recent_alert_log_queryset(qs, days=7)
+        paginator = AlertRecentPagination()
+        page = paginator.paginate_queryset(log_queryset, request, view=self)
+        serializer = AlertEventLogSerializer(page, many=True, context={"request": request})
+        return paginator.get_paginated_response(serializer.data)

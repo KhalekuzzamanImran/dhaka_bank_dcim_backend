@@ -109,9 +109,9 @@ def build_recent_alerts(queryset, limit=10, context=None):
     return serializer.data
 
 
-def build_recent_alert_logs(queryset, limit=200, context=None, days=7):
+def get_recent_alert_log_queryset(queryset, days=7):
     since = timezone.now() - timedelta(days=days)
-    log_queryset = (
+    return (
         AlertEventLog.objects.select_related(
             "alert_event",
             "alert_event__organization",
@@ -131,6 +131,10 @@ def build_recent_alert_logs(queryset, limit=200, context=None, days=7):
         ])
         .order_by("-created_at")
     )
+
+
+def build_recent_alert_logs(queryset, limit=200, context=None, days=7):
+    log_queryset = get_recent_alert_log_queryset(queryset, days=days)
     serializer = AlertEventLogSerializer(log_queryset[:limit], many=True, context=context or {})
     return serializer.data
 
