@@ -1,6 +1,9 @@
+import os
+
+
 bind = '0.0.0.0:8000'
-workers = 3
-worker_class = 'sync'
+workers = int(os.getenv('API_WORKERS', '3'))
+worker_class = 'uvicorn.workers.UvicornWorker'
 timeout = 60
 keepalive = 5
 max_requests = 1000

@@ -25,27 +25,25 @@ from .services.summary import (
 )
 
 
-def _alert_event_queryset():
-    return (
-        AlertEvent.objects.select_related(
-            "organization",
-            "data_center",
-            "device",
-            "device__room",
-            "device__rack",
-            "device__device_type",
-            "metric",
-            "alert_rule",
-            "acknowledged_by",
-            "resolved_by",
-        )
-        .prefetch_related(
+def _alert_event_queryset(*, include_children=False):
+    queryset = AlertEvent.objects.select_related(
+        "organization",
+        "data_center",
+        "device",
+        "device__room",
+        "device__rack",
+        "device__device_type",
+        "metric",
+        "alert_rule",
+        "acknowledged_by",
+        "resolved_by",
+    ).all().order_by("-triggered_at")
+    if include_children:
+        queryset = queryset.prefetch_related(
             Prefetch("comments", queryset=AlertComment.objects.select_related("user").order_by("created_at")),
             Prefetch("logs", queryset=AlertEventLog.objects.select_related("actor").order_by("created_at")),
         )
-        .all()
-        .order_by("-triggered_at")
-    )
+    return queryset
 
 
 def get_alert_queryset_for_user(user):
@@ -96,6 +94,10 @@ class AlertEventViewSet(ScopedModelViewSet):
     audit_resource_type = "AlertEvent"
     filterset_class = AlertEventFilter
     search_fields = ["message"]
+
+    def get_queryset(self):
+        queryset = _alert_event_queryset(include_children=self.action == "retrieve")
+        return filter_queryset_for_user(queryset, self.request.user, access_scope="mixed")
 
     def get_serializer_class(self):
         if self.action in {"list", "recent"}:

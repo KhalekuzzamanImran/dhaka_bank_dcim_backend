@@ -156,6 +156,18 @@ docker compose build --no-cache
 docker compose up -d
 ```
 
+## Data retention
+
+TimescaleDB enforces 90-day raw telemetry retention, six-month five-minute
+aggregate retention, and one-year hourly/daily aggregate retention. Raw
+telemetry is compressed after 14 days. The daily `cleanup-retention-daily`
+Celery task removes expired operational history in batches: ingest logs after
+90 days, device/trap/alert/audit history after one year, notification
+deliveries after 180 days, and completed report metadata after one year.
+Active alerts, pending notifications, running jobs, latest telemetry, and
+maintenance records are preserved. Set `RETENTION_CLEANUP_DRY_RUN=true` for a
+controlled inventory before enabling deletion.
+
 This project uses the classic synchronous PySNMP HLAPI and pins:
 
 ```text
@@ -165,6 +177,29 @@ pycryptodomex==3.20.0
 ```
 
 Do not change it to `pysnmp>=6` unless you also rewrite the SNMP client for the newer asyncio API.
+
+### PgBouncer and database host
+
+The Compose stack routes Django and Celery database connections through the internal PgBouncer service at `pgbouncer:6432`. PgBouncer uses transaction pooling, keeps the application connection lifetime at zero, and limits backend PostgreSQL connections. The PostgreSQL server remains on `db:5432` for the pooler only.
+
+Server-side cursors are disabled for this transaction-pooled connection. This
+prevents Django iterator cursors from being reused after PgBouncer assigns a
+different backend connection.
+
+Verify the active route without interrupting devices:
+
+```bash
+docker compose exec api env | grep DATABASE_URL
+docker compose exec pgbouncer pg_isready -h 127.0.0.1 -p 6432 -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+```
+
+The expected application URL is:
+
+```text
+DATABASE_URL=postgresql://dcim:dcim@pgbouncer:6432/dcim
+```
+
+Do not expose PgBouncer with a host `ports` mapping. For production, replace the example PostgreSQL credentials in `.env` before deployment and apply the pooler during a controlled rolling restart. Do not run `docker compose down -v` on an environment containing retained telemetry data.
 
 ### Database host error
 
@@ -177,7 +212,7 @@ docker compose exec api env | grep DATABASE_URL
 For Docker Compose it should be:
 
 ```text
-DATABASE_URL=postgresql://dcim:dcim@db:5432/dcim
+DATABASE_URL=postgresql://dcim:dcim@pgbouncer:6432/dcim
 ```
 
 Then restart cleanly:

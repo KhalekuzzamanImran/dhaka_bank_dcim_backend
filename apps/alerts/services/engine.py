@@ -265,6 +265,7 @@ def create_alert_log(
 ):
     return AlertEventLog.objects.create(
         alert_event=alert,
+        device_id=alert.device_id,
         action=action,
         old_status=old_status,
         new_status=new_status,

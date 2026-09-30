@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from uuid import UUID
 
 from django.core.exceptions import PermissionDenied, ValidationError
 
@@ -20,6 +21,20 @@ def _scope_value(scope: dict, key: str) -> set:
 
 def _normalized_scope_ids(scope: dict, key: str) -> set[str]:
     return {str(value) for value in _scope_value(scope, key)}
+
+
+def _valid_uuid_values(values) -> list[str]:
+    valid_values = []
+    for value in values:
+        candidate = str(value).strip()
+        if not candidate:
+            continue
+        try:
+            UUID(candidate)
+        except (AttributeError, ValueError, TypeError):
+            continue
+        valid_values.append(candidate)
+    return valid_values
 
 
 def user_can_access_organization(user, organization_id) -> bool:
@@ -96,9 +111,9 @@ def resolve_scope_selection(
     room_ids = [str(value).strip() for value in (params.get("room_ids") or params.get("rooms") or []) if str(value).strip()]
     rack_ids = [str(value).strip() for value in (params.get("rack_ids") or params.get("racks") or []) if str(value).strip()]
     device_id = str(params.get("device_id") or params.get("device") or "").strip()
-    device_ids = [str(value).strip() for value in (params.get("device_ids") or params.get("devices") or []) if str(value).strip()]
+    device_ids = _valid_uuid_values(params.get("device_ids") or params.get("devices") or [])
     if device_id:
-        device_ids = [device_id, *device_ids]
+        device_ids = [*(_valid_uuid_values([device_id])), *device_ids]
 
     if room_ids:
         selected_rooms = list(

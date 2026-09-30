@@ -134,7 +134,7 @@ METRICS = [
     {"code": "pdu_active_power_kw", "name": "PDU Active Power", "category": "Power", "data_type": "float", "unit": "kW", "description": "Rack PDU active power. Raw value is divided by 100.", "oid": "1.3.6.1.4.1.318.1.1.26.4.3.1.5.1", "map_type": "integer", "scale": "0.01", "offset": "0"},
     {"code": "pdu_peak_power_kw", "name": "PDU Peak Power", "category": "Power", "data_type": "float", "unit": "kW", "description": "Rack PDU peak power. Raw value is divided by 100.", "oid": "1.3.6.1.4.1.318.1.1.26.4.3.1.6.1", "map_type": "integer", "scale": "0.01", "offset": "0"},
     {"code": "pdu_peak_power_timestamp", "name": "PDU Peak Power Timestamp", "category": "Power", "data_type": "string", "unit": "", "description": "Timestamp when peak power was recorded.", "oid": "1.3.6.1.4.1.318.1.1.26.4.3.1.7.1", "map_type": "string", "scale": "1", "offset": "0"},
-    {"code": "pdu_total_energy", "name": "PDU Total Energy", "category": "Energy", "data_type": "float", "unit": "kWh", "description": "Rack PDU total energy counter. Energy today must be calculated from historical delta.", "oid": "1.3.6.1.4.1.318.1.1.26.4.3.1.9.1", "map_type": "integer", "scale": "1", "offset": "0"},
+    {"code": "pdu_total_energy", "name": "PDU Total Energy", "category": "Energy", "data_type": "float", "unit": "kWh", "description": "Rack PDU total energy counter. APC reports this OID in tenths of kWh; energy today must be calculated from historical delta.", "oid": "1.3.6.1.4.1.318.1.1.26.4.3.1.9.1", "map_type": "integer", "scale": "0.1", "offset": "0"},
     {"code": "pdu_energy_start_time", "name": "PDU Energy Start Time", "category": "Energy", "data_type": "string", "unit": "", "description": "Timestamp when energy counter started.", "oid": "1.3.6.1.4.1.318.1.1.26.4.3.1.10.1", "map_type": "string", "scale": "1", "offset": "0"},
     {"code": "pdu_command_pending", "name": "PDU Command Pending", "category": "Status", "data_type": "integer", "unit": "state", "description": "Command pending status for Rack PDU.", "oid": "1.3.6.1.4.1.318.1.1.26.4.3.1.11.1", "map_type": "integer", "scale": "1", "offset": "0"},
     {"code": "pdu_power_supply_alarm", "name": "PDU Power Supply Alarm", "category": "Status", "data_type": "integer", "unit": "state", "description": "Rack PDU power supply alarm status.", "oid": "1.3.6.1.4.1.318.1.1.26.4.3.1.12.1", "map_type": "integer", "scale": "1", "offset": "0"},
@@ -177,7 +177,7 @@ METRICS = [
 
     # Group summary
     {"code": "pdu_group_total_power_kw", "name": "PDU Group Total Power", "category": "Power", "data_type": "float", "unit": "kW", "description": "Rack PDU group total power. Raw value is divided by 100.", "oid": "1.3.6.1.4.1.318.1.1.26.11.2.0", "map_type": "integer", "scale": "0.01", "offset": "0"},
-    {"code": "pdu_group_total_energy", "name": "PDU Group Total Energy", "category": "Energy", "data_type": "float", "unit": "kWh", "description": "Rack PDU group total energy counter.", "oid": "1.3.6.1.4.1.318.1.1.26.11.3.0", "map_type": "integer", "scale": "1", "offset": "0"},
+    {"code": "pdu_group_total_energy", "name": "PDU Group Total Energy", "category": "Energy", "data_type": "float", "unit": "kWh", "description": "Rack PDU group total energy counter. APC reports this counter in tenths of kWh.", "oid": "1.3.6.1.4.1.318.1.1.26.11.3.0", "map_type": "integer", "scale": "0.1", "offset": "0"},
 
     # Generic SNMP/network health. These are generic MIB-II OIDs, not PowerNet rPDU2 branch.
     {"code": "device_uptime", "name": "Device Uptime", "category": "Status", "data_type": "float", "unit": "seconds", "description": "Device uptime from sysUpTime. Raw TimeTicks are divided by 100 to seconds.", "oid": "1.3.6.1.2.1.1.3.0", "map_type": "timeticks", "scale": "0.01", "offset": "0"},
@@ -256,4 +256,3 @@ def main():
 
 
 main()
-

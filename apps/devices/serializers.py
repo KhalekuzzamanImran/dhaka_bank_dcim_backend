@@ -10,15 +10,25 @@ class VendorSerializer(serializers.ModelSerializer):
 class DeviceModelSerializer(serializers.ModelSerializer):
     class Meta: model = DeviceModel; fields = '__all__'
 class DeviceSerializer(serializers.ModelSerializer):
+    organization_name = serializers.CharField(source='organization.name', read_only=True)
     data_center_name = serializers.CharField(source='data_center.name', read_only=True)
+    room_name = serializers.CharField(source='room.name', read_only=True)
+    rack_name = serializers.CharField(source='rack.name', read_only=True)
     device_type_name = serializers.CharField(source='device_type.name', read_only=True)
+    device_model_name = serializers.CharField(source='device_model.name', read_only=True)
+    vendor_name = serializers.CharField(source='device_model.vendor.name', read_only=True)
     stale_after_seconds = serializers.SerializerMethodField()
 
     class Meta:
         model = Device
         fields = [field.name for field in Device._meta.fields] + [
+            'organization_name',
             'data_center_name',
+            'room_name',
+            'rack_name',
             'device_type_name',
+            'device_model_name',
+            'vendor_name',
             'stale_after_seconds',
         ]
 
@@ -53,6 +63,31 @@ class DeviceDetailSerializer(DeviceSerializer):
             "recent_events_count",
             "recent_events",
         ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get("request")
+        include_activity = True
+        if request is not None:
+            include_activity = request.query_params.get("include_activity", "true").lower() not in {
+                "0",
+                "false",
+                "no",
+            }
+        if not include_activity:
+            for field_name in (
+                "active_alarms_count",
+                "active_alarms",
+                "alert_event_logs_count",
+                "alert_event_logs",
+                "device_events_count",
+                "device_events",
+                "snmp_trap_events_count",
+                "snmp_trap_events",
+                "recent_events_count",
+                "recent_events",
+            ):
+                self.fields.pop(field_name, None)
 
     def _activity_feed(self, obj):
         cache_key = "_device_activity_feed"

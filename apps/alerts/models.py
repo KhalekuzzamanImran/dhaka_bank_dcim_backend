@@ -255,6 +255,13 @@ class AlertEventLogAction(models.TextChoices):
 
 class AlertEventLog(TimeStampedModel):
     alert_event = models.ForeignKey("alerts.AlertEvent", on_delete=models.CASCADE, related_name="logs")
+    device = models.ForeignKey(
+        "devices.Device",
+        on_delete=models.CASCADE,
+        related_name="alert_event_logs",
+        null=True,
+        blank=True,
+    )
     action = models.CharField(max_length=50, choices=AlertEventLogAction.choices, db_index=True)
     old_status = models.CharField(max_length=30, blank=True, null=True)
     new_status = models.CharField(max_length=30, blank=True, null=True)
@@ -268,6 +275,7 @@ class AlertEventLog(TimeStampedModel):
         indexes = [
             models.Index(fields=["alert_event", "action"]),
             models.Index(fields=["alert_event", "created_at"], name="alert_event_log_event_created"),
+            models.Index(fields=["device", "created_at"], name="alert_event_log_device_created"),
             models.Index(fields=["created_at"]),
         ]
 

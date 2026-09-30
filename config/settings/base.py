@@ -53,10 +53,15 @@ ASGI_APPLICATION = 'config.asgi.application'
 DATABASES = {
     'default': dj_database_url.config(
         default=config('DATABASE_URL', default='postgresql://dcim:dcim@localhost:5432/dcim'),
-        conn_max_age=600,
+        conn_max_age=config('DB_CONN_MAX_AGE', default=0, cast=int),
         conn_health_checks=True,
     )
 }
+DATABASES['default']['DISABLE_SERVER_SIDE_CURSORS'] = config(
+    'DISABLE_SERVER_SIDE_CURSORS',
+    default=True,
+    cast=bool,
+)
 AUTH_USER_MODEL = 'accounts.User'
 
 REST_FRAMEWORK = {
@@ -110,13 +115,25 @@ STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
-REPORT_ARTIFACT_RETENTION_DAYS = config('REPORT_ARTIFACT_RETENTION_DAYS', default=90, cast=int)
+REPORT_ARTIFACT_RETENTION_DAYS = config('REPORT_ARTIFACT_RETENTION_DAYS', default=365, cast=int)
 REPORT_ARTIFACT_CLEANUP_BATCH_SIZE = config('REPORT_ARTIFACT_CLEANUP_BATCH_SIZE', default=200, cast=int)
 REPORT_ARTIFACT_CLEANUP_ENABLED = config('REPORT_ARTIFACT_CLEANUP_ENABLED', default=True, cast=bool)
 REPORT_ARTIFACT_MAX_BYTES = config('REPORT_ARTIFACT_MAX_BYTES', default=50 * 1024 * 1024, cast=int)
 REPORT_DASHBOARD_CACHE_SECONDS = config('REPORT_DASHBOARD_CACHE_SECONDS', default=30, cast=int)
 REPORT_GENERATION_TIMEOUT_SECONDS = config('REPORT_GENERATION_TIMEOUT_SECONDS', default=3600, cast=int)
 REPORT_DOWNLOAD_TIMEOUT_SECONDS = config('REPORT_DOWNLOAD_TIMEOUT_SECONDS', default=30, cast=int)
+RETENTION_CLEANUP_ENABLED = config('RETENTION_CLEANUP_ENABLED', default=True, cast=bool)
+RETENTION_CLEANUP_DRY_RUN = config('RETENTION_CLEANUP_DRY_RUN', default=False, cast=bool)
+RETENTION_CLEANUP_BATCH_SIZE = config('RETENTION_CLEANUP_BATCH_SIZE', default=500, cast=int)
+RETENTION_INGEST_LOG_DAYS = config('RETENTION_INGEST_LOG_DAYS', default=90, cast=int)
+RETENTION_DEVICE_EVENT_DAYS = config('RETENTION_DEVICE_EVENT_DAYS', default=365, cast=int)
+RETENTION_SNMP_TRAP_EVENT_DAYS = config('RETENTION_SNMP_TRAP_EVENT_DAYS', default=365, cast=int)
+RETENTION_ALERT_EVENT_DAYS = config('RETENTION_ALERT_EVENT_DAYS', default=365, cast=int)
+RETENTION_ALERT_HISTORY_DAYS = config('RETENTION_ALERT_HISTORY_DAYS', default=365, cast=int)
+RETENTION_NOTIFICATION_DAYS = config('RETENTION_NOTIFICATION_DAYS', default=365, cast=int)
+RETENTION_NOTIFICATION_DELIVERY_DAYS = config('RETENTION_NOTIFICATION_DELIVERY_DAYS', default=180, cast=int)
+RETENTION_AUDIT_LOG_DAYS = config('RETENTION_AUDIT_LOG_DAYS', default=365, cast=int)
+RETENTION_REPORT_METADATA_DAYS = config('RETENTION_REPORT_METADATA_DAYS', default=365, cast=int)
 # Query monitoring is intentionally opt-in. EXPLAIN ANALYZE executes a SELECT
 # a second time, so it must only be enabled during controlled diagnostics.
 QUERY_MONITORING_ENABLED = config('QUERY_MONITORING_ENABLED', default=False, cast=bool)
@@ -195,6 +212,7 @@ REPORT_DELIVERY_MAX_RETRIES = config('REPORT_DELIVERY_MAX_RETRIES', default=3, c
 REPORT_SMS_MAX_LENGTH = config('REPORT_SMS_MAX_LENGTH', default=480, cast=int)
 
 CELERY_TASK_ROUTES = {
+    'apps.common.tasks.cleanup_retention_task': {'queue': 'scheduler'},
     'collectors.scheduler.tasks.enqueue_due_polls': {'queue': 'scheduler'},
     'collectors.scheduler.tasks.reconcile_stale_devices': {'queue': 'scheduler'},
     'collectors.snmp_collector.tasks.poll_snmp_device_task': {'queue': SNMP_CELERY_QUEUE},
@@ -230,6 +248,11 @@ CELERY_BEAT_SCHEDULE = {
     'cleanup-expired-report-artifacts-daily': {
         'task': 'apps.reports.tasks.cleanup_expired_report_artifacts_task',
         'schedule': crontab(hour=3, minute=15),
+        'kwargs': {'dry_run': False},
+    },
+    'cleanup-retention-daily': {
+        'task': 'apps.common.tasks.cleanup_retention_task',
+        'schedule': crontab(hour=3, minute=45),
         'kwargs': {'dry_run': False},
     },
 }

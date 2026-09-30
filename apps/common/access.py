@@ -9,12 +9,25 @@ from __future__ import annotations
 
 from typing import Dict, Iterable
 
+from django.core.cache import cache
 from django.db.models import Q, QuerySet
 
 from apps.access_control.models import RoleScope, UserResourceAccess
 from apps.datacenters.models import DataCenter, Rack, Room
 from apps.devices.models import Device
 from apps.organizations.models import Organization
+
+
+ACCESS_SCOPE_CACHE_TTL_SECONDS = 60
+
+
+def _access_scope_cache_key(user_id):
+    return f"dcim:access-scope:{user_id}"
+
+
+def invalidate_access_scope_cache(user_id=None):
+    if user_id:
+        cache.delete(_access_scope_cache_key(user_id))
 
 
 def get_user_resource_access_rows(user):
@@ -175,15 +188,20 @@ def _expand_row_scope(scope: Dict[str, object], row: UserResourceAccess):
 
 
 def get_access_scope(user):
-    scope = _blank_scope()
     if not user or not user.is_authenticated:
-        return scope
+        return _blank_scope()
+    scope = _blank_scope()
     if user.is_superuser:
         scope["global_access"] = True
         return scope
 
+    cached_scope = cache.get(_access_scope_cache_key(user.pk))
+    if cached_scope is not None:
+        return cached_scope
+
     rows = list(get_user_resource_access_rows(user))
     if not rows:
+        cache.set(_access_scope_cache_key(user.pk), scope, ACCESS_SCOPE_CACHE_TTL_SECONDS)
         return scope
 
     for row in rows:
@@ -191,6 +209,7 @@ def get_access_scope(user):
         if scope["global_access"]:
             break
 
+    cache.set(_access_scope_cache_key(user.pk), scope, ACCESS_SCOPE_CACHE_TTL_SECONDS)
     return scope
 
 

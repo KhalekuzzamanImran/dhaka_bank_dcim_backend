@@ -13,6 +13,34 @@ services:
       timeout: 5s
       retries: 5
 
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.25.2-p0
+    environment:
+      DB_USER: ${POSTGRES_USER:-dcim}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-dcim}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-dcim}
+      LISTEN_ADDR: 0.0.0.0
+      LISTEN_PORT: 6432
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 300
+      DEFAULT_POOL_SIZE: 20
+      MIN_POOL_SIZE: 5
+      RESERVE_POOL_SIZE: 5
+      RESERVE_POOL_TIMEOUT: 5
+      SERVER_RESET_QUERY: DISCARD ALL
+      MAX_PREPARED_STATEMENTS: 0
+    expose: ['6432']
+    depends_on:
+      db: {condition: service_healthy}
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -p 6432 -U ${POSTGRES_USER:-dcim} -d ${POSTGRES_DB:-dcim}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   redis:
     image: redis:7-alpine
     ports: ['6379:6379']
@@ -30,7 +58,7 @@ services:
 
   api:
     build: .
-    command: sh -c 'python manage.py collectstatic --noinput && exec daphne -b 0.0.0.0 -p 8000 config.asgi:application'
+    command: sh -c 'python manage.py collectstatic --noinput && exec gunicorn -c deployment/gunicorn.conf.py config.asgi:application'
     env_file: .env
     # Keep the TLS hostname while routing the UAT SMS gateway over the private network.
     extra_hosts:
@@ -47,6 +75,7 @@ services:
     ports: ['8000:8000']
     depends_on:
       db: {condition: service_healthy}
+      pgbouncer: {condition: service_healthy}
       redis: {condition: service_started}
       mailpit: {condition: service_started}
     volumes: ['.:/app']

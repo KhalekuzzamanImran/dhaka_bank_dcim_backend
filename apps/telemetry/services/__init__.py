@@ -53,15 +53,39 @@ def ingest_points(points, source="api"):
             "source": optional,
         }
     """
+    points = list(points)
     ingest_id = uuid.uuid4()
     now = timezone.now()
-    created = []
-    telemetry_deltas = []
-    device_status_updates = {}
+    if not points:
+        finished_at = timezone.now()
+        TelemetryIngestLog.objects.create(
+            ingest_id=ingest_id,
+            protocol=source,
+            status="SUCCESS",
+            raw_payload={"point_count": 0},
+            started_at=now,
+            finished_at=finished_at,
+            duration_ms=int((finished_at - now).total_seconds() * 1000),
+        )
+        return ingest_id, []
+
+    device_ids = {item["device"] for item in points}
+    metric_codes = {item["metric_code"] for item in points}
+    devices = {
+        str(device.pk): device
+        for device in Device.objects.select_related("organization", "data_center").filter(pk__in=device_ids)
+    }
+    metrics = {
+        metric.code: metric
+        for metric in MetricDefinition.objects.filter(code__in=metric_codes)
+    }
+    telemetry_rows = []
+    latest_by_key = {}
+    device_latest_times = {}
 
     for item in points:
-        device = Device.objects.select_related("organization", "data_center").get(id=item["device"])
-        metric = MetricDefinition.objects.get(code=item["metric_code"])
+        device = devices[str(item["device"])]
+        metric = metrics[item["metric_code"]]
         ts = item.get("time") or now
         point_source = item.get("source") or source
         quality = item.get("quality", "GOOD")
@@ -80,28 +104,73 @@ def ingest_points(points, source="api"):
             "source": point_source,
         }
 
-        point = TelemetryPoint.objects.create(time=ts, ingest_id=ingest_id, **common)
-        latest, _ = LatestTelemetry.objects.update_or_create(
+        telemetry_rows.append(TelemetryPoint(time=ts, ingest_id=ingest_id, **common))
+        key = (device.pk, metric.pk)
+        latest_by_key[key] = LatestTelemetry(
             device=device,
             metric=metric,
-            defaults={**common, "last_seen_at": ts},
+            last_seen_at=ts,
+            **common,
         )
-        telemetry_deltas.append(telemetry_delta_from_latest(latest, observed_at=ts))
-        current_status = Device.objects.filter(pk=device.pk).values_list("status", flat=True).first()
-        from apps.alerts.models import AlertEvent, AlertStatus
-        has_open_offline_alert = AlertEvent.objects.filter(
-            device_id=device.pk,
+        previous_ts = device_latest_times.get(device.pk)
+        if previous_ts is None or ts > previous_ts:
+            device_latest_times[device.pk] = ts
+
+    created = TelemetryPoint.objects.bulk_create(telemetry_rows, batch_size=1000)
+    LatestTelemetry.objects.bulk_create(
+        list(latest_by_key.values()),
+        batch_size=1000,
+        update_conflicts=True,
+        update_fields=[
+            "organization",
+            "data_center",
+            "value_float",
+            "value_integer",
+            "value_boolean",
+            "value_text",
+            "raw_value_text",
+            "quality",
+            "last_seen_at",
+            "source",
+            "updated_at",
+        ],
+        unique_fields=["device", "metric"],
+    )
+
+    latest_rows = LatestTelemetry.objects.select_related("device", "device__device_type", "metric").filter(
+        device_id__in=device_ids,
+        metric_id__in=[metric.pk for metric in metrics.values()],
+    )
+    latest_by_key = {(row.device_id, row.metric_id): row for row in latest_rows}
+    telemetry_deltas = [
+        telemetry_delta_from_latest(latest_by_key[(device.pk, metric.pk)], observed_at=ts)
+        for item in points
+        for device in [devices[str(item["device"])]]
+        for metric in [metrics[item["metric_code"]]]
+        for ts in [item.get("time") or now]
+    ]
+
+    current_statuses = dict(
+        Device.objects.filter(pk__in=device_ids).values_list("pk", "status")
+    )
+    from apps.alerts.models import AlertEvent, AlertStatus
+    offline_alert_devices = set(
+        AlertEvent.objects.filter(
+            device_id__in=device_ids,
             status__in=[AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED],
             message__icontains="offline",
-        ).exists()
-        updated = Device.objects.filter(pk=device.pk).update(last_seen_at=ts, status=DeviceStatus.ONLINE)
-        if (updated and str(current_status or "").upper() != DeviceStatus.ONLINE) or has_open_offline_alert:
-            device_status_updates[str(device.pk)] = {
-                "device": device,
-                "previous_status": current_status or device.status,
-                "observed_at": ts,
+        ).values_list("device_id", flat=True)
+    )
+    device_status_updates = {}
+    for device_id, observed_at in device_latest_times.items():
+        previous_status = current_statuses.get(device_id)
+        Device.objects.filter(pk=device_id).update(last_seen_at=observed_at, status=DeviceStatus.ONLINE)
+        if str(previous_status or "").upper() != DeviceStatus.ONLINE or device_id in offline_alert_devices:
+            device_status_updates[str(device_id)] = {
+                "device": devices[str(device_id)],
+                "previous_status": previous_status or devices[str(device_id)].status,
+                "observed_at": observed_at,
             }
-        created.append(point)
 
     first_device = created[0].device if created else None
     finished_at = timezone.now()

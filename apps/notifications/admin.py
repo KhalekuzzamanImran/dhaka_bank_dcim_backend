@@ -44,7 +44,7 @@ class NotificationDeliveryInline(admin.TabularInline):
 
 @admin.register(Notification)
 class NotificationAdmin(admin.ModelAdmin):
-    list_display = ("id", "recipient", "subject", "read_at", "created_at", "updated_at")
+    list_display = ("subject", "recipient", "channel_summary", "status_summary", "read_state", "created_at", "updated_at")
     list_filter = ("read_at", "created_at", ReadStateFilter)
     search_fields = (
         "recipient__username",
@@ -57,10 +57,24 @@ class NotificationAdmin(admin.ModelAdmin):
     ordering = ("-created_at", "-updated_at", "-id")
     inlines = [NotificationDeliveryInline]
 
+    @admin.display(description="Channels")
+    def channel_summary(self, obj):
+        channels = obj.deliveries.values_list("channel", flat=True)
+        return ", ".join(channels) or obj.channel or "Web"
+
+    @admin.display(description="Delivery status")
+    def status_summary(self, obj):
+        statuses = obj.deliveries.values_list("status", flat=True)
+        return ", ".join(statuses) or obj.status or "Pending"
+
+    @admin.display(description="Read")
+    def read_state(self, obj):
+        return "Read" if obj.read_at else "Unread"
+
 
 @admin.register(NotificationDelivery)
 class NotificationDeliveryAdmin(admin.ModelAdmin):
-    list_display = ("id", "notification", "channel", "status", "recipient_address", "sent_at", "failed_at", "created_at")
+    list_display = ("notification_subject", "channel", "status", "recipient_address", "sent_at", "failed_at", "created_at")
     list_filter = ("channel", "status", "created_at", "sent_at", "failed_at")
     search_fields = (
         "notification__subject",
@@ -81,4 +95,9 @@ class NotificationDeliveryAdmin(admin.ModelAdmin):
         "error_message",
         "metadata",
     )
+    list_select_related = ("notification",)
     ordering = ("-created_at", "-updated_at", "-id")
+
+    @admin.display(description="Notification")
+    def notification_subject(self, obj):
+        return obj.notification.subject or obj.notification.message[:80]

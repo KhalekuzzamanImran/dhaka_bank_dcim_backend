@@ -1,6 +1,8 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from apps.common.access import filter_queryset_for_user
+from apps.devices.models import Device
 from apps.common.viewsets import AuditModelViewSet, ScopedModelViewSet
 from .models import MetricDefinition, TelemetryPoint, LatestTelemetry, TelemetryIngestLog, DeviceEvent
 from .serializers import (
@@ -29,14 +31,13 @@ class TelemetryPointViewSet(ScopedModelViewSet):
         query_serializer.is_valid(raise_exception=True)
         validated = query_serializer.validated_data
 
-        qs = self.filter_queryset(self.get_queryset()).filter(
-            device_id=validated["device"],
-            metric_id=validated["metric_obj"].id,
-            time__gte=validated["start_dt"],
-            time__lte=validated["end_dt"],
-        ).order_by("time")
-
-        if not qs.exists():
+        accessible_device = filter_queryset_for_user(
+            Device.objects.filter(pk=validated["device"]),
+            request.user,
+            access_scope="device",
+            device_field="id",
+        ).exists()
+        if not accessible_device:
             payload = []
         else:
             rows = get_telemetry_history_rows(

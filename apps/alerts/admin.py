@@ -21,7 +21,7 @@ class AlertRuleAdmin(admin.ModelAdmin):
 @admin.register(AlertEvent)
 class AlertEventAdmin(admin.ModelAdmin):
     list_display = (
-        "id",
+        "event_label",
         "severity",
         "status",
         "organization",
@@ -37,6 +37,10 @@ class AlertEventAdmin(admin.ModelAdmin):
     search_fields = ("message", "device__name", "metric__code")
     readonly_fields = ("created_at", "updated_at")
     ordering = ("-triggered_at", "-last_seen_at", "-created_at")
+
+    @admin.display(description="Alert")
+    def event_label(self, obj):
+        return obj.message[:100] if obj.message else f"{obj.device} / {obj.metric}"
 
 
 @admin.register(AlertConditionState)

@@ -66,7 +66,7 @@ class DeviceViewSet(ScopedModelViewSet):
     access_scope = "device"
     device_field = "id"
     queryset = Device.objects.select_related(
-        "organization", "data_center", "room", "rack", "device_type", "device_model",
+        "organization", "data_center", "room", "rack", "device_type", "device_model", "device_model__vendor",
         "polling_config", "polling_config__polling_profile",
     ).all()
     serializer_class = DeviceSerializer

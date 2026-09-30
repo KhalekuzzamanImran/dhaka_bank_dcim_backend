@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import MetricDefinition, TelemetryPoint, LatestTelemetry, TelemetryIngestLog, DeviceEvent
+from .models import DeviceEvent, LatestTelemetry, MetricDefinition, TelemetryIngestLog, TelemetryPoint
 
 
 @admin.register(MetricDefinition)
@@ -45,6 +45,43 @@ class LatestTelemetryAdmin(admin.ModelAdmin):
     )
 
 
-admin.site.register(TelemetryPoint)
-admin.site.register(TelemetryIngestLog)
-admin.site.register(DeviceEvent)
+@admin.register(TelemetryPoint)
+class TelemetryPointAdmin(admin.ModelAdmin):
+    list_display = ("recorded_at", "device", "metric", "display_value", "quality", "source", "organization", "data_center")
+    list_filter = ("quality", "source", "organization", "data_center", "metric")
+    search_fields = ("device__name", "device__code", "metric__code", "metric__name", "raw_value_text", "value_text", "source")
+    list_select_related = ("device", "metric", "organization", "data_center")
+    date_hierarchy = "time"
+    ordering = ("-time",)
+
+    @admin.display(description="Recorded at", ordering="time")
+    def recorded_at(self, obj):
+        return obj.time
+
+    @admin.display(description="Value")
+    def display_value(self, obj):
+        for field in ("value_float", "value_integer", "value_boolean", "value_text", "raw_value_text"):
+            value = getattr(obj, field, None)
+            if value is not None:
+                return value
+        return "—"
+
+
+@admin.register(TelemetryIngestLog)
+class TelemetryIngestLogAdmin(admin.ModelAdmin):
+    list_display = ("started_at", "device", "protocol", "status", "duration_ms", "finished_at", "ingest_id")
+    list_filter = ("protocol", "status", "started_at")
+    search_fields = ("device__name", "device__code", "protocol", "status", "ingest_id", "error_message")
+    list_select_related = ("device",)
+    date_hierarchy = "started_at"
+    ordering = ("-started_at",)
+
+
+@admin.register(DeviceEvent)
+class DeviceEventAdmin(admin.ModelAdmin):
+    list_display = ("event_name", "event_code", "device", "organization", "data_center", "severity", "occurred_at")
+    list_filter = ("severity", "organization", "data_center", "occurred_at")
+    search_fields = ("event_name", "event_code", "message", "device__name", "device__code")
+    list_select_related = ("device", "organization", "data_center")
+    date_hierarchy = "occurred_at"
+    ordering = ("-occurred_at",)

@@ -130,14 +130,28 @@ def build_device_activity_feed(device, *, active_limit: int = DEFAULT_ACTIVE_LIM
 
     recent_alert_logs_qs = (
         AlertEventLog.objects.select_related("alert_event", "alert_event__device", "actor")
-        .filter(alert_event__device=device)
+        .filter(device_id=device.pk)
         .order_by("-created_at")
     )
     recent_device_events_qs = DeviceEvent.objects.select_related("organization", "data_center", "device").filter(device=device).order_by("-occurred_at")
     recent_trap_events_qs = SNMPTrapEvent.objects.select_related("organization", "data_center", "device").filter(device=device).order_by("-received_at")
 
+    recent_limit = max(0, int(recent_limit or 0))
+    alert_logs = list(recent_alert_logs_qs[:recent_limit])
+    if len(alert_logs) < recent_limit:
+        legacy_alert_logs = list(
+            AlertEventLog.objects.select_related("alert_event", "alert_event__device", "actor")
+            .filter(device_id__isnull=True, alert_event__device_id=device.pk)
+            .order_by("-created_at")[: recent_limit - len(alert_logs)]
+        )
+        alert_logs = sorted(
+            [*alert_logs, *legacy_alert_logs],
+            key=lambda log: log.created_at,
+            reverse=True,
+        )[:recent_limit]
+
     alert_event_logs = []
-    for log in recent_alert_logs_qs[: max(0, int(recent_limit or 0))]:
+    for log in alert_logs:
         item = _alert_log_payload(log)
         item["_sort_timestamp"] = log.created_at
         alert_event_logs.append(item)

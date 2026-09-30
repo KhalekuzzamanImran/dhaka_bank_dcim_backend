@@ -61,25 +61,54 @@ def write_device_telemetry_bulk(*, organization, data_center, device, readings, 
         latest_rows.append((metric, quality, payload, raw_value_text))
     if points:
         TelemetryPoint.objects.bulk_create(points, batch_size=1000)
-    # Simple safe upsert for first production. Replace with ON CONFLICT for very high write volume.
-    for metric, quality, payload, raw_value_text in latest_rows:
-        latest, _ = LatestTelemetry.objects.update_or_create(
+    latest_objects = [
+        LatestTelemetry(
+            organization=organization,
+            data_center=data_center,
             device=device,
             metric=metric,
-            defaults={
-                "organization": organization,
-                "data_center": data_center,
-                "quality": quality,
-                "last_seen_at": timestamp,
-                "source": source,
-                "raw_value_text": raw_value_text,
-                "value_float": payload.get("value_float"),
-                "value_integer": payload.get("value_integer"),
-                "value_boolean": payload.get("value_boolean"),
-                "value_text": payload.get("value_text"),
-            },
+            quality=quality,
+            last_seen_at=timestamp,
+            source=source,
+            raw_value_text=raw_value_text,
+            value_float=payload.get("value_float"),
+            value_integer=payload.get("value_integer"),
+            value_boolean=payload.get("value_boolean"),
+            value_text=payload.get("value_text"),
         )
-        telemetry_deltas.append(telemetry_delta_from_latest(latest, observed_at=timestamp))
+        for metric, quality, payload, raw_value_text in latest_rows
+    ]
+    if latest_objects:
+        LatestTelemetry.objects.bulk_create(
+            latest_objects,
+            batch_size=1000,
+            update_conflicts=True,
+            update_fields=[
+                "organization",
+                "data_center",
+                "quality",
+                "last_seen_at",
+                "source",
+                "raw_value_text",
+                "value_float",
+                "value_integer",
+                "value_boolean",
+                "value_text",
+                "updated_at",
+            ],
+            unique_fields=["device", "metric"],
+        )
+        latest_by_metric = {
+            row.metric_id: row
+            for row in LatestTelemetry.objects.select_related("device", "device__device_type", "metric").filter(
+                device_id=device.pk,
+                metric_id__in=[metric.pk for metric, *_ in latest_rows],
+            )
+        }
+        telemetry_deltas.extend(
+            telemetry_delta_from_latest(latest_by_metric[metric.pk], observed_at=timestamp)
+            for metric, *_ in latest_rows
+        )
     if latest_rows:
         transaction.on_commit(
             lambda: publish_live_update(

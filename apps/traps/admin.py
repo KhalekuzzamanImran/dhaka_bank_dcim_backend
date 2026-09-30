@@ -8,6 +8,10 @@ from .models import SNMPMIBDefinition, SNMPTrapEvent, SNMPTrapOIDMapping, SNMPTr
 
 @admin.register(SNMPTrapSource)
 class SNMPTrapSourceAdmin(admin.ModelAdmin):
+    list_display = ("source_ip", "organization", "data_center", "device", "is_enabled", "description", "created_at")
+    list_filter = ("organization", "data_center", "is_enabled")
+    search_fields = ("source_ip", "organization__name", "data_center__name", "device__name", "description")
+    list_select_related = ("organization", "data_center", "device")
     ordering = ("-created_at", "-updated_at")
 
 
@@ -30,7 +34,11 @@ class SNMPMIBDefinitionAdmin(admin.ModelAdmin):
 @admin.register(SNMPTrapEvent)
 class SNMPTrapEventAdmin(admin.ModelAdmin):
     list_display = (
-        "id",
+        "event_name",
+        "event_code",
+        "device",
+        "organization",
+        "data_center",
         "source_ip",
         "trap_oid",
         "resolution_source",
@@ -52,6 +60,7 @@ class SNMPTrapEventAdmin(admin.ModelAdmin):
         "mib_status",
     )
     search_fields = ("source_ip", "trap_oid", "event_code", "event_name", "message", "mib_module", "mib_symbol")
+    list_select_related = ("organization", "data_center", "device")
     readonly_fields = ("created_at", "updated_at")
     ordering = ("-received_at", "-created_at", "-updated_at")
 
