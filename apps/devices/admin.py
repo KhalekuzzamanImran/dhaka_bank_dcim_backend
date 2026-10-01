@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django import forms
 
 from .models import (
     Device,
@@ -12,6 +13,61 @@ from .models import (
     SNMPOIDMapping,
     Vendor,
 )
+from collectors.snmp_collector.security import encrypt_secret
+
+
+class DeviceCredentialAdminForm(forms.ModelForm):
+    password = forms.CharField(
+        required=False,
+        label="Password",
+        help_text="Leave blank to keep the current password.",
+        widget=forms.PasswordInput(render_value=False),
+    )
+    snmp_community = forms.CharField(
+        required=False,
+        label="SNMP community",
+        help_text="Leave blank to keep the current community string.",
+        widget=forms.PasswordInput(render_value=False),
+    )
+    snmp_v3_auth_key = forms.CharField(
+        required=False,
+        label="SNMP v3 auth key",
+        help_text="Leave blank to keep the current auth key.",
+        widget=forms.PasswordInput(render_value=False),
+    )
+    snmp_v3_priv_key = forms.CharField(
+        required=False,
+        label="SNMP v3 privacy key",
+        help_text="Leave blank to keep the current privacy key.",
+        widget=forms.PasswordInput(render_value=False),
+    )
+
+    class Meta:
+        model = DeviceCredential
+        fields = "__all__"
+        exclude = (
+            "password_encrypted",
+            "snmp_community_encrypted",
+            "snmp_v3_auth_key_encrypted",
+            "snmp_v3_priv_key_encrypted",
+        )
+
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        secret_fields = {
+            "password": "password_encrypted",
+            "snmp_community": "snmp_community_encrypted",
+            "snmp_v3_auth_key": "snmp_v3_auth_key_encrypted",
+            "snmp_v3_priv_key": "snmp_v3_priv_key_encrypted",
+        }
+        for form_field, model_field in secret_fields.items():
+            value = self.cleaned_data.get(form_field)
+            if value:
+                setattr(instance, model_field, encrypt_secret(value))
+        if commit:
+            instance.save()
+            self.save_m2m()
+        return instance
 
 
 @admin.register(DeviceType)
@@ -58,11 +114,24 @@ class DeviceProtocolConfigAdmin(admin.ModelAdmin):
 
 @admin.register(DeviceCredential)
 class DeviceCredentialAdmin(admin.ModelAdmin):
+    form = DeviceCredentialAdminForm
     list_display = ("device", "protocol", "snmp_version", "username", "is_active", "updated_at")
     list_filter = ("protocol", "snmp_version", "is_active")
     search_fields = ("device__name", "device__code", "username")
     list_select_related = ("device",)
-    readonly_fields = ("password_encrypted", "snmp_community_encrypted", "snmp_v3_auth_key_encrypted", "snmp_v3_priv_key_encrypted")
+    readonly_fields = ("secret_status",)
+
+    @admin.display(description="Stored credentials")
+    def secret_status(self, obj):
+        return ", ".join(
+            f"{label}: {'configured' if getattr(obj, field_name) else 'not configured'}"
+            for label, field_name in (
+                ("Password", "password_encrypted"),
+                ("SNMP community", "snmp_community_encrypted"),
+                ("SNMP v3 auth key", "snmp_v3_auth_key_encrypted"),
+                ("SNMP v3 privacy key", "snmp_v3_priv_key_encrypted"),
+            )
+        )
 
 
 @admin.register(PollingProfile)
