@@ -18,7 +18,7 @@ from apps.devices.models import (
     SNMPOIDMapping,
 )
 from apps.live_updates.services import publish_device_status_update, publish_live_update, telemetry_delta_from_latest
-from apps.telemetry.models import LatestTelemetry, TelemetryIngestLog, TelemetryPoint, TelemetryQuality
+from apps.telemetry.models import LatestTelemetry, MetricDefinition, TelemetryIngestLog, TelemetryPoint, TelemetryQuality
 from .client import SNMPClient, SNMPResult
 from .exceptions import SNMPConfigurationError, SNMPCredentialError, SNMPResponseError, SNMPTimeoutError, SNMPWorkerError
 from collectors.common.snmp_normalization import apply_scale_offset, parse_snmp_raw_value, store_value_by_metric_type
@@ -218,6 +218,8 @@ def poll_snmp_device(device_id: str, evaluate_alerts: bool = True) -> PollOutcom
         protocol_config, credential, mappings = get_device_snmp_runtime(device)
         client = SNMPClient(protocol_config, credential)
         results = client.get_many(mapping.oid for mapping in mappings)
+        directly_mapped_codes = {mapping.metric.code for mapping in mappings}
+        normalized_values = {}
         with transaction.atomic():
             for mapping in mappings:
                 try:
@@ -230,6 +232,7 @@ def poll_snmp_device(device_id: str, evaluate_alerts: bool = True) -> PollOutcom
                         raise SNMPResponseError(f"Invalid SNMP result returned for OID {mapping.oid}")
                     parsed_raw_value = parse_snmp_raw_value(result.raw_value, mapping.data_type)
                     final_value = apply_scale_offset(parsed_raw_value, mapping.scale_factor, mapping.offset_value)
+                    normalized_values[mapping.metric.code] = final_value
                     payload = _value_payload(mapping.metric.data_type, final_value)
                     quality = _quality_for_metric(mapping.metric.data_type, payload)
                     point = TelemetryPoint.objects.create(
@@ -269,6 +272,58 @@ def poll_snmp_device(device_id: str, evaluate_alerts: bool = True) -> PollOutcom
                         mapping.oid,
                         str(exc).splitlines()[0],
                     )
+
+            # RFC 1628 provides output load per phase. The UPS overview consumes
+            # one ups_load_percent value, so derive its average when no direct
+            # aggregate OID is configured for this device.
+            if "ups_load_percent" not in directly_mapped_codes:
+                phase_codes = (
+                    "ups_output_l1_percent_load",
+                    "ups_output_l2_percent_load",
+                    "ups_output_l3_percent_load",
+                )
+                phase_values = [normalized_values.get(code) for code in phase_codes]
+                all_phase_values_are_numeric = all(
+                    isinstance(value, (int, float)) and not isinstance(value, bool)
+                    for value in phase_values
+                )
+                if all_phase_values_are_numeric:
+                    load_metric = MetricDefinition.objects.filter(code="ups_load_percent", is_active=True).first()
+                    if load_metric:
+                        derived_load = sum(float(value) for value in phase_values) / len(phase_values)
+                        payload = _value_payload(load_metric.data_type, derived_load)
+                        phase_raw_values = ",".join(str(value) for value in phase_values)
+                        derived_raw = f"mean of output phase loads [{phase_raw_values}]"
+                        TelemetryPoint.objects.create(
+                            time=started_at,
+                            organization=device.organization,
+                            data_center=device.data_center,
+                            device=device,
+                            metric=load_metric,
+                            quality=TelemetryQuality.GOOD,
+                            source="snmp_worker_derived",
+                            ingest_id=ingest_id,
+                            raw_value_text=derived_raw,
+                            **payload,
+                        )
+                        latest, _ = LatestTelemetry.objects.update_or_create(
+                            device=device,
+                            metric=load_metric,
+                            defaults={
+                                "organization": device.organization,
+                                "data_center": device.data_center,
+                                "quality": TelemetryQuality.GOOD,
+                                "last_seen_at": started_at,
+                                "source": "snmp_worker_derived",
+                                "raw_value_text": derived_raw,
+                                **payload,
+                            },
+                        )
+                        if evaluate_alerts:
+                            evaluate_latest(latest)
+                        telemetry_deltas.append(telemetry_delta_from_latest(latest, observed_at=started_at))
+                        success_count += 1
+
             if success_count == 0:
                 raise SNMPResponseError("All configured SNMP OIDs failed")
             _mark_success(device, polling_config, started_at)

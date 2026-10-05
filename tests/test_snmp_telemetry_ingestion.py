@@ -165,6 +165,54 @@ class SnmpTelemetryIngestionTestCase(TestCase):
         self.assertIsNone(latest.value_integer)
         self.assertIsNone(latest.value_boolean)
 
+    def test_snmp_phase_loads_create_frontend_average_load_metric(self):
+        device = self._build_device()
+        phase_loads = {}
+        for phase, raw_value in ((1, 4), (2, 5), (3, 7)):
+            metric = MetricDefinition.objects.create(
+                code=f"ups_output_l{phase}_percent_load",
+                name=f"UPS Output L{phase} Load",
+                category=MetricCategory.POWER,
+                data_type=MetricDataType.FLOAT,
+                unit="%",
+                is_active=True,
+            )
+            oid = f"1.3.6.1.2.1.33.1.4.4.1.4.{phase}"
+            phase_loads[oid] = raw_value
+            SNMPOIDMapping.objects.create(
+                device_type=device.device_type,
+                device_model=device.device_model,
+                metric=metric,
+                oid=oid,
+                data_type="integer",
+                scale_factor=1,
+                offset_value=0,
+                is_active=True,
+            )
+        load_metric = MetricDefinition.objects.create(
+            code="ups_load_percent",
+            name="UPS Average Output Load",
+            category=MetricCategory.POWER,
+            data_type=MetricDataType.FLOAT,
+            unit="%",
+            is_active=True,
+        )
+
+        with patch("collectors.snmp_collector.services.SNMPClient.get_many") as get_many_mock:
+            get_many_mock.side_effect = lambda oids: {
+                oid: SNMPResult(oid=oid, value=phase_loads[oid], raw_value=str(phase_loads[oid]))
+                for oid in oids
+            }
+            result = poll_snmp_device(str(device.pk), evaluate_alerts=False)
+
+        latest = LatestTelemetry.objects.get(device=device, metric=load_metric)
+        point = TelemetryPoint.objects.get(device=device, metric=load_metric)
+        self.assertEqual(result.status, "SUCCESS")
+        self.assertAlmostEqual(latest.value_float, 16 / 3)
+        self.assertIn("[4,5,7]", latest.raw_value_text)
+        self.assertAlmostEqual(point.value_float, 16 / 3)
+        self.assertEqual(latest.source, "snmp_worker_derived")
+
     def test_snmp_poll_publishes_global_scope_for_superuser_live_updates(self):
         device = self._build_device()
         self._add_mapping(
