@@ -11,6 +11,9 @@ from apps.telemetry.models import MetricCategory, MetricDataType, MetricDefiniti
 # Net Vision v6.30 walk in snmpwalks/onebank/socomec_ups/snmp_walk.txt.
 # The bundled NetVision-8.11.mib describes enterprise branch .4555.1.1.7,
 # which is not exposed by the currently onboarded v6.30 card.
+# For this card, battery voltage and phase current values in the walk are already
+# in volts/amps (for example 544 V and 19 A), despite the generic MIB's 0.1-unit
+# descriptions. Preserve the observed device units instead of scaling them down.
 UPS_METRICS = [
     {
         "code": "ups_battery_capacity_percent",
@@ -38,10 +41,10 @@ UPS_METRICS = [
         "category": MetricCategory.POWER,
         "data_type": MetricDataType.FLOAT,
         "unit": "V",
-        "description": "RFC 1628 upsBatteryVoltage, reported in 0.1 V DC units.",
+        "description": "Socomec Net Vision battery bus voltage in volts, as exposed by this card.",
         "oid": "1.3.6.1.2.1.33.1.2.5.0",
         "mapping_data_type": "INTEGER",
-        "scale_factor": "0.1",
+        "scale_factor": "1",
     },
     {
         "code": "ups_battery_temperature_celsius",
@@ -84,6 +87,16 @@ UPS_METRICS = [
         "mapping_data_type": "INTEGER",
     },
     {
+        "code": "ups_bypass_frequency",
+        "name": "UPS Bypass Input Frequency",
+        "category": MetricCategory.POWER,
+        "data_type": MetricDataType.FLOAT,
+        "unit": "Hz",
+        "description": "Socomec bypass input frequency from RFC 1628 UPS-MIB.",
+        "oid": "1.3.6.1.2.1.33.1.5.1.0",
+        "mapping_data_type": "INTEGER",
+    },
+    {
         "code": "ups_output_voltage",
         "name": "UPS Output Voltage (Line 1)",
         "category": MetricCategory.POWER,
@@ -122,7 +135,7 @@ UPS_METRICS = [
         "description": "Line 1 output current; see phase-specific metrics for all output lines.",
         "oid": "1.3.6.1.2.1.33.1.4.4.1.3.1",
         "mapping_data_type": "INTEGER",
-        "scale_factor": "0.1",
+        "scale_factor": "1",
     },
     {
         "code": "ups_output_kva_capacity",
@@ -170,7 +183,7 @@ for phase in (1, 2, 3):
                 "description": f"RFC 1628 UPS input line {phase} current.",
                 "oid": f"1.3.6.1.2.1.33.1.3.3.1.4.{phase}",
                 "mapping_data_type": "INTEGER",
-                "scale_factor": "0.1",
+                "scale_factor": "1",
             },
             {
                 "code": f"ups_output_l{phase}_voltage",
@@ -191,7 +204,7 @@ for phase in (1, 2, 3):
                 "description": f"RFC 1628 UPS output line {phase} current.",
                 "oid": f"1.3.6.1.2.1.33.1.4.4.1.3.{phase}",
                 "mapping_data_type": "INTEGER",
-                "scale_factor": "0.1",
+                "scale_factor": "1",
             },
             {
                 "code": f"ups_output_l{phase}_percent_load",
@@ -200,7 +213,18 @@ for phase in (1, 2, 3):
                 "data_type": MetricDataType.FLOAT,
                 "unit": "%",
                 "description": f"RFC 1628 UPS output line {phase} percent load.",
-                "oid": f"1.3.6.1.2.1.33.1.4.4.1.4.{phase}",
+                # RFC 1628 column 4 is power; column 5 is percent load.
+                "oid": f"1.3.6.1.2.1.33.1.4.4.1.5.{phase}",
+                "mapping_data_type": "INTEGER",
+            },
+            {
+                "code": f"ups_bypass_l{phase}_voltage",
+                "name": f"UPS Bypass L{phase} Voltage",
+                "category": MetricCategory.POWER,
+                "data_type": MetricDataType.FLOAT,
+                "unit": "V",
+                "description": f"RFC 1628 UPS-MIB bypass line {phase} voltage.",
+                "oid": f"1.3.6.1.2.1.33.1.5.3.1.2.{phase}",
                 "mapping_data_type": "INTEGER",
             },
         ]
