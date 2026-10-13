@@ -489,7 +489,14 @@ def validate_report_template_config(config, *, existing_config: dict | None = No
 
 
 def build_report_template_options(template, *, user=None, device_id=None, device_ids=None) -> dict:
-    raw_definition_code = str(getattr(getattr(template, "definition", None), "code", None) or "").strip().upper()
+    # Older templates may have been seeded without their nullable definition FK.
+    # Their code still identifies the intended definition and keeps options usable
+    # until the template seed command repairs the relation.
+    raw_definition_code = str(
+        getattr(getattr(template, "definition", None), "code", None)
+        or getattr(template, "code", None)
+        or ""
+    ).strip().upper()
     definition_code = DEFINITION_CODE_ALIASES.get(raw_definition_code, raw_definition_code)
     if not definition_code:
         raise ValidationError({"definition": "Unsupported report definition."})

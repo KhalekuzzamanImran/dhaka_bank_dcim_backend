@@ -4,6 +4,8 @@ from apps.devices.management.commands.onboard_onebank_nti import (
     DEVICE_IP,
     DEVICE_TYPE_CODE,
     DIGITAL_INPUTS,
+    INPUT_ALERT_STATUSES,
+    INPUT_ALERT_RULES,
     MODEL_NUMBER,
     OID_MAPPINGS,
     PRODUCT_OID,
@@ -37,3 +39,11 @@ class OneBankNTIOnboardingDefinitionTests(SimpleTestCase):
         self.assertIn(f"{PRODUCT_OID}.100.3.0.1", trap_oids)
         self.assertIn(f"{PRODUCT_OID}.100.6.0.1", trap_oids)
         self.assertIn(f"{PRODUCT_OID}.100.6.0.5", trap_oids)
+
+    def test_each_input_status_alert_has_a_warning_rule(self):
+        self.assertEqual(len(INPUT_ALERT_RULES), len(DIGITAL_INPUTS) * len(INPUT_ALERT_STATUSES))
+        rules = {(item["metric_code"], item["status"]) for item in INPUT_ALERT_RULES}
+        for index, _description, _normal_value in DIGITAL_INPUTS:
+            metric_code = f"netbotz_nti_digital_input_{index}_status"
+            for status, _status_label in INPUT_ALERT_STATUSES:
+                self.assertIn((metric_code, status), rules)

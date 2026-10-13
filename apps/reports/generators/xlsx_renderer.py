@@ -217,7 +217,7 @@ def _report_info_rows(context: GeneratorContext, dataset: ReportDataset | None =
     output_cfg = context.output_config_snapshot if isinstance(getattr(context, "output_config_snapshot", None), dict) else {}
 
     rows: list[dict[str, str]] = [
-        {"section": "banner", "label": "label", "value": str(banner_config.get("label") or getattr(context.organization, "name", None) or "Dhaka Bank DCIM")},
+        {"section": "banner", "label": "label", "value": str(banner_config.get("label") or getattr(context.organization, "name", None) or "One Bank DCIM")},
         {"section": "banner", "label": "subtitle", "value": str(banner_config.get("subtitle") or "Operational reporting")},
         {"section": "report", "label": "title", "value": str(header_config.get("title") or job_template_snapshot.get("name") or def_code or dataset_title or "Report Export") if _as_bool(header_config.get("show_title"), True) else "--"},
         {"section": "report", "label": "subtitle", "value": str(header_config.get("subtitle") or dataset_sub or "--") if _as_bool(header_config.get("show_subtitle"), True) else "--"},
@@ -296,8 +296,8 @@ def _render_sheet(
 
         # 1. Brand Banner
         if _as_bool(banner_config.get("enabled"), True):
-            badge = str(banner_config.get("badge") or "DB").strip()[:3]
-            brand_label = str(banner_config.get("label") or getattr(context.organization, "name", None) or "Dhaka Bank DCIM").strip()
+            badge = str(banner_config.get("badge") or "OB").strip()[:3]
+            brand_label = str(banner_config.get("label") or getattr(context.organization, "name", None) or "One Bank DCIM").strip()
             subtitle = str(banner_config.get("subtitle") or "Operational reporting").strip()
             banner_text = f"[{badge}]  {brand_label} — {subtitle}"
             banner_cells = f'<c r="A{row_index}" s="3" t="inlineStr"><is><t>{escape(banner_text)}</t></is></c>' + pad_header_row(row_index, 2, style=3)
@@ -341,7 +341,7 @@ def _render_sheet(
         # 4. Metadata key-value rows
         meta_items = []
         if _as_bool(header_config.get("show_organization"), True):
-            org = getattr(context.organization, "name", None) or "Dhaka Bank"
+            org = getattr(context.organization, "name", None) or "One Bank"
             meta_items.append(("Organization", org))
 
         if _as_bool(header_config.get("show_data_center"), True):
@@ -659,8 +659,8 @@ def render_xlsx(dataset: ReportDataset, context: GeneratorContext, output_path: 
             """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <dc:title>Report Export</dc:title>
-  <dc:creator>Dhaka Bank DCIM</dc:creator>
-  <cp:lastModifiedBy>Dhaka Bank DCIM</cp:lastModifiedBy>
+  <dc:creator>One Bank DCIM</dc:creator>
+  <cp:lastModifiedBy>One Bank DCIM</cp:lastModifiedBy>
 </cp:coreProperties>
 """,
         )
@@ -668,7 +668,7 @@ def render_xlsx(dataset: ReportDataset, context: GeneratorContext, output_path: 
             "docProps/app.xml",
             f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
-  <Application>Dhaka Bank DCIM</Application>
+  <Application>One Bank DCIM</Application>
   <DocSecurity>0</DocSecurity>
   <ScaleCrop>false</ScaleCrop>
   <HeadingPairs>
@@ -682,7 +682,7 @@ def render_xlsx(dataset: ReportDataset, context: GeneratorContext, output_path: 
       {"".join(f"<vt:lpstr>{escape(name)}</vt:lpstr>" for name in safe_names)}
     </vt:vector>
   </TitlesOfParts>
-  <Company>Dhaka Bank</Company>
+  <Company>One Bank</Company>
   <LinksUpToDate>false</LinksUpToDate>
   <SharedDoc>false</SharedDoc>
   <HyperlinksChanged>false</HyperlinksChanged>

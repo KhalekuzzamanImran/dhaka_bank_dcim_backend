@@ -68,7 +68,7 @@ def _make_access(user, role, *, organization=None, data_center=None, room=None, 
 
 @pytest.fixture
 def hierarchy():
-    org = Organization.objects.create(name="Dhaka Bank", code="DHAKA_BANK")
+    org = Organization.objects.create(name="One Bank", code="ONE_BANK")
     dc1 = DataCenter.objects.create(organization=org, name="Primary Data Center", code="PDC")
     dc2 = DataCenter.objects.create(organization=org, name="Backup Data Center", code="BDC")
     room1 = Room.objects.create(data_center=dc1, name="Room 1", code="R1")
@@ -251,7 +251,7 @@ def test_access_context_returns_roles_permissions_and_scopes(hierarchy, roles):
     assert payload["user"]["username"] == "ctx_user"
     assert {item["code"] for item in payload["roles"]} == {"BANK_ADMIN"}
     assert {"device.view", "organization.view", "access.view", "access.manage"}.issubset({item["code"] for item in payload["permissions"]})
-    assert [item["code"] for item in payload["organizations"]] == ["DHAKA_BANK"]
+    assert [item["code"] for item in payload["organizations"]] == ["ONE_BANK"]
     assert {item["code"] for item in payload["data_centers"]} == {"PDC", "BDC"}
     assert {item["code"] for item in payload["rooms"]} == {"R1", "R2", "R3"}
     assert {item["code"] for item in payload["racks"]} == {"RK1", "RK2", "RK3"}

@@ -6,6 +6,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
+from apps.alerts.models import AlertOperator, AlertRule, AlertSeverity
 from apps.datacenters.models import DataCenter
 from apps.devices.models import (
     Device,
@@ -138,6 +139,21 @@ TRAP_MAPPINGS = (
     ),
 )
 
+# NTI reports sensor condition through status values 2-5 (pre-alert, alert,
+# acknowledged, dismissed). The alert engine evaluates every polled
+# LatestTelemetry row and opens/resolves ordinary AlertEvents from these rules.
+INPUT_ALERT_STATUSES = ((2, "Pre-alert"), (3, "Alert"), (4, "Acknowledged"), (5, "Dismissed"))
+INPUT_ALERT_RULES = tuple(
+    {
+        "metric_code": f"netbotz_nti_digital_input_{index}_status",
+        "name": f"NTI {description} {status_label}",
+        "status": status,
+        "message_template": f"NTI digital input {index} ({description}) reports {status_label.lower()}.",
+    }
+    for index, description, _normal_value in DIGITAL_INPUTS
+    for status, status_label in INPUT_ALERT_STATUSES
+)
+
 
 class Command(BaseCommand):
     help = "Onboard the One Bank NTI ENVIROMUX-16D and its frontend-required SNMP telemetry."
@@ -262,6 +278,27 @@ class Command(BaseCommand):
                     },
                 )
 
+            for item in INPUT_ALERT_RULES:
+                AlertRule.objects.update_or_create(
+                    organization=organization,
+                    data_center=data_center,
+                    device_type=device_type,
+                    device=device,
+                    metric=metrics_by_code[item["metric_code"]],
+                    name=item["name"],
+                    defaults={
+                        "operator": AlertOperator.EQ,
+                        "threshold_integer": item["status"],
+                        "threshold_float": None,
+                        "threshold_boolean": None,
+                        "threshold_text": None,
+                        "severity": AlertSeverity.WARNING,
+                        "duration_seconds": 0,
+                        "is_active": True,
+                        "message_template": item["message_template"],
+                    },
+                )
+
             DeviceProtocolConfig.objects.update_or_create(
                 device=device,
                 protocol=ProtocolType.SNMP,
@@ -320,4 +357,5 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"NTI device {'created' if created else 'updated'}: {device.name} ({DEVICE_IP})"))
         self.stdout.write(f"Vendor/model: {vendor.name} / {model.model_number}")
         self.stdout.write(f"Frontend telemetry OIDs: {len(OID_MAPPINGS)}; trap OID mappings: {len(TRAP_MAPPINGS)}")
+        self.stdout.write(f"Active digital-input warning rules: {len(INPUT_ALERT_RULES)}")
         self.stdout.write("SNMPv2c community is encrypted at rest; polling and trap source are enabled.")

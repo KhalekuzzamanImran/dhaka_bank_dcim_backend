@@ -45,7 +45,7 @@ class Command(BaseCommand):
         User = get_user_model()
         admin, _ = User.objects.get_or_create(username='admin', defaults={'email':'admin@example.com','full_name':'System Admin','is_staff':True,'is_superuser':True})
         admin.set_password('admin12345'); admin.save()
-        org, _ = Organization.objects.get_or_create(code='DHAKA_BANK', defaults={'name':'Dhaka Bank','status':'ACTIVE'})
+        org, _ = Organization.objects.get_or_create(code='ONE_BANK', defaults={'name':'One Bank','status':'ACTIVE'})
         dc, _ = DataCenter.objects.get_or_create(organization=org, code='PDC', defaults={'name':'Primary Data Center','city':'Dhaka','country':'Bangladesh','status':'ACTIVE'})
         room, _ = Room.objects.get_or_create(data_center=dc, code='SR-01', defaults={'name':'Server Room 01','room_type':'SERVER_ROOM','floor_name':'1st Floor'})
         row, _ = Row.objects.get_or_create(data_center=dc, room=room, code='ROW-A', defaults={'name':'Row A','position_x':1,'position_y':1})

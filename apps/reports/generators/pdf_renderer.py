@@ -388,10 +388,10 @@ def _build_header_banner(context: GeneratorContext) -> dict | None:
     if not _as_bool(banner_config.get("enabled"), True):
         return None
 
-    organization_name = getattr(context.organization, "name", None) or "Dhaka Bank"
+    organization_name = getattr(context.organization, "name", None) or "One Bank"
     label = str(banner_config.get("label") or f"{organization_name} DCIM").strip()
     subtitle = str(banner_config.get("subtitle") or "Operational reporting").strip()
-    badge = str(banner_config.get("badge") or "DB").strip()[:3].upper() or "DB"
+    badge = str(banner_config.get("badge") or "OB").strip()[:3].upper() or "OB"
     return {
         "label": label,
         "subtitle": subtitle,
@@ -413,7 +413,7 @@ def _build_footer_lines(context: GeneratorContext) -> list[str]:
     if custom_text and not is_alert_def:
         lines.append(custom_text)
     if _as_bool(footer_config.get("show_confidentiality_note"), True) and not is_alert_def:
-        lines.append("Confidential - Dhaka Bank DCIM report")
+        lines.append("Confidential - One Bank DCIM report")
     if _as_bool(footer_config.get("show_generated_at"), False):
         gen_time = getattr(context, "local_generated_at", None) or getattr(context, "generated_at", None)
         gen_str = gen_time.strftime("%d %b %Y, %H:%M") if gen_time else "--"
@@ -463,8 +463,8 @@ def _build_page_stream(
         commands.append("0.00 0.45 0.85 rg")
         commands.append(f"{margin_x} {banner_y} 34 24 re")
         commands.append("f")
-        add_text(str(banner.get("badge") or "DB"), size=9, x=margin_x + 7, y_pos=banner_y + 9, color=(1, 1, 1), font="F3")
-        add_text(str(banner.get("label") or "Dhaka Bank DCIM"), size=11, x=margin_x + 48, y_pos=banner_y + 16, color=(0.08, 0.12, 0.2), font="F3")
+        add_text(str(banner.get("badge") or "OB"), size=9, x=margin_x + 7, y_pos=banner_y + 9, color=(1, 1, 1), font="F3")
+        add_text(str(banner.get("label") or "One Bank DCIM"), size=11, x=margin_x + 48, y_pos=banner_y + 16, color=(0.08, 0.12, 0.2), font="F3")
         add_text(str(banner.get("subtitle") or "Operational reporting"), size=8, x=margin_x + 48, y_pos=banner_y + 5, color=(0.38, 0.42, 0.5))
         y = banner_y - 18
 
@@ -567,7 +567,7 @@ def _write_pdf(
         handle.write(
             (
                 "trailer\n"
-                f"<< /Size {len(objects) + 1} /Root {catalog_id} 0 R /Info << /Title ({_escape_pdf_text(title[:80])}) /Author (Dhaka Bank DCIM) /Subject ({_escape_pdf_text(footer[:80])}) >> >>\n"
+                f"<< /Size {len(objects) + 1} /Root {catalog_id} 0 R /Info << /Title ({_escape_pdf_text(title[:80])}) /Author (One Bank DCIM) /Subject ({_escape_pdf_text(footer[:80])}) >> >>\n"
                 f"startxref\n{xref_offset}\n%%EOF\n"
             ).encode("utf-8")
         )
@@ -635,7 +635,7 @@ def render_pdf(dataset: ReportDataset, context: GeneratorContext, output_path: s
         output_path,
         pages,
         title=dataset.title,
-        footer="Confidential - Dhaka Bank DCIM report",
+        footer="Confidential - One Bank DCIM report",
         layout=layout,
     )
     return _artifact_metadata(output_path, filename)

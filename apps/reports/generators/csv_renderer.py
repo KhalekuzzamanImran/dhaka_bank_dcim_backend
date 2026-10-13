@@ -182,7 +182,7 @@ def _metadata_lines(context: GeneratorContext, dataset: ReportDataset) -> list[s
 
     lines: list[str] = [
         "# ==========================================================================",
-        f"# {banner_config.get('label') or getattr(context.organization, 'name', None) or 'Dhaka Bank DCIM'} | {banner_config.get('subtitle') or 'Operational reporting'}",
+        f"# {banner_config.get('label') or getattr(context.organization, 'name', None) or 'One Bank DCIM'} | {banner_config.get('subtitle') or 'Operational reporting'}",
         "# ==========================================================================",
     ]
 
@@ -207,7 +207,7 @@ def _metadata_lines(context: GeneratorContext, dataset: ReportDataset) -> list[s
     if resolved_subtitle:
         lines.append(f"# Subtitle        : {resolved_subtitle}")
     if _as_bool(header_config.get("show_organization"), True):
-        org_name = getattr(context.organization, "name", None) or "Dhaka Bank"
+        org_name = getattr(context.organization, "name", None) or "One Bank"
         lines.append(f"# Organization    : {org_name}")
     if _as_bool(header_config.get("show_data_center"), True):
         dc_name = getattr(context.data_center, "name", None) or "All"

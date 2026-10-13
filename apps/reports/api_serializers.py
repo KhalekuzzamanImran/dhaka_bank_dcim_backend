@@ -405,6 +405,11 @@ class ReportTemplateWriteSerializer(serializers.Serializer):
                 data_center = getattr(self.instance, "data_center", None)
             if "definition" not in self.initial_data:
                 definition_code = getattr(self.instance.definition, "code", None)
+            elif self.partial and definition_code in (None, "") and self.instance.definition_id:
+                # Clients can hold a stale template object with a null definition
+                # after the server-side template has been repaired. A PATCH that
+                # sends that null should preserve the existing valid definition.
+                definition_code = self.instance.definition.code
             if "name" not in self.initial_data:
                 name = self.instance.name
             if "code" not in self.initial_data:

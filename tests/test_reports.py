@@ -320,6 +320,41 @@ class ReportTestCase(TestCase):
         self.assertEqual(job.error_message, original_state["error_message"])
         self.assertEqual(self._artifact_file(job).name, original_state["file_name"])
 
+    def test_partial_template_update_preserves_definition_when_client_sends_null(self):
+        self.client.force_authenticate(user=self.user)
+        template = self._template(code="NULL_DEFINITION_PATCH_TEMPLATE")
+
+        response = self.client.patch(
+            f"/api/v1/reports/templates/{template.id}/",
+            {"definition": None},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        template.refresh_from_db()
+        self.assertEqual(template.definition.code, "DEVICE_INVENTORY")
+
+    def test_alert_template_accepts_single_and_multiple_device_scope_defaults(self):
+        self.client.force_authenticate(user=self.user)
+        template = self._template(code="ALERT_DEVICE_SCOPE_TEMPLATE", report_type="alert_export")
+
+        response = self.client.patch(
+            f"/api/v1/reports/templates/{template.id}/",
+            {
+                "definition": None,
+                "default_parameters": {"device_id": str(self.device.id)},
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+
+        response = self.client.patch(
+            f"/api/v1/reports/templates/{template.id}/",
+            {"default_parameters": {"device_ids": [str(self.device.id)]}},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+
     def test_report_job_update_is_rejected_and_does_not_change_history(self):
         self.client.force_authenticate(user=self.user)
         template = self._template(code="IMMUTABLE_TEMPLATE")
@@ -442,7 +477,10 @@ class ReportTestCase(TestCase):
             },
         )
 
-        response = self.client.get(f"/api/v1/reports/templates/{template.id}/options/")
+        response = self.client.get(
+            f"/api/v1/reports/templates/{template.id}/options/",
+            {"device_id": str(self.device.id)},
+        )
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["definition_code"], "TELEMETRY_EXPORT")
@@ -450,6 +488,25 @@ class ReportTestCase(TestCase):
         self.assertIn("timestamp", payload["available_columns"])
         self.assertEqual(payload["maximum_date_range_days"], 31)
         self.assertNotIn("secret", str(payload).lower())
+
+    def test_telemetry_template_options_work_when_legacy_definition_link_is_missing(self):
+        self.client.force_authenticate(user=self.user)
+        template = self._template(
+            code="LEGACY_TELEMETRY_TEMPLATE",
+            report_type="telemetry_export",
+            config={"report_type": "telemetry_export", "output_format": "csv"},
+        )
+        ReportTemplate.objects.filter(pk=template.pk).update(definition=None)
+
+        response = self.client.get(
+            f"/api/v1/reports/templates/{template.id}/options/",
+            {"device_id": str(self.device.id)},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["definition_code"], "TELEMETRY_EXPORT")
+        self.assertIn("device_metric_options", payload["field_options"])
 
     def test_telemetry_export_options_and_job_snapshot_use_selected_device_metrics(self):
         self.client.force_authenticate(user=self.user)
@@ -1872,6 +1929,10 @@ class ReportTestCase(TestCase):
         ReportTemplate.objects.filter(organization=self.org).delete()
         call_command("seed_report_templates", organization_code=self.org.code)
         self.assertEqual(ReportTemplate.objects.filter(organization=self.org).count(), 6)
+        self.assertEqual(
+            ReportTemplate.objects.get(organization=self.org, code="TELEMETRY_EXPORT").definition.code,
+            "TELEMETRY_EXPORT",
+        )
 
         changed = ReportTemplate.objects.get(organization=self.org, code="ALERT_SUMMARY")
         changed.name = "Changed Name"

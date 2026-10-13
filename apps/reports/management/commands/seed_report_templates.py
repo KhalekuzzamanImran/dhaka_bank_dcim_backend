@@ -6,6 +6,10 @@ from apps.common.models import StatusChoices
 from apps.organizations.models import Organization
 from apps.reports.seed_data import REPORT_TEMPLATE_SEEDS
 from apps.reports.models import ReportTemplate
+from apps.reports.services.definitions import get_definition_by_code
+
+
+DEFINITION_CODE_ALIASES = {"ALERT_EXPORT": "ALERT_DETAIL"}
 
 
 class Command(BaseCommand):
@@ -56,10 +60,17 @@ class Command(BaseCommand):
         created_count = 0
         updated_count = 0
         for template_def in REPORT_TEMPLATE_SEEDS:
+            definition_code = DEFINITION_CODE_ALIASES.get(template_def["code"], template_def["code"])
+            definition = get_definition_by_code(definition_code)
+            if definition is None:
+                raise CommandError(
+                    f"Report definition '{definition_code}' is missing. Seed report definitions before templates."
+                )
             template, created = ReportTemplate.objects.update_or_create(
                 organization=organization,
                 code=template_def["code"],
                 defaults={
+                    "definition": definition,
                     "name": template_def["name"],
                     "description": template_def["description"],
                     "config": template_def["config"],

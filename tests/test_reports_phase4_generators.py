@@ -412,7 +412,7 @@ class ReportPhase4GeneratorTestCase(TestCase):
         with artifact.file.open("rb") as handle:
             content = handle.read()
         self.assertTrue(content.startswith(b"%PDF-1.4"))
-        self.assertIn(b"Confidential - Dhaka Bank DCIM report", content)
+        self.assertIn(b"Confidential - One Bank DCIM report", content)
 
     def test_pdf_generation_renders_custom_header_on_first_page_only(self):
         template = self._template(
@@ -428,7 +428,7 @@ class ReportPhase4GeneratorTestCase(TestCase):
                 "enabled": True,
                 "brand_banner": {
                     "enabled": True,
-                    "label": "Dhaka Bank DCIM",
+                    "label": "One Bank DCIM",
                     "subtitle": "Operations",
                 },
                 "title": "Quarterly Operations Report",
@@ -452,12 +452,12 @@ class ReportPhase4GeneratorTestCase(TestCase):
         self.assertIsNotNone(artifact)
         with artifact.file.open("rb") as handle:
             content = handle.read()
-        self.assertIn(b"Dhaka Bank DCIM", content)
+        self.assertIn(b"One Bank DCIM", content)
         self.assertIn(b"Operations", content)
         self.assertIn(b"Quarterly Operations Report", content)
         self.assertIn(b"Primary Data Center", content)
         self.assertIn(b"For authorized internal use only", content)
-        self.assertIn(b"Confidential - Dhaka Bank DCIM report", content)
+        self.assertIn(b"Confidential - One Bank DCIM report", content)
         self.assertIn(b"Page 1 of", content)
 
     def test_csv_generation_applies_default_columns_and_metadata_lines(self):
@@ -491,7 +491,7 @@ class ReportPhase4GeneratorTestCase(TestCase):
                 "subtitle": "Historical telemetry export",
                 "brand_banner": {
                     "enabled": True,
-                    "label": "Dhaka Bank DCIM",
+                    "label": "One Bank DCIM",
                     "subtitle": "Operational reporting",
                 },
             },
@@ -525,14 +525,14 @@ class ReportPhase4GeneratorTestCase(TestCase):
         lines = [line for line in content.splitlines() if line and not line.startswith("#")]
         self.assertGreaterEqual(len(lines), 2)
         self.assertIn("timestamp,device,metric_code,value", lines)
-        self.assertIn("Dhaka Bank DCIM | Report Header", content)
+        self.assertIn("One Bank DCIM | Report Header", content)
         self.assertIn("==========================================================================", content)
         self.assertIn("--------------------------------------------------------------------------", content)
         self.assertIn("Report Footer", content)
         self.assertIn("Footer Text", content)
         self.assertIn("For authorized internal use only", content)
         self.assertIn("Confidentiality Note", content)
-        self.assertIn("Confidential - Dhaka Bank DCIM report", content)
+        self.assertIn("Confidential - One Bank DCIM report", content)
         self.assertNotIn("Brand Banner", content)
         self.assertNotIn("Report Details", content)
         self.assertNotIn("Generation", content)
