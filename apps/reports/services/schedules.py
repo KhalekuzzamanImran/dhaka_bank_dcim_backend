@@ -27,7 +27,7 @@ from ..models import (
     ReportScheduleStatus,
     ReportRecipientChannel,
 )
-from .deliveries import create_report_deliveries_for_job, execute_report_delivery, report_delivery_summary
+from .deliveries import create_report_deliveries_for_job
 from .definitions import get_active_definition_by_code
 from .factory import create_report_job, _resolve_relative_date_range
 from .execution import generate_report_job
@@ -548,18 +548,10 @@ def execute_report_schedule(
         run.save(update_fields=["job", "started_at", "completed_at", "status", "error_message", "updated_at"])
 
         if trigger_source == "MANUAL":
-            create_report_deliveries_for_job(job=completed_job, queue_deliveries=False)
-            for delivery in completed_job.deliveries.order_by("created_at", "pk"):
-                execute_report_delivery(delivery_id=str(delivery.pk))
-
-            # Run Now performs delivery synchronously, so its aggregate result
-            # is authoritative at this point. Scheduled deliveries are queued
-            # asynchronously and update the schedule from the delivery worker.
-            delivery_summary = report_delivery_summary(completed_job)
-            schedule.last_sent_at = timezone.now() if delivery_summary in {"SENT", "PARTIAL", "FAILED"} else schedule.last_sent_at
-            schedule.last_delivery_status = delivery_summary
-            schedule.last_error_message = ""
-            schedule.save(update_fields=["last_job", "last_run_at", "next_run_at", "last_sent_at", "last_delivery_status", "last_error_message", "updated_at"])
+            # Never call external email/SMS providers inside the API request.
+            # Queue each recipient delivery; the delivery workers own retries
+            # and update the schedule's aggregate status when they finish.
+            create_report_deliveries_for_job(job=completed_job, queue_deliveries=True)
         else:
             # Do not write a stale last_sent_at value after queuing scheduled
             # deliveries; the delivery worker owns the final timestamp/status.

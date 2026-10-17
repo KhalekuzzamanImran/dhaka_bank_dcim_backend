@@ -124,7 +124,13 @@ def build_output_config_snapshot(*, definition, template=None, schedule=None, pr
         "primary_format": primary_format,
         "attachment_formats": deepcopy(attachment_formats or []),
         "include_charts": bool(getattr(template, "include_charts", False)),
-        "include_raw_data": bool(getattr(template, "include_raw_data", False) if template else getattr(schedule, "attach_raw_data", False)),
+        # Schedule-level output choices must take precedence for scheduled jobs.
+        # Templates provide the default only for jobs without a schedule.
+        "include_raw_data": bool(
+            getattr(schedule, "attach_raw_data", False)
+            if schedule is not None
+            else getattr(template, "include_raw_data", False)
+        ),
     }
 
 

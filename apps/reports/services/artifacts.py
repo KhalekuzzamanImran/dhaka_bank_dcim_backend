@@ -73,6 +73,10 @@ def _allowed_output_formats(job: ReportJob) -> set[str]:
         if not candidate:
             continue
         normalized.add(candidate)
+    # Raw telemetry is rendered as a CSV artifact even when CSV is not listed
+    # as an explicit attachment format on the template or schedule.
+    if output_config.get("include_raw_data"):
+        normalized.add(ReportArtifactFormat.CSV)
     return normalized
 
 

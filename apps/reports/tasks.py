@@ -5,12 +5,24 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 
 from .services.execution import generate_report_job
-from .services.deliveries import create_report_deliveries_for_job, execute_report_delivery
+from .services.deliveries import create_report_deliveries_for_job, execute_report_delivery, fail_stale_report_deliveries
 from .services.observability import log_report_event, log_report_metric
 from .services.retention import cleanup_expired_report_artifacts
 from .services.schedules import claim_due_report_schedules, execute_report_schedule
 
 logger = logging.getLogger(__name__)
+
+
+@shared_task(bind=True, queue="scheduler")
+def fail_stale_report_deliveries_task(self, limit=500):
+    result = fail_stale_report_deliveries(limit=limit)
+    logger.info(
+        "Stale report delivery timeout sweep finished matched=%s failed=%s timeout_minutes=%s",
+        result.get("matched_count"),
+        result.get("failed_count"),
+        result.get("timeout_minutes"),
+    )
+    return result
 
 
 @shared_task(bind=True, queue="reports")

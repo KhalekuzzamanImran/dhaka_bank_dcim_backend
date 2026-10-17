@@ -120,6 +120,16 @@ class ReportPhase2ModelTestCase(TestCase):
         job.completed_at = started_at + timedelta(seconds=1)
         job.file = SimpleUploadedFile("report.csv", b"header\nvalue\n", content_type="text/csv")
         job.save()
+        ReportArtifact.objects.get_or_create(
+            job=job,
+            format="CSV",
+            defaults={
+                "file": "reports/test-report.csv",
+                "original_filename": "report.csv",
+                "content_type": "text/csv",
+                "size_bytes": 13,
+            },
+        )
         return ReportJob.objects.get(pk=job_id)
 
     def test_report_definition_seeding_is_idempotent(self):

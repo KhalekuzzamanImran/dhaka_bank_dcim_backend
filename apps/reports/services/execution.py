@@ -68,7 +68,7 @@ def _resolve_definition_for_job(job: ReportJob):
     return None
 
 
-def _normalize_requested_formats(primary_format, attachment_formats):
+def _normalize_requested_formats(primary_format, attachment_formats, *, include_raw_data=False):
     formats: list[str] = []
 
     def _append(value):
@@ -81,6 +81,8 @@ def _normalize_requested_formats(primary_format, attachment_formats):
     _append(primary_format)
     for value in attachment_formats or []:
         _append(value)
+    if include_raw_data:
+        _append("CSV")
 
     if not formats:
         formats.append("CSV")
@@ -161,6 +163,7 @@ def _render_requested_artifacts(job: ReportJob, definition, generator, context: 
     requested_formats = _normalize_requested_formats(
         context.output_config_snapshot.get("primary_format") or context.output_config_snapshot.get("output_format"),
         context.output_config_snapshot.get("attachment_formats"),
+        include_raw_data=bool(context.output_config_snapshot.get("include_raw_data")),
     )
     generator_supported = {str(value).strip().upper() for value in getattr(generator, "supported_formats", ()) if str(value).strip()}
     definition_supported = {str(value).strip().upper() for value in getattr(definition, "supported_formats", ()) if str(value).strip()}

@@ -23,6 +23,7 @@ from apps.organizations.models import Organization
 from apps.reports.enums import ReportTriggerSource
 from apps.reports.models import ReportArtifact, ReportDefinition, ReportJob, ReportJobStatus, ReportTemplate
 from apps.reports.services.artifacts import create_report_artifact
+from apps.reports.services.deliveries import build_report_delivery_summary
 from apps.reports.services.definitions import get_active_definition_by_code
 from apps.reports.services.factory import create_report_job
 from apps.reports.services.execution import generate_report_job
@@ -125,6 +126,29 @@ class ReportPhase5ArtifactTestCase(TestCase):
         self.assertEqual(generated.artifacts.count(), 2)
         self.assertEqual(set(generated.artifacts.values_list("format", flat=True)), {"PDF", "CSV"})
         self.assertTrue(all(default_storage.exists(artifact.file.name) for artifact in generated.artifacts.all()))
+
+    def test_raw_data_generates_csv_even_when_csv_is_not_an_explicit_attachment(self):
+        template = self._template(primary_format="PDF")
+        job = self._job(template)
+        job.output_config_snapshot = {**job.output_config_snapshot, "include_raw_data": True}
+        job.save(update_fields=["output_config_snapshot"])
+
+        generated = generate_report_job(job.id)
+
+        self.assertEqual(generated.status, ReportJobStatus.COMPLETED)
+        self.assertEqual(set(generated.artifacts.values_list("format", flat=True)), {"PDF", "CSV"})
+
+    def test_failed_job_without_deliveries_is_not_summarized_as_no_deliveries(self):
+        template = self._template(primary_format="PDF")
+        job = self._job(template)
+        job.status = ReportJobStatus.FAILED
+        job.error_message = "Report generation failed"
+        job.save(update_fields=["status", "error_message"])
+
+        summary = build_report_delivery_summary(job)
+
+        self.assertEqual(summary["status"], "FAILED")
+        self.assertEqual(summary["label"], "Report generation failed")
 
     def test_duplicate_processing_reuses_existing_artifact(self):
         template = self._template(primary_format="CSV")

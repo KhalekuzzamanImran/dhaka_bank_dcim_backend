@@ -633,6 +633,7 @@ class ReportScheduleReadSerializer(serializers.ModelSerializer):
             "recipient_count",
             "primary_format",
             "attachment_formats",
+            "attach_raw_data",
             "last_result",
             "last_sent_at",
             "last_failure_at",
@@ -806,6 +807,7 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
     send_sms = serializers.BooleanField(required=False, default=False)
     primary_format = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     attachment_formats = serializers.ListField(child=serializers.CharField(), required=False, default=list)
+    attach_raw_data = serializers.BooleanField(required=False, default=True)
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
@@ -826,6 +828,7 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
         send_sms = attrs.get("send_sms")
         primary_format = attrs.get("primary_format")
         attachment_formats = attrs.get("attachment_formats")
+        attach_raw_data = attrs.get("attach_raw_data")
 
         if self.instance is not None:
             if "organization" not in self.initial_data:
@@ -892,6 +895,8 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
                 primary_format = self.instance.primary_format
             if "attachment_formats" not in self.initial_data:
                 attachment_formats = deepcopy(self.instance.attachment_formats if isinstance(self.instance.attachment_formats, list) else [])
+            if "attach_raw_data" not in self.initial_data:
+                attach_raw_data = self.instance.attach_raw_data
 
         if data_center in ("", None):
             data_center = None
@@ -1009,6 +1014,7 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
         attrs["send_sms"] = bool(send_sms)
         attrs["primary_format"] = (primary_format or template.primary_format or template.config.get("output_format") or "CSV").upper()
         attrs["attachment_formats"] = _normalize_string_list(attachment_formats or template.attachment_formats or [])
+        attrs["attach_raw_data"] = bool(attach_raw_data)
         attrs["days_of_week"] = days_of_week or []
         attrs["day_of_month"] = day_of_month
         attrs["start_at"] = start_at
@@ -1088,6 +1094,7 @@ class ReportScheduleWriteSerializer(serializers.Serializer):
             "parameter_overrides": validated_data.get("parameter_overrides") or {},
             "primary_format": validated_data.get("primary_format"),
             "attachment_formats": validated_data.get("attachment_formats") or [],
+            "attach_raw_data": bool(validated_data.get("attach_raw_data", True)),
             "send_sms": bool(validated_data.get("send_sms", False)),
             "status": status_value,
             "created_by": actor if instance is None else getattr(instance, "created_by", None),

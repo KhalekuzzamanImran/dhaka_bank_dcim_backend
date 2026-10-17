@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import time, timedelta
 import os
+from types import SimpleNamespace
 
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
@@ -22,9 +23,9 @@ from apps.notifications.models import Notification, NotificationChannel, Notific
 from apps.organizations.models import Organization
 from apps.reports.enums import ReportTriggerSource
 from apps.reports.models import ReportArtifact, ReportDefinition, ReportJob, ReportJobStatus, ReportSchedule, ReportScheduleRecipient, ReportTemplate
-from apps.reports.services.factory import create_report_job
+from apps.reports.services.factory import build_output_config_snapshot, create_report_job
 from apps.reports.services.definitions import seed_report_definitions
-from apps.reports.services.execution import generate_report_job
+from apps.reports.services.execution import _normalize_requested_formats, generate_report_job
 from apps.reports.services.schedules import execute_report_schedule
 from apps.reports.services.deliveries import create_report_deliveries_for_job
 from apps.telemetry.models import MetricCategory, MetricDataType, MetricDefinition, TelemetryPoint
@@ -80,6 +81,36 @@ class ReportTestCase(TestCase):
             code="UPS-02",
         )
         self._assign_access(self.user, organization=self.org)
+
+    def test_scheduled_raw_csv_option_adds_csv_and_overrides_template_default(self):
+        definition = SimpleNamespace(code="TELEMETRY_EXPORT")
+        template = SimpleNamespace(
+            primary_format="PDF",
+            attachment_formats=[],
+            include_charts=False,
+            include_raw_data=False,
+        )
+        schedule = SimpleNamespace(
+            primary_format="PDF",
+            attachment_formats=[],
+            attach_raw_data=True,
+        )
+
+        output_config = build_output_config_snapshot(
+            definition=definition,
+            template=template,
+            schedule=schedule,
+        )
+
+        self.assertTrue(output_config["include_raw_data"])
+        self.assertEqual(
+            _normalize_requested_formats(
+                output_config["primary_format"],
+                output_config["attachment_formats"],
+                include_raw_data=output_config["include_raw_data"],
+            ),
+            ["PDF", "CSV"],
+        )
 
     def _perm(self, code):
         return Permission.objects.get_or_create(
@@ -959,7 +990,7 @@ class ReportTestCase(TestCase):
         )
         self._add_schedule_recipients(schedule, emails=("diginetworkspace@gmail.com",))
 
-        with patch("apps.reports.tasks.deliver_report_schedule_task.delay") as mocked_delay:
+        with patch("apps.reports.tasks.execute_report_delivery_task.delay") as mocked_delay:
             with self.captureOnCommitCallbacks(execute=True):
                 response = self.client.post(f"/api/v1/reports/schedules/{schedule.id}/run-now/", {}, format="json")
 

@@ -3,12 +3,14 @@ from __future__ import annotations
 import logging
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import EmailValidator
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.common.audit import write_audit
@@ -427,9 +429,10 @@ def build_report_delivery_summary(job: ReportJob) -> dict:
     }
 
     if not present_channels:
+        generation_failed = job.status == ReportJobStatus.FAILED
         return {
-            "status": "NONE",
-            "label": "No deliveries yet",
+            "status": "FAILED" if generation_failed else "NONE",
+            "label": "Report generation failed" if generation_failed else "No deliveries yet",
             "totals": totals,
             "channels": {
                 NotificationChannel.EMAIL: channels[0],
@@ -487,6 +490,84 @@ def _sync_job_schedule_summary(job: ReportJob):
     return schedule
 
 
+def fail_stale_report_deliveries(*, limit=500, now=None):
+    """Mark report deliveries failed when they exceed the configured send deadline."""
+    timeout_minutes = max(1, int(getattr(settings, "REPORT_DELIVERY_TIMEOUT_MINUTES", 5)))
+    now = now or timezone.now()
+    cutoff = now - timedelta(minutes=timeout_minutes)
+    # Retries refresh queued_at/started_at, so those timestamps cannot be the
+    # deadline anchor. created_at is stable across all attempts and enforces a
+    # hard upper bound for the whole delivery, including provider timeouts.
+    stale_filter = Q(
+        status__in=(
+            ReportDeliveryStatus.PENDING,
+            ReportDeliveryStatus.QUEUED,
+            ReportDeliveryStatus.DELIVERING,
+        ),
+        created_at__lte=cutoff,
+    )
+    delivery_ids = list(
+        ReportDelivery.objects.filter(stale_filter)
+        .order_by("updated_at", "pk")
+        .values_list("pk", flat=True)[:max(1, int(limit))]
+    )
+    failed_count = 0
+    for delivery_id in delivery_ids:
+        with transaction.atomic():
+            delivery = (
+                ReportDelivery.objects.select_for_update()
+                .select_related("job", "job__organization")
+                .filter(pk=delivery_id)
+                .first()
+            )
+            if not delivery or delivery.status in {
+                ReportDeliveryStatus.SENT,
+                ReportDeliveryStatus.FAILED,
+                ReportDeliveryStatus.CANCELLED,
+            }:
+                continue
+            if delivery.created_at and delivery.created_at > cutoff:
+                continue
+
+            error_message = (
+                f"Delivery timed out after {timeout_minutes} minutes. "
+                "The provider may have received the message without returning confirmation."
+            )
+            delivery.status = ReportDeliveryStatus.FAILED
+            delivery.failed_at = delivery.failed_at or now
+            delivery.error_code = "DeliveryTimeout"
+            delivery.error_message = error_message
+            delivery.save(update_fields=["status", "failed_at", "error_code", "error_message", "updated_at"])
+
+            for notification_delivery in delivery.notification_deliveries.select_for_update().exclude(status=NotificationStatus.SENT):
+                notification_delivery.status = NotificationStatus.FAILED
+                notification_delivery.failed_at = notification_delivery.failed_at or now
+                notification_delivery.error_message = error_message
+                notification_delivery.save(update_fields=["status", "failed_at", "error_message", "updated_at"])
+
+            log_report_event(logger, "Report delivery timed out", job=delivery.job, delivery_count=1, error_code="DeliveryTimeout")
+            log_report_metric(logger, "report_deliveries_failed", job=delivery.job, delivery_count=1)
+            _safe_write_audit(
+                "REPORT_DELIVERY_FAILED",
+                "ReportDelivery",
+                delivery.pk,
+                organization=delivery.job.organization,
+                actor=delivery.job.requested_by,
+                message="Report delivery timed out",
+                new_value={
+                    "job_id": str(delivery.job_id),
+                    "delivery_id": str(delivery.pk),
+                    "channel": delivery.channel,
+                    "recipient": _masked_recipient(delivery.recipient),
+                    "error_code": "DeliveryTimeout",
+                },
+            )
+            _sync_job_schedule_summary(delivery.job)
+            failed_count += 1
+
+    return {"matched_count": len(delivery_ids), "failed_count": failed_count, "timeout_minutes": timeout_minutes}
+
+
 def sync_report_delivery_from_notification_delivery(notification_delivery: NotificationDelivery, *, provider_response=None, error_message: str | None = None):
     report_delivery = getattr(notification_delivery, "report_delivery", None)
     if not report_delivery:
@@ -501,6 +582,10 @@ def sync_report_delivery_from_notification_delivery(notification_delivery: Notif
         )
         if not locked:
             return None
+        # A late provider callback must not resurrect a delivery that already
+        # crossed its hard deadline and was marked failed by the timeout sweep.
+        if locked.status == ReportDeliveryStatus.FAILED and locked.error_code == "DeliveryTimeout":
+            return locked
         locked.status = _map_notification_status(notification_delivery.status)
         locked.queued_at = locked.queued_at or notification_delivery.queued_at or timezone.now()
         locked.started_at = locked.started_at or notification_delivery.delivering_at or notification_delivery.queued_at or timezone.now()
@@ -678,14 +763,14 @@ def _claim_report_delivery(delivery_id):
         )
         if not delivery:
             return None
-        if delivery.status in {ReportDeliveryStatus.SENT, ReportDeliveryStatus.CANCELLED}:
+        if delivery.status in {ReportDeliveryStatus.SENT, ReportDeliveryStatus.FAILED, ReportDeliveryStatus.CANCELLED}:
             return None
         if str(delivery.job.status) != ReportJobStatus.COMPLETED:
             raise ValidationError({"job": "Report delivery can only run for completed jobs."})
         if not delivery.job.artifacts.exists():
             raise ValidationError({"job": "Report delivery requires at least one persisted artifact."})
         delivery.status = ReportDeliveryStatus.DELIVERING
-        delivery.started_at = delivery.started_at or timezone.now()
+        delivery.started_at = timezone.now()
         delivery.save(update_fields=["status", "started_at", "updated_at"])
         log_report_event(logger, "Report delivery started", job=delivery.job, delivery_count=1, trigger_source=delivery.job.trigger_source)
         _safe_write_audit(
@@ -732,6 +817,13 @@ def _finalize_delivery_state(report_delivery: ReportDelivery, notification_deliv
     now = timezone.now()
     with transaction.atomic():
         locked = ReportDelivery.objects.select_for_update().select_related("job", "job__organization").get(pk=report_delivery.pk)
+        if locked.status == ReportDeliveryStatus.FAILED and locked.error_code == "DeliveryTimeout":
+            if notification_delivery.status != NotificationStatus.FAILED:
+                notification_delivery.status = NotificationStatus.FAILED
+                notification_delivery.failed_at = notification_delivery.failed_at or now
+                notification_delivery.error_message = locked.error_message
+                notification_delivery.save(update_fields=["status", "failed_at", "error_message", "updated_at"])
+            return locked
         if error is None:
             locked.status = ReportDeliveryStatus.SENT
             locked.sent_at = locked.sent_at or now

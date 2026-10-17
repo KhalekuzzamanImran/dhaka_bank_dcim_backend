@@ -4,11 +4,12 @@ import hashlib
 import shutil
 import tempfile
 import uuid
-from datetime import time
+from datetime import time, timedelta
 from unittest.mock import patch
 
 import requests
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.audit.models import AuditLog
@@ -30,9 +31,11 @@ from apps.reports.models import (
 from apps.reports.services.deliveries import (
     create_report_deliveries_for_job,
     execute_report_delivery,
+    fail_stale_report_deliveries,
     queue_report_delivery,
     report_delivery_summary,
     retry_report_delivery,
+    sync_report_delivery_from_notification_delivery,
 )
 from apps.reports.services.factory import create_report_job
 from apps.reports.services.execution import generate_report_job
@@ -344,6 +347,66 @@ class ReportPhase6ADeliveryTestCase(TestCase):
         self.assertEqual(failed.status, ReportDeliveryStatus.FAILED)
         self.assertEqual(ReportDelivery.objects.get(pk=delivery.pk).status, ReportDeliveryStatus.FAILED)
         self.assertEqual(ReportDelivery.objects.get(pk=delivery.pk).retry_count, 3)
+
+    def test_stale_report_deliveries_are_failed_after_configured_timeout(self):
+        job = self._completed_job(
+            recipient_snapshot={
+                "email_recipients": ["old@example.com", "recent@example.com"],
+                "sms_recipients": ["01329665857"],
+                "send_sms": True,
+            }
+        )
+        with patch("apps.reports.services.deliveries.queue_report_delivery", side_effect=lambda delivery: delivery):
+            create_report_deliveries_for_job(job=job)
+
+        now = timezone.now()
+        timed_out_at = now - timedelta(minutes=6)
+        old_email = ReportDelivery.objects.get(job=job, recipient="old@example.com")
+        recent_email = ReportDelivery.objects.get(job=job, recipient="recent@example.com")
+        stale_sms = ReportDelivery.objects.get(job=job, channel="SMS")
+        ReportDelivery.objects.filter(pk=old_email.pk).update(
+            status=ReportDeliveryStatus.QUEUED,
+            queued_at=timed_out_at,
+            created_at=timed_out_at,
+        )
+        ReportDelivery.objects.filter(pk=recent_email.pk).update(
+            status=ReportDeliveryStatus.QUEUED,
+            queued_at=now,
+        )
+        ReportDelivery.objects.filter(pk=stale_sms.pk).update(
+            status=ReportDeliveryStatus.DELIVERING,
+            started_at=timed_out_at,
+            created_at=timed_out_at,
+        )
+        NotificationDelivery.objects.filter(report_delivery=stale_sms).update(status=NotificationStatus.DELIVERING)
+
+        with override_settings(REPORT_DELIVERY_TIMEOUT_MINUTES=5):
+            result = fail_stale_report_deliveries(now=now)
+
+        self.assertEqual(result["failed_count"], 2)
+        old_email.refresh_from_db()
+        recent_email.refresh_from_db()
+        stale_sms.refresh_from_db()
+        self.assertEqual(old_email.status, ReportDeliveryStatus.FAILED)
+        self.assertEqual(old_email.error_code, "DeliveryTimeout")
+        self.assertEqual(recent_email.status, ReportDeliveryStatus.QUEUED)
+        self.assertEqual(stale_sms.status, ReportDeliveryStatus.FAILED)
+        self.assertEqual(
+            NotificationDelivery.objects.get(report_delivery=stale_sms).status,
+            NotificationStatus.FAILED,
+        )
+
+        # A retry callback arriving after the deadline must not restore PENDING.
+        stale_notification = NotificationDelivery.objects.get(report_delivery=stale_sms)
+        stale_notification.status = NotificationStatus.PENDING
+        sync_report_delivery_from_notification_delivery(stale_notification)
+        stale_sms.refresh_from_db()
+        self.assertEqual(stale_sms.status, ReportDeliveryStatus.FAILED)
+        self.assertEqual(stale_sms.error_code, "DeliveryTimeout")
+
+        with patch("apps.notifications.services.delivery.send_email_notification") as send_email:
+            self.assertIsNone(execute_report_delivery(delivery_id=old_email.pk))
+        send_email.assert_not_called()
 
     def test_duplicate_delivery_execution_does_not_resend(self):
         job = self._completed_job(recipient_snapshot={"email_recipients": ["ops@example.com"], "send_sms": False})

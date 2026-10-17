@@ -219,7 +219,7 @@ class ReportPhase6CApiTestCase(TestCase):
         self.assertEqual(resume_response.json()["status"], "ACTIVE")
 
         with self.captureOnCommitCallbacks(execute=True):
-            with patch("apps.reports.tasks.deliver_report_schedule_task.delay") as mocked_delay:
+            with patch("apps.reports.tasks.execute_report_delivery_task.delay") as mocked_delay:
                 run_now = self.client.post(f"/api/v1/reports/schedules/{schedule_id}/run-now/", {}, format="json")
                 self.assertIn(run_now.status_code, [200, 202])
 

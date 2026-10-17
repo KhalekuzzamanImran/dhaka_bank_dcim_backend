@@ -51,6 +51,46 @@ DIGITAL_INPUTS = (
     (8, "Motion sensor DC Main Gate", 0),
 )
 
+# ENVIROMUX-16D external sensor table rows verified from the live agent.
+# The table contains reserved/removed rows too; these are the configured rows
+# shown by the device UI. The final value is the MIB value scale for that row.
+# (table index, live MIB type, value scale). Only configured rows are seeded.
+EXTERNAL_SENSORS = (
+    (1, 32769, "0.1"), (2, 32770, "1"), (3, 32769, "0.1"),
+    (4, 32770, "1"), (5, 32769, "0.1"), (6, 32770, "1"),
+    (7, 32769, "0.1"), (8, 32770, "1"), (9, 18, "1"),
+    (11, 32769, "0.1"), (12, 32770, "1"), (15, 9, "1"),
+    (17, 9, "1"), (19, 9, "1"), (21, 12, "1"), (23, 12, "1"),
+    (25, 12, "1"), (27, 11, "1"), (29, 11, "1"),
+)
+OUTPUT_RELAYS = (1, 2, 3, 4)
+
+
+def _external_sensor_metrics():
+    metrics = []
+    for index, sensor_type, _scale in EXTERNAL_SENSORS:
+        value_type = MetricDataType.FLOAT if sensor_type in (1, 2, 3, 4, 32769, 32770) else MetricDataType.INTEGER
+        metrics.extend((
+            _metric(f"netbotz_nti_external_sensor_{index}_type", f"NTI External Sensor {index} Type", MetricCategory.STATUS, MetricDataType.INTEGER, "", "MIB extSensorType enum."),
+            _metric(f"netbotz_nti_external_sensor_{index}_description", f"NTI External Sensor {index} Description", MetricCategory.STATUS, MetricDataType.TEXT, "", "MIB extSensorDescription."),
+            _metric(f"netbotz_nti_external_sensor_{index}_connector", f"NTI External Sensor {index} Connector", MetricCategory.STATUS, MetricDataType.INTEGER, "port", "MIB extSensorConnector RJ45 port number."),
+            _metric(f"netbotz_nti_external_sensor_{index}_value", f"NTI External Sensor {index} Value", MetricCategory.ENVIRONMENT, value_type, "", "MIB extSensorValue, scaled according to the live sensor type."),
+            _metric(f"netbotz_nti_external_sensor_{index}_unit", f"NTI External Sensor {index} Unit", MetricCategory.STATUS, MetricDataType.TEXT, "", "MIB extSensorUnitName."),
+            _metric(f"netbotz_nti_external_sensor_{index}_status", f"NTI External Sensor {index} Status", MetricCategory.STATUS, MetricDataType.INTEGER, "state", "MIB extSensorStatus enum."),
+        ))
+    return tuple(metrics)
+
+
+def _output_relay_metrics():
+    return tuple(
+        metric
+        for index in OUTPUT_RELAYS
+        for metric in (
+            _metric(f"netbotz_nti_output_relay_{index}_description", f"NTI Output Relay {index} Description", MetricCategory.STATUS, MetricDataType.TEXT, "", "MIB outRelayDescription."),
+            _metric(f"netbotz_nti_output_relay_{index}_status", f"NTI Output Relay {index} Status", MetricCategory.STATUS, MetricDataType.INTEGER, "state", "MIB outRelayStatus (active=0, inactive=1)."),
+        )
+    )
+
 
 def _metric(code, name, category, data_type, unit, description):
     return {
@@ -96,6 +136,8 @@ METRICS = (
         for index, description, _normal_value in DIGITAL_INPUTS
         for kind in ("value", "status")
     ),
+    *_external_sensor_metrics(),
+    *_output_relay_metrics(),
 )
 
 
@@ -112,6 +154,29 @@ def _mapping_rows():
         for index, _description, _normal_value in DIGITAL_INPUTS
         for kind, column in (("value", 7), ("status", 8))
     )
+    for index, _sensor_type, value_scale in EXTERNAL_SENSORS:
+        for code_suffix, column, data_type, scale in (
+            ("type", 2, "integer", "1"),
+            ("description", 3, "string", "1"),
+            ("connector", 4, "integer", "1"),
+            ("value", 7, "integer", value_scale),
+            ("unit", 9, "string", "1"),
+            ("status", 10, "integer", "1"),
+        ):
+            rows.append((
+                f"netbotz_nti_external_sensor_{index}_{code_suffix}",
+                f"{PRIVATE_OID_ROOT}.5.1.1.{column}.{index}",
+                data_type,
+                scale,
+            ))
+    for index in OUTPUT_RELAYS:
+        for code_suffix, column, data_type in (("description", 2, "string"), ("status", 3, "integer")):
+            rows.append((
+                f"netbotz_nti_output_relay_{index}_{code_suffix}",
+                f"{PRIVATE_OID_ROOT}.8.1.1.{column}.{index}",
+                data_type,
+                "1",
+            ))
     return tuple(rows)
 
 
@@ -237,6 +302,8 @@ class Command(BaseCommand):
                             {"index": index, "label": label, "normal_value": normal_value}
                             for index, label, normal_value in DIGITAL_INPUTS
                         ],
+                        "nti_sensor_port_count": 16,
+                        "nti_output_relay_count": len(OUTPUT_RELAYS),
                     },
                 },
             )

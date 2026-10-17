@@ -87,6 +87,7 @@ EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
 EMAIL_USE_SSL = config("EMAIL_USE_SSL", default=False, cast=bool)
 EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
+EMAIL_TIMEOUT = config("EMAIL_TIMEOUT_SECONDS", default=30, cast=int)
 SMS_BACKEND = config("SMS_BACKEND", default="console")
 SMS_API_URL = config("SMS_API_URL", default="")
 SMS_API_KEY = config("SMS_API_KEY", default="")
@@ -206,9 +207,10 @@ SNMP_MIB_MAX_DESCRIPTION_LENGTH = config('SNMP_MIB_MAX_DESCRIPTION_LENGTH', defa
 SNMP_UNMAPPED_TRAP_SEVERITY = config('SNMP_UNMAPPED_TRAP_SEVERITY', default='WARNING')
 SNMP_UNMAPPED_TRAP_CREATE_REVIEW_ALERT = config('SNMP_UNMAPPED_TRAP_CREATE_REVIEW_ALERT', default=True, cast=bool)
 NOTIFICATION_DELIVERING_TIMEOUT_MINUTES = config('NOTIFICATION_DELIVERING_TIMEOUT_MINUTES', default=10, cast=int)
-REPORT_EMAIL_ATTACHMENT_MAX_BYTES = config('REPORT_EMAIL_ATTACHMENT_MAX_BYTES', default=5 * 1024 * 1024, cast=int)
+REPORT_EMAIL_ATTACHMENT_MAX_BYTES = config('REPORT_EMAIL_ATTACHMENT_MAX_BYTES', default=15 * 1024 * 1024, cast=int)
 REPORT_EMAIL_SUBJECT_PREFIX = config('REPORT_EMAIL_SUBJECT_PREFIX', default='DCIM Report')
 REPORT_DELIVERY_MAX_RETRIES = config('REPORT_DELIVERY_MAX_RETRIES', default=3, cast=int)
+REPORT_DELIVERY_TIMEOUT_MINUTES = config('REPORT_DELIVERY_TIMEOUT_MINUTES', default=5, cast=int)
 REPORT_SMS_MAX_LENGTH = config('REPORT_SMS_MAX_LENGTH', default=480, cast=int)
 
 CELERY_TASK_ROUTES = {
@@ -222,6 +224,7 @@ CELERY_TASK_ROUTES = {
     'collectors.snmp_trap_receiver.tasks.process_snmp_trap_task': {'queue': 'traps'},
     'apps.alerts.tasks.*': {'queue': 'alerts'},
     'apps.notifications.tasks.*': {'queue': 'notifications'},
+    'apps.reports.tasks.fail_stale_report_deliveries_task': {'queue': 'scheduler'},
     'apps.reports.tasks.*': {'queue': 'reports'},
 }
 
@@ -239,6 +242,11 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.notifications.tasks.requeue_stale_delivering_notifications_task',
         'schedule': 600,
         'kwargs': {'limit': 100},
+    },
+    'fail-stale-report-deliveries-every-30-seconds': {
+        'task': 'apps.reports.tasks.fail_stale_report_deliveries_task',
+        'schedule': 30,
+        'kwargs': {'limit': 500},
     },
     'enqueue-due-report-schedules-every-minute': {
         'task': 'apps.reports.tasks.enqueue_due_report_schedules_task',
