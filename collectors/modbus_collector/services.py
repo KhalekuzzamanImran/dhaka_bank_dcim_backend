@@ -116,7 +116,7 @@ def _read_mapping(client, mapping):
     return registers[0]
 
 
-def _mark_success(device, polling_config, at):
+def _mark_success(device, polling_config, at, source="modbus_worker"):
     current_status = Device.objects.filter(pk=device.pk).values_list("status", flat=True).first()
     from apps.alerts.models import AlertEvent, AlertStatus
     has_open_offline_alert = AlertEvent.objects.filter(
@@ -131,7 +131,7 @@ def _mark_success(device, polling_config, at):
             status=DeviceStatus.ONLINE,
             previous_status=current_status or device.status,
             reason="poll success",
-            source="modbus_worker",
+            source=source,
             observed_at=at,
         )
     if polling_config:
@@ -144,7 +144,7 @@ def _mark_success(device, polling_config, at):
         )
 
 
-def _mark_failure(device, polling_config, error_message, at):
+def _mark_failure(device, polling_config, error_message, at, source="modbus_worker"):
     failure_count = (polling_config.consecutive_failures + 1) if polling_config else 1
     stale_after = max(1, int(polling_config.polling_profile.stale_after_seconds or 180)) if polling_config else 180
     degraded_after = 120
@@ -175,7 +175,7 @@ def _mark_failure(device, polling_config, error_message, at):
             status=status,
             previous_status=previous_status,
             reason=str(error_message or "")[:500] or f"transitioned to {status}",
-            source="modbus_worker",
+            source=source,
             observed_at=at,
         )
     if polling_config:

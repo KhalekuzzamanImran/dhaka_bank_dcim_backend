@@ -32,6 +32,7 @@ class MetricDefinition(TimeStampedModel):
 
 class TelemetryQuality(models.TextChoices):
     GOOD = "GOOD", "Good"
+    ESTIMATED = "ESTIMATED", "Estimated"
     BAD = "BAD", "Bad"
     STALE = "STALE", "Stale"
     UNKNOWN = "UNKNOWN", "Unknown"

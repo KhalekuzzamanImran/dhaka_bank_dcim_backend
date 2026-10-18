@@ -45,6 +45,85 @@ class DeviceStatus(models.TextChoices):
     MAINTENANCE = "MAINTENANCE", "Maintenance"
     UNKNOWN = "UNKNOWN", "Unknown"
 
+
+class ModbusGatewayConnectionStatus(models.TextChoices):
+    DISCONNECTED = "DISCONNECTED", "Disconnected"
+    CONNECTED = "CONNECTED", "Connected"
+
+
+class ModbusGateway(TimeStampedModel):
+    """An allow-listed reverse TCP-to-RTU gateway reachable over a private VPN."""
+
+    organization = models.ForeignKey("organizations.Organization", on_delete=models.CASCADE, related_name="modbus_gateways")
+    data_center = models.ForeignKey("datacenters.DataCenter", on_delete=models.CASCADE, related_name="modbus_gateways")
+    name = models.CharField(max_length=255)
+    code = models.CharField(max_length=100)
+    source_ip = models.GenericIPAddressField(unique=True, help_text="Stable VPN address observed when this gateway connects.")
+    is_active = models.BooleanField(default=True)
+    connection_status = models.CharField(max_length=20, choices=ModbusGatewayConnectionStatus.choices, default=ModbusGatewayConnectionStatus.DISCONNECTED)
+    last_connected_at = models.DateTimeField(blank=True, null=True)
+    last_disconnected_at = models.DateTimeField(blank=True, null=True)
+    last_error = models.TextField(blank=True, default="")
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = "modbus_gateways"
+        constraints = [models.UniqueConstraint(fields=["data_center", "code"], name="uq_dc_modbus_gateway_code")]
+        indexes = [
+            models.Index(fields=["organization", "data_center"], name="modbus_gate_organiz_03279f_idx"),
+            models.Index(fields=["is_active", "connection_status"], name="modbus_gate_is_acti_2c8a56_idx"),
+        ]
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        super().clean()
+        if self.organization_id and self.data_center_id:
+            if self.data_center.organization_id != self.organization_id:
+                raise ValidationError({"data_center": "The gateway data center must belong to the selected organization."})
+
+    def __str__(self):
+        return f"{self.name} ({self.code})"
+
+
+class ModbusGatewayWriteStatus(models.TextChoices):
+    PENDING = "PENDING", "Pending"
+    PROCESSING = "PROCESSING", "Processing"
+    SUCCEEDED = "SUCCEEDED", "Succeeded"
+    FAILED = "FAILED", "Failed"
+
+
+class ModbusGatewayWriteRequest(TimeStampedModel):
+    """Auditable, one-register write queued for the active reverse gateway session."""
+
+    gateway = models.ForeignKey(ModbusGateway, on_delete=models.CASCADE, related_name="write_requests")
+    device = models.ForeignKey("devices.Device", on_delete=models.CASCADE, related_name="modbus_gateway_write_requests")
+    register_address = models.PositiveIntegerField()
+    register_value = models.PositiveIntegerField()
+    slave_id = models.PositiveSmallIntegerField(default=1)
+    status = models.CharField(max_length=20, choices=ModbusGatewayWriteStatus.choices, default=ModbusGatewayWriteStatus.PENDING)
+    response_value = models.PositiveIntegerField(blank=True, null=True)
+    error_message = models.TextField(blank=True, default="")
+    completed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        db_table = "modbus_gateway_write_requests"
+        indexes = [models.Index(fields=["gateway", "status", "created_at"])]
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        super().clean()
+        if self.gateway_id and self.device_id and not DeviceProtocolConfig.objects.filter(
+            device_id=self.device_id, modbus_gateway_id=self.gateway_id,
+            protocol=ProtocolType.MODBUS_RTU_GATEWAY, is_enabled=True,
+        ).exists():
+            raise ValidationError({"device": "Device must have an enabled configuration for this gateway."})
+        if self.register_address > 65535 or self.register_value > 65535 or self.slave_id > 247:
+            raise ValidationError("Register address/value or slave ID is outside the supported Modbus range.")
+
+    def __str__(self):
+        return f"{self.gateway.code}: register {self.register_address} = {self.register_value} ({self.status})"
+
 class Device(TimeStampedModel):
     organization = models.ForeignKey("organizations.Organization", on_delete=models.CASCADE, related_name="devices")
     data_center = models.ForeignKey("datacenters.DataCenter", on_delete=models.CASCADE, related_name="devices")
@@ -83,8 +162,9 @@ class ProtocolType(models.TextChoices):
 class DeviceProtocolConfig(TimeStampedModel):
     device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name="protocol_configs")
     protocol = models.CharField(max_length=50, choices=ProtocolType.choices)
-    host = models.CharField(max_length=255)
+    host = models.CharField(max_length=255, blank=True, help_text="Unused for a reverse-connected RTU gateway.")
     port = models.PositiveIntegerField(blank=True, null=True)
+    modbus_gateway = models.ForeignKey(ModbusGateway, on_delete=models.PROTECT, related_name="device_configs", blank=True, null=True)
     timeout_seconds = models.PositiveIntegerField(default=5)
     retry_count = models.PositiveIntegerField(default=3)
     is_primary = models.BooleanField(default=True)
@@ -95,6 +175,20 @@ class DeviceProtocolConfig(TimeStampedModel):
         indexes = [models.Index(fields=["device", "protocol"]), models.Index(fields=["is_enabled"])]
         constraints = [models.UniqueConstraint(fields=["device", "protocol", "host", "port"], name="uq_device_protocol_endpoint")]
     def __str__(self): return f"{self.device.name} - {self.protocol}"
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        super().clean()
+        if self.protocol == ProtocolType.MODBUS_RTU_GATEWAY and not self.modbus_gateway_id:
+            raise ValidationError({"modbus_gateway": "Select the reverse-connected gateway for this device."})
+        if self.protocol == ProtocolType.MODBUS_RTU_GATEWAY and self.modbus_gateway_id and self.device_id:
+            if self.modbus_gateway.organization_id != self.device.organization_id:
+                raise ValidationError({"modbus_gateway": "The gateway and battery must belong to the same organization."})
+            if self.modbus_gateway.data_center_id != self.device.data_center_id:
+                raise ValidationError({"modbus_gateway": "The gateway and battery must belong to the same data center."})
+        if self.protocol != ProtocolType.MODBUS_RTU_GATEWAY and self.modbus_gateway_id:
+            raise ValidationError({"modbus_gateway": "A gateway association is only valid for Modbus RTU Gateway protocol."})
 
 class SNMPVersion(models.TextChoices):
     V1 = "V1", "v1"

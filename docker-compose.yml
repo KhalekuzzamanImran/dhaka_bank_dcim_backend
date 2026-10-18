@@ -129,6 +129,22 @@ services:
     depends_on: [api, redis]
     volumes: ['.:/app']
 
+  modbus-gateway-listener:
+    build: .
+    command: python manage.py run_modbus_gateway_listener
+    env_file: .env
+    environment:
+      MODBUS_GATEWAY_LISTEN_HOST: 0.0.0.0
+      MODBUS_GATEWAY_LISTEN_PORT: ${MODBUS_GATEWAY_LISTEN_PORT:-4010}
+    ports:
+      - '${MODBUS_GATEWAY_PUBLISH_BIND:-127.0.0.1}:${MODBUS_GATEWAY_LISTEN_PORT:-4010}:${MODBUS_GATEWAY_LISTEN_PORT:-4010}/tcp'
+    depends_on:
+      db: {condition: service_healthy}
+      pgbouncer: {condition: service_healthy}
+      redis: {condition: service_started}
+    restart: unless-stopped
+    volumes: ['.:/app']
+
   trap-receiver:
     build: .
     command: python -m collectors.snmp_trap_receiver.receiver

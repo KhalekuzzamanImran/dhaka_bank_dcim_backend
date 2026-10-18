@@ -9,6 +9,8 @@ from .models import (
     DeviceProtocolConfig,
     DeviceType,
     ModbusRegisterMapping,
+    ModbusGateway,
+    ModbusGatewayWriteRequest,
     PollingProfile,
     SNMPOIDMapping,
     Vendor,
@@ -105,11 +107,31 @@ class DeviceAdmin(admin.ModelAdmin):
 
 @admin.register(DeviceProtocolConfig)
 class DeviceProtocolConfigAdmin(admin.ModelAdmin):
-    list_display = ("device", "protocol", "host", "port", "is_primary", "is_enabled", "timeout_seconds", "retry_count")
-    list_filter = ("protocol", "is_primary", "is_enabled")
-    search_fields = ("device__name", "device__code", "host")
-    list_select_related = ("device",)
+    list_display = ("device", "protocol", "modbus_gateway", "host", "port", "is_primary", "is_enabled", "timeout_seconds", "retry_count")
+    list_filter = ("protocol", "is_primary", "is_enabled", "modbus_gateway__connection_status")
+    search_fields = ("device__name", "device__code", "host", "modbus_gateway__name", "modbus_gateway__code")
+    list_select_related = ("device", "modbus_gateway")
     ordering = ("device__name", "protocol")
+
+
+@admin.register(ModbusGateway)
+class ModbusGatewayAdmin(admin.ModelAdmin):
+    list_display = ("name", "code", "source_ip", "organization", "data_center", "connection_status", "last_connected_at", "is_active")
+    list_filter = ("organization", "data_center", "connection_status", "is_active")
+    search_fields = ("name", "code", "source_ip", "organization__name", "data_center__name")
+    readonly_fields = ("connection_status", "last_connected_at", "last_disconnected_at", "last_error", "created_at", "updated_at")
+    list_select_related = ("organization", "data_center")
+    ordering = ("organization__name", "data_center__name", "name")
+
+
+@admin.register(ModbusGatewayWriteRequest)
+class ModbusGatewayWriteRequestAdmin(admin.ModelAdmin):
+    list_display = ("gateway", "device", "register_address", "register_value", "status", "response_value", "created_at", "completed_at")
+    list_filter = ("status", "gateway")
+    search_fields = ("gateway__code", "device__name", "device__code", "error_message")
+    readonly_fields = ("gateway", "device", "register_address", "register_value", "slave_id", "status", "response_value", "error_message", "completed_at", "created_at", "updated_at")
+    list_select_related = ("gateway", "device")
+    ordering = ("-created_at",)
 
 
 @admin.register(DeviceCredential)
