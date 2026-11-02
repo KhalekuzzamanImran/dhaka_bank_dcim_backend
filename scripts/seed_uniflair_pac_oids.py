@@ -212,6 +212,18 @@ PAC_OID_ITEMS = [
         "offset_value": "0",
     },
     {
+        "code": "pac_unit_on_off",
+        "name": "PAC Unit On/Off Status",
+        "category": "Cooling",
+        "data_type": "Integer",
+        "unit": "",
+        "description": "Uniflair unit operating command/status. 1 means running and 0 means standby or off.",
+        "oid": "1.3.6.1.4.1.9839.2.1.1.75.0",
+        "mapping_data_type": "integer",
+        "scale_factor": "1",
+        "offset_value": "0",
+    },
+    {
         "code": "pac_dehumidification_status",
         "name": "PAC Dehumidification Status",
         "category": "Cooling",
