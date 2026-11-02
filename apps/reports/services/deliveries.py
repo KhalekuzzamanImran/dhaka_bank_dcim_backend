@@ -264,16 +264,17 @@ def _build_email_body(job: ReportJob, delivery: ReportDelivery, artifacts: list[
 
 
 def _build_sms_body(job: ReportJob, delivery: ReportDelivery, artifacts: list[ReportArtifact]) -> str:
-    report_name = getattr(job.template, "name", None) or getattr(job.definition, "name", None) or "Report"
-    status = job.status
-    parts = [
-        f"DCIM report ready: {report_name}.",
-        f"Status: {status}.",
-        f"Channel: {delivery.channel}.",
-    ]
-    if artifacts:
-        parts.append(f"Download: {_artifact_download_url(artifacts[0])}")
-    message = " ".join(parts)
+    schedule = getattr(job, "schedule", None)
+    schedule_name = getattr(schedule, "name", None) or getattr(job.template, "name", None) or "Scheduled report"
+    report_name = getattr(job.definition, "name", None) or getattr(job.template, "name", None) or schedule_name
+    parameters = job.parameters if isinstance(job.parameters, dict) else {}
+    date_from = parameters.get("date_from") or parameters.get("start_date") or "--"
+    date_to = parameters.get("date_to") or parameters.get("end_date") or "--"
+    message = (
+        f"Scheduled report ready: {schedule_name}. "
+        f"Type: {report_name}. "
+        f"Window: {date_from} to {date_to}."
+    )
     max_length = int(getattr(settings, "REPORT_SMS_MAX_LENGTH", 480))
     return message if len(message) <= max_length else f"{message[: max_length - 3].rstrip()}..."
 
@@ -295,7 +296,13 @@ def _create_notification_delivery(report_delivery: ReportDelivery) -> Notificati
         },
     )
     notification.subject = _build_email_subject(report_delivery.job)
-    notification.message = _build_email_body(report_delivery.job, report_delivery, list(report_delivery.job.artifacts.order_by("created_at", "pk")))
+    artifacts = list(report_delivery.job.artifacts.order_by("created_at", "pk"))
+    if report_delivery.channel == NotificationChannel.SMS:
+        # Persist the same body used by the provider payload so retries and the
+        # notification worker cannot fall back to a stale generic SMS message.
+        notification.message = _build_sms_body(report_delivery.job, report_delivery, artifacts)
+    else:
+        notification.message = _build_email_body(report_delivery.job, report_delivery, artifacts)
     metadata = notification.metadata if isinstance(notification.metadata, dict) else {}
     metadata = deepcopy(metadata)
     metadata.update(
@@ -304,7 +311,7 @@ def _create_notification_delivery(report_delivery: ReportDelivery) -> Notificati
             "report_delivery_id": str(report_delivery.pk),
             "channel": report_delivery.channel,
             "recipient": report_delivery.recipient,
-            "artifact_ids": [str(artifact.pk) for artifact in report_delivery.job.artifacts.order_by("created_at", "pk")],
+            "artifact_ids": [str(artifact.pk) for artifact in artifacts],
         }
     )
     notification.metadata = metadata
