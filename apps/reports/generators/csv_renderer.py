@@ -58,10 +58,12 @@ def _normalize_delimiter(delimiter: str | None) -> str:
 
 def _normalize_encoding(encoding: str | None) -> str:
     if not encoding:
-        return "utf-8"
+        return "utf-8-sig"
     enc = str(encoding).strip().lower().replace("_", "-")
     if enc in ("utf-8", "utf8"):
-        return "utf-8"
+        # Include a BOM so Excel and similar spreadsheet applications detect
+        # UTF-8 correctly instead of rendering characters such as ° as Â°.
+        return "utf-8-sig"
     elif enc in ("utf-8-sig", "utf8-sig", "utf-8 with bom"):
         return "utf-8-sig"
     elif enc in ("utf-16", "utf16"):
@@ -71,6 +73,10 @@ def _normalize_encoding(encoding: str | None) -> str:
     elif enc in ("ascii",):
         return "ascii"
     return "utf-8"
+
+
+def _display_column_name(column: str) -> str:
+    return str(column or "").replace("_", " ").strip().lower().capitalize()
 
 
 def _format_date_or_datetime(value, tz=None) -> str | None:
@@ -83,7 +89,7 @@ def _format_date_or_datetime(value, tz=None) -> str | None:
         else:
             parsed_d = parse_date(value)
             if parsed_d is not None:
-                return parsed_d.strftime("%Y-%m-%d")
+                return parsed_d.strftime("%d %b %Y")
             return value
 
     if isinstance(value, date) and not isinstance(value, datetime):
@@ -100,8 +106,8 @@ def _format_date_or_datetime(value, tz=None) -> str | None:
         except Exception:
             pass
         if value.hour == 0 and value.minute == 0 and value.second == 0 and value.microsecond == 0:
-            return value.strftime("%Y-%m-%d")
-        return value.strftime("%Y-%m-%d %H:%M")
+            return value.strftime("%d %b %Y")
+        return value.strftime("%d %b %Y, %H:%M")
 
     return str(value)
 
@@ -170,20 +176,23 @@ def _date_range_label(context: GeneratorContext) -> str | None:
     start_str = _format_date_or_datetime(start_value, tz=tz)
     end_str = _format_date_or_datetime(end_value, tz=tz)
     if start_str and end_str:
-        return f"{start_str} to {end_str}"
+        return f"{start_str} – {end_str}"
     return start_str or end_str
 
 
-def _metadata_lines(context: GeneratorContext, dataset: ReportDataset) -> list[str]:
+def _metadata_rows(context: GeneratorContext, dataset: ReportDataset) -> list[list[str]]:
     config = _template_config(context)
     header_config = config.get("report_header") if isinstance(config.get("report_header"), dict) else {}
     footer_config = config.get("report_footer") if isinstance(config.get("report_footer"), dict) else {}
     banner_config = header_config.get("brand_banner") if isinstance(header_config.get("brand_banner"), dict) else {}
 
-    lines: list[str] = [
-        "# ==========================================================================",
-        f"# {banner_config.get('label') or getattr(context.organization, 'name', None) or 'Dhaka Bank DCIM'} | {banner_config.get('subtitle') or 'Operational reporting'}",
-        "# ==========================================================================",
+    org_name = str(getattr(context.organization, "name", None) or "Dhaka Bank").upper()
+    rows: list[list[str]] = [
+        [org_name, ""],
+        ["Data Center Infrastructure Management", ""],
+        ["HISTORICAL TELEMETRY REPORT", ""],
+        ["Device Monitoring & Operational Reporting", ""],
+        ["REPORT INFORMATION", ""],
     ]
 
     schedule_name = getattr(getattr(context.job, "schedule", None), "name", None)
@@ -197,49 +206,44 @@ def _metadata_lines(context: GeneratorContext, dataset: ReportDataset) -> list[s
 
     template_name = getattr(getattr(context.job, "template", None), "name", None) or (getattr(context, "template_snapshot", None) or {}).get("name")
     title = str(schedule_name or raw_title or template_name or context.definition.code or dataset.title or "Report Export").strip()
-    lines.append(f"# Report Title    : {title}")
+    rows.append(["Report Type", "Telemetry Export" if is_telem_def else title])
 
     raw_subtitle = header_config.get("subtitle")
     if raw_subtitle and ("telemetry" in raw_subtitle.lower() or "ups" in raw_subtitle.lower()) and not is_telem_def:
         raw_subtitle = None
 
     resolved_subtitle = str(raw_subtitle or dataset.subtitle or "").strip()
-    if resolved_subtitle:
-        lines.append(f"# Subtitle        : {resolved_subtitle}")
-    if _as_bool(header_config.get("show_organization"), True):
-        org_name = getattr(context.organization, "name", None) or "Dhaka Bank"
-        lines.append(f"# Organization    : {org_name}")
-    if _as_bool(header_config.get("show_data_center"), True):
-        dc_name = getattr(context.data_center, "name", None) or "All"
-        lines.append(f"# Data Center     : {dc_name}")
-
     device_label = _device_scope_label(context, dataset)
-    if device_label and _as_bool(header_config.get("show_device"), True):
-        lines.append(f"# Device Scope    : {device_label}")
+    if _as_bool(header_config.get("show_device"), True):
+        rows.append(["Device Scope", device_label or "All Devices"])
 
     date_range = _date_range_label(context)
     if date_range and _as_bool(header_config.get("show_date_range"), True):
-        lines.append(f"# Date Range      : {date_range}")
+        rows.append(["Reporting Period", date_range])
 
     if _as_bool(header_config.get("show_generated_at"), True):
         gen_time = getattr(context, "local_generated_at", None) or getattr(context, "generated_at", None)
         gen_str = gen_time.strftime("%d %b %Y, %H:%M") if gen_time else "--"
-        lines.append(f"# Generated At    : {gen_str}")
-    if _as_bool(header_config.get("show_generated_by"), False):
+        rows.append(["Generated At", gen_str])
+    if _as_bool(header_config.get("show_generated_by"), False) or is_telem_def:
         gen_by = getattr(getattr(context.job, "requested_by", None), "full_name", None) or getattr(getattr(context.job, "requested_by", None), "username", None)
         if gen_by:
-            lines.append(f"# Generated By    : {gen_by}")
-    if _as_bool(header_config.get("show_timezone"), False) or _as_bool(footer_config.get("show_timezone"), False):
-        tz_name = getattr(context.timezone, "key", None) or getattr(context.timezone, "zone", None) or str(context.timezone)
+            rows.append(["Generated By", gen_by])
+    if _as_bool(header_config.get("show_timezone"), True) or _as_bool(footer_config.get("show_timezone"), False):
+        tz = getattr(context, "timezone", None) or timezone.get_current_timezone()
+        tz_name = getattr(tz, "key", None) or getattr(tz, "zone", None) or str(tz)
+        offset = (getattr(context, "local_generated_at", None) or timezone.now()).astimezone(tz).utcoffset()
+        total_minutes = int(offset.total_seconds() // 60) if offset else 0
+        sign = "+" if total_minutes >= 0 else "-"
+        hours, minutes = divmod(abs(total_minutes), 60)
+        tz_name = f"{tz_name} (UTC{sign}{hours:02d}:{minutes:02d})"
         if tz_name:
-            lines.append(f"# Timezone        : {tz_name}")
+            rows.append(["Timezone", tz_name])
 
     custom_text = str(footer_config.get("custom_text") or "").strip()
-    if custom_text and not is_alert_def:
-        lines.append(f"# Note            : {custom_text}")
-
-    lines.append("# ==========================================================================")
-    return lines
+    if custom_text:
+        rows.append(["Note", custom_text])
+    return rows
 
 
 def render_csv(dataset: ReportDataset, context: GeneratorContext, output_path: str, filename: str) -> RenderedArtifact:
@@ -254,16 +258,14 @@ def render_csv(dataset: ReportDataset, context: GeneratorContext, output_path: s
     include_metadata = _as_bool(config.get("csv_include_metadata"), False)
 
     with open(output_path, "w", encoding=encoding, errors="replace", newline="") as handle:
-        if include_metadata:
-            meta_lines = _metadata_lines(context, dataset)
-            for line in meta_lines:
-                handle.write(f"{line}\n")
-            if meta_lines:
-                handle.write("\n")
-
         writer = csv.writer(handle, delimiter=delimiter, quoting=csv.QUOTE_MINIMAL)
+        if include_metadata:
+            for row in _metadata_rows(context, dataset):
+                writer.writerow(row)
+            writer.writerow([])
+
         if include_headers:
-            writer.writerow(list(table.columns))
+            writer.writerow([_display_column_name(column) for column in table.columns])
         for row in table.rows:
             writer.writerow([format_cell_value(row.get(column)) for column in table.columns])
 

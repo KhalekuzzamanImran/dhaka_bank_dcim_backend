@@ -24,6 +24,10 @@ class PageLayout:
     table_leading: float = 11.0
 
 
+def _display_column_name(column: str) -> str:
+    return str(column or "").replace("_", " ").strip().lower().capitalize()
+
+
 def _resolve_page_layout(context: GeneratorContext, tables: list[ReportTable]) -> PageLayout:
     config = _get_template_config(context)
     orientation = str(config.get("pdf_orientation") or "portrait").strip().lower()
@@ -124,7 +128,8 @@ def _truncate_text(value: str, width: int) -> str:
 
 def _build_pretty_table_lines(table: ReportTable, *, max_width: int = 18, target_line_width: int = 100) -> list[str]:
     rows = [dict(row) for row in table.rows]
-    columns = list(table.columns)
+    raw_columns = list(table.columns)
+    columns = [_display_column_name(column) for column in raw_columns]
     if not columns:
         return [f"{table.title or table.name}", "(no columns)"]
 
@@ -132,8 +137,9 @@ def _build_pretty_table_lines(table: ReportTable, *, max_width: int = 18, target
     for column in columns:
         header_width = len(_safe_text(column))
         value_width = header_width
+        raw_column = raw_columns[len(widths)]
         for row in rows:
-            value_width = max(value_width, len(_safe_text(row.get(column))))
+            value_width = max(value_width, len(_safe_text(row.get(raw_column))))
         widths.append(min(max(header_width, value_width), max_width))
 
     # PDF uses a monospaced font for dataset tables, so we can stretch the ASCII
@@ -172,7 +178,7 @@ def _build_pretty_table_lines(table: ReportTable, *, max_width: int = 18, target
     lines = [border("+", "-", "+", "+"), row(columns), border("+", "=", "+", "+")]
     if rows:
         for entry in rows:
-            lines.append(row([_truncate_text(entry.get(column), width) for column, width in zip(columns, widths)]))
+            lines.append(row([_truncate_text(entry.get(raw_column), width) for raw_column, width in zip(raw_columns, widths)]))
     else:
         placeholder = "No data available"
         span = max(1, sum(widths) + (3 * len(widths)) - 2)
@@ -410,7 +416,7 @@ def _build_footer_lines(context: GeneratorContext) -> list[str]:
 
     lines: list[str] = []
     custom_text = str(footer_config.get("custom_text") or "").strip()
-    if custom_text and not is_alert_def:
+    if custom_text:
         lines.append(custom_text)
     if _as_bool(footer_config.get("show_confidentiality_note"), True) and not is_alert_def:
         lines.append("Confidential - Dhaka Bank DCIM report")

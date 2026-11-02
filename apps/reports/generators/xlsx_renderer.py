@@ -45,6 +45,11 @@ def _column_letter(index: int) -> str:
     return result or "A"
 
 
+def _display_column_name(column: str) -> str:
+    """Format a technical column key for the human-readable export header."""
+    return str(column or "").replace("_", " ").strip().lower().capitalize()
+
+
 def _excel_serial(value: datetime, tz=None) -> float:
     try:
         if not timezone.is_naive(value):
@@ -76,11 +81,13 @@ def _cell_xml(column_index: int, row_index: int, value, *, style_index: int = 0,
         if parsed_dt is not None:
             value = parsed_dt
     if isinstance(value, datetime):
-        return f'<c r="{cell_ref}" s="{style_index or 1}"><v>{_excel_serial(value, tz=tz)}</v></c>'
+        date_style = 13 if style_index == 10 else 12
+        return f'<c r="{cell_ref}" s="{date_style}"><v>{_excel_serial(value, tz=tz)}</v></c>'
     if isinstance(value, date):
         delta = datetime.combine(value, time.min) - _EXCEL_EPOCH
         serial = delta.days + (delta.seconds / 86400)
-        return f'<c r="{cell_ref}" s="{style_index or 1}"><v>{serial}</v></c>'
+        date_style = 13 if style_index == 10 else 12
+        return f'<c r="{cell_ref}" s="{date_style}"><v>{serial}</v></c>'
     text = _escape_formula_injection(str(value))
     style_attr = f' s="{style_index}"' if style_index else ""
     return f'<c r="{cell_ref}"{style_attr} t="inlineStr"><is><t xml:space="preserve">{escape(text)}</t></is></c>'
@@ -112,7 +119,7 @@ def _format_date_or_datetime(value, tz=None) -> str | None:
         else:
             parsed_d = parse_date(value)
             if parsed_d is not None:
-                return parsed_d.strftime("%Y-%m-%d")
+                return parsed_d.strftime("%d %b %Y")
             return value
 
     if isinstance(value, date) and not isinstance(value, datetime):
@@ -129,8 +136,8 @@ def _format_date_or_datetime(value, tz=None) -> str | None:
         except Exception:
             pass
         if value.hour == 0 and value.minute == 0 and value.second == 0 and value.microsecond == 0:
-            return value.strftime("%Y-%m-%d")
-        return value.strftime("%Y-%m-%d %H:%M")
+            return value.strftime("%d %b %Y")
+        return value.strftime("%d %b %Y, %H:%M")
 
     return str(value)
 
@@ -199,7 +206,7 @@ def _date_range_label(context: GeneratorContext) -> str | None:
     start_str = _format_date_or_datetime(start_value, tz=tz)
     end_str = _format_date_or_datetime(end_value, tz=tz)
     if start_str and end_str:
-        return f"{start_str} to {end_str}"
+        return f"{start_str} – {end_str}"
     return start_str or end_str
 
 
@@ -274,7 +281,7 @@ def _render_sheet(
     auto_size: bool = True,
 ) -> str:
     rows_xml = []
-    max_widths = [len(str(column)) for column in table.columns] if table.columns else [15]
+    max_widths = [len(_display_column_name(column)) for column in table.columns] if table.columns else [15]
     row_index = 1
 
     header_config = _template_config(context).get("report_header") if isinstance(_template_config(context).get("report_header"), dict) else {}
@@ -284,6 +291,7 @@ def _render_sheet(
     num_cols = max(1, len(table.columns))
     last_col = _column_letter(num_cols)
     tz = getattr(context, "timezone", None) or timezone.get_current_timezone()
+    merge_refs = []
 
     if is_primary and header_enabled:
         # Helper to fill remaining columns in a header row with clean white background
@@ -294,81 +302,51 @@ def _render_sheet(
                 cells.append(f'<c r="{col_let}{current_row}" s="{style}"/>')
             return "".join(cells)
 
-        # 1. Brand Banner
-        if _as_bool(banner_config.get("enabled"), True):
-            badge = str(banner_config.get("badge") or "DB").strip()[:3]
-            brand_label = str(banner_config.get("label") or getattr(context.organization, "name", None) or "Dhaka Bank DCIM").strip()
-            subtitle = str(banner_config.get("subtitle") or "Operational reporting").strip()
-            banner_text = f"[{badge}]  {brand_label} — {subtitle}"
-            banner_cells = f'<c r="A{row_index}" s="3" t="inlineStr"><is><t>{escape(banner_text)}</t></is></c>' + pad_header_row(row_index, 2, style=3)
-            rows_xml.append(f'<row r="{row_index}" ht="26" customHeight="1">{banner_cells}</row>')
-            if len(banner_text) > max_widths[0]:
-                max_widths[0] = min(len(banner_text), 38)
-            row_index += 1
-
-        # 2. Report Title
-        schedule_name = getattr(getattr(context.job, "schedule", None), "name", None)
         definition_code = str(getattr(context.definition, "code", "")).lower()
         is_telem_def = "telemetry" in definition_code
+        org = str(getattr(context.organization, "name", None) or "Dhaka Bank").upper()
 
-        raw_title = header_config.get("title")
-        if raw_title and "telemetry" in raw_title.lower() and not is_telem_def:
-            raw_title = None
-
-        job_template_snap = getattr(getattr(context, "job", None), "template_snapshot", {}) if isinstance(getattr(getattr(context, "job", None), "template_snapshot", None), dict) else {}
-        template_name = getattr(getattr(context.job, "template", None), "name", None) or job_template_snap.get("name")
-        title = str(schedule_name or raw_title or template_name or getattr(context.definition, "code", None) or dataset.title or "Report Export").strip()
-        if title and _as_bool(header_config.get("show_title"), True):
-            title_cells = f'<c r="A{row_index}" s="4" t="inlineStr"><is><t>{escape(title)}</t></is></c>' + pad_header_row(row_index, 2, style=8)
-            rows_xml.append(f'<row r="{row_index}" ht="22" customHeight="1">{title_cells}</row>')
-            if len(title) > max_widths[0]:
-                max_widths[0] = min(len(title), 38)
+        def merged_text(text: str, style: int, height: int) -> None:
+            nonlocal row_index
+            cells = f'<c r="A{row_index}" s="{style}" t="inlineStr"><is><t>{escape(text)}</t></is></c>' + pad_header_row(row_index, 2, style=8)
+            rows_xml.append(f'<row r="{row_index}" ht="{height}" customHeight="1">{cells}</row>')
+            merge_refs.append(f"A{row_index}:{last_col}{row_index}")
             row_index += 1
 
-        # 3. Subtitle
-        raw_subtitle = header_config.get("subtitle")
-        if raw_subtitle and ("telemetry" in raw_subtitle.lower() or "ups" in raw_subtitle.lower()) and not is_telem_def:
-            raw_subtitle = None
+        merged_text(org, 14, 28)
+        merged_text("Data Center Infrastructure Management", 15, 20)
+        merged_text("HISTORICAL TELEMETRY REPORT" if is_telem_def else str(dataset.title or "REPORT"), 14, 24)
+        merged_text("Device Monitoring & Operational Reporting" if is_telem_def else str(dataset.subtitle or ""), 15, 20)
+        merged_text("REPORT INFORMATION", 16, 20)
 
-        sub = str(raw_subtitle or dataset.subtitle or "").strip()
-        if sub and _as_bool(header_config.get("show_subtitle"), True):
-            sub_cells = f'<c r="A{row_index}" s="5" t="inlineStr"><is><t>{escape(sub)}</t></is></c>' + pad_header_row(row_index, 2, style=8)
-            rows_xml.append(f'<row r="{row_index}" ht="18" customHeight="1">{sub_cells}</row>')
-            if len(sub) > max_widths[0]:
-                max_widths[0] = min(len(sub), 38)
-            row_index += 1
-
-        # 4. Metadata key-value rows
         meta_items = []
-        if _as_bool(header_config.get("show_organization"), True):
-            org = getattr(context.organization, "name", None) or "Dhaka Bank"
-            meta_items.append(("Organization", org))
-
-        if _as_bool(header_config.get("show_data_center"), True):
-            dc = getattr(context.data_center, "name", None) or "All"
-            meta_items.append(("Data center", dc))
-
+        meta_items.append(("Report Type", "Telemetry Export" if is_telem_def else str(dataset.title or "Report Export")))
         if _as_bool(header_config.get("show_device"), True):
             dev = _device_scope_label(context, dataset)
             if dev:
-                meta_items.append(("Device", dev))
+                meta_items.append(("Device Scope", dev))
 
         if _as_bool(header_config.get("show_date_range"), True):
             dr = _date_range_label(context)
             if dr:
-                meta_items.append(("Date range", dr))
+                meta_items.append(("Reporting Period", dr))
 
         if _as_bool(header_config.get("show_generated_at"), True):
             gen_time = getattr(context, "local_generated_at", None) or getattr(context, "generated_at", None)
-            meta_items.append(("Generated at", gen_time.strftime("%d %b %Y, %H:%M") if gen_time else "--"))
+            meta_items.append(("Generated At", gen_time.strftime("%d %b %Y, %H:%M") if gen_time else "--"))
 
         if _as_bool(header_config.get("show_generated_by"), True):
             gen_by = getattr(getattr(context.job, "requested_by", None), "full_name", None) or getattr(getattr(context.job, "requested_by", None), "username", None)
             if gen_by:
-                meta_items.append(("Generated by", gen_by))
+                meta_items.append(("Generated By", gen_by))
 
-        if _as_bool(header_config.get("show_timezone"), False):
-            tz_name = getattr(context.timezone, "key", None) or getattr(context.timezone, "zone", None) or str(context.timezone)
+        if _as_bool(header_config.get("show_timezone"), True):
+            tz_name = getattr(tz, "key", None) or getattr(tz, "zone", None) or str(tz)
+            offset = (getattr(context, "local_generated_at", None) or timezone.now()).astimezone(tz).utcoffset()
+            total_minutes = int(offset.total_seconds() // 60) if offset else 0
+            sign = "+" if total_minutes >= 0 else "-"
+            hours, minutes = divmod(abs(total_minutes), 60)
+            tz_name = f"{tz_name} (UTC{sign}{hours:02d}:{minutes:02d})"
             if tz_name:
                 meta_items.append(("Timezone", tz_name))
 
@@ -389,13 +367,14 @@ def _render_sheet(
         row_index += 1
 
     header_table_row = row_index
-    header_cells = "".join(_cell_xml(idx, header_table_row, column, style_index=2) for idx, column in enumerate(table.columns, start=1))
+    header_cells = "".join(_cell_xml(idx, header_table_row, _display_column_name(column), style_index=2) for idx, column in enumerate(table.columns, start=1))
     rows_xml.append(f'<row r="{header_table_row}" ht="24" customHeight="1">{header_cells}</row>')
     row_index += 1
 
     for row in table.rows:
         cells = []
-        row_style = 3 if table.name == "Report Info" and row.get("section") in {"banner", "report"} else 0
+        is_alternate_row = (row_index - header_table_row) % 2 == 0
+        numeric_columns = {"value"}
         for idx, column in enumerate(table.columns, start=1):
             value = row.get(column)
             if value is None:
@@ -420,7 +399,13 @@ def _render_sheet(
                 val_str = str(value)
             if len(val_str) > max_widths[idx - 1]:
                 max_widths[idx - 1] = len(val_str)
-            cells.append(_cell_xml(idx, row_index, value, style_index=row_style, tz=tz))
+            if table.name == "Report Info" and row.get("section") in {"banner", "report"}:
+                cell_style = 3
+            elif column in numeric_columns and isinstance(value, (int, float)) and not isinstance(value, bool):
+                cell_style = 11 if is_alternate_row else 9
+            else:
+                cell_style = 10 if is_alternate_row else 0
+            cells.append(_cell_xml(idx, row_index, value, style_index=cell_style, tz=tz))
         rows_xml.append(f'<row r="{row_index}">{"".join(cells)}</row>')
         row_index += 1
 
@@ -431,14 +416,14 @@ def _render_sheet(
     sheet_views = ""
     if freeze_header:
         sheet_views = f"""  <sheetViews>
-    <sheetView tabSelected="1" workbookViewId="0">
+      <sheetView tabSelected="1" workbookViewId="0" showGridLines="0">
       <pane ySplit="{header_table_row}" topLeftCell="A{header_table_row + 1}" activePane="bottomLeft" state="frozen"/>
       <selection pane="bottomLeft" activeCell="A{header_table_row + 1}" sqref="A{header_table_row + 1}"/>
     </sheetView>
   </sheetViews>"""
     else:
         sheet_views = """  <sheetViews>
-    <sheetView tabSelected="1" workbookViewId="0"/>
+        <sheetView tabSelected="1" workbookViewId="0" showGridLines="0"/>
   </sheetViews>"""
 
     cols_xml = ""
@@ -452,6 +437,9 @@ def _render_sheet(
     auto_filter_xml = ""
     if auto_filter and last_row > header_table_row and table.columns:
         auto_filter_xml = f'\n  <autoFilter ref="A{header_table_row}:{last_col}{last_row}"/>'
+    merge_xml = ""
+    if merge_refs:
+        merge_xml = f'\n  <mergeCells count="{len(merge_refs)}">' + "".join(f'<mergeCell ref="{ref}"/>' for ref in merge_refs) + "</mergeCells>"
 
     return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
@@ -460,7 +448,7 @@ def _render_sheet(
   <sheetFormatPr defaultRowHeight="15"/>{cols_xml}
   <sheetData>
     {''.join(rows_xml)}
-  </sheetData>{auto_filter_xml}
+  </sheetData>{merge_xml}{auto_filter_xml}
 </worksheet>
 """
 
@@ -608,9 +596,9 @@ def render_xlsx(dataset: ReportDataset, context: GeneratorContext, output_path: 
             """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <numFmts count="1">
-    <numFmt numFmtId="164" formatCode="yyyy-mm-dd hh:mm:ss"/>
+    <numFmt numFmtId="164" formatCode="dd mmm yyyy, hh:mm:ss"/>
   </numFmts>
-  <fonts count="8">
+  <fonts count="11">
     <font><sz val="11"/><name val="Calibri"/><family val="2"/></font>
     <font><b/><sz val="11"/><name val="Calibri"/><family val="2"/></font>
     <font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/><family val="2"/></font>
@@ -619,13 +607,17 @@ def render_xlsx(dataset: ReportDataset, context: GeneratorContext, output_path: 
     <font><i/><color rgb="FF4B5563"/><sz val="10"/><name val="Calibri"/><family val="2"/></font>
     <font><b/><color rgb="FF374151"/><sz val="10"/><name val="Calibri"/><family val="2"/></font>
     <font><color rgb="FF1F2937"/><sz val="10"/><name val="Calibri"/><family val="2"/></font>
+    <font><b/><color rgb="FF0B1F3A"/><sz val="20"/><name val="Calibri"/><family val="2"/></font>
+    <font><color rgb="FF4B5563"/><sz val="11"/><name val="Calibri"/><family val="2"/></font>
+    <font><b/><color rgb="FF0B1F3A"/><sz val="12"/><name val="Calibri"/><family val="2"/></font>
   </fonts>
-  <fills count="5">
+  <fills count="6">
     <fill><patternFill patternType="none"/></fill>
     <fill><patternFill patternType="gray125"/></fill>
-    <fill><patternFill patternType="solid"><fgColor rgb="FF0073FF"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF0B1F3A"/><bgColor indexed="64"/></patternFill></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FFE8F1FF"/><bgColor indexed="64"/></patternFill></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FFFFFFFF"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFF8FAFC"/><bgColor indexed="64"/></patternFill></fill>
   </fills>
   <borders count="2">
     <border><left/><right/><top/><bottom/><diagonal/></border>
@@ -640,7 +632,7 @@ def render_xlsx(dataset: ReportDataset, context: GeneratorContext, output_path: 
   <cellStyleXfs count="1">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>
   </cellStyleXfs>
-  <cellXfs count="9">
+  <cellXfs count="17">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
     <xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
     <xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
@@ -650,6 +642,14 @@ def render_xlsx(dataset: ReportDataset, context: GeneratorContext, output_path: 
     <xf numFmtId="0" fontId="6" fillId="4" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
     <xf numFmtId="0" fontId="7" fillId="4" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
     <xf numFmtId="0" fontId="0" fillId="4" borderId="0" xfId="0" applyFill="1"/>
+    <xf numFmtId="0" fontId="0" fillId="4" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="5" borderId="0" xfId="0" applyFill="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="5" borderId="0" xfId="0" applyFill="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
+    <xf numFmtId="164" fontId="0" fillId="4" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
+    <xf numFmtId="164" fontId="0" fillId="5" borderId="0" xfId="0" applyNumberFormat="1" applyFill="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="8" fillId="4" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="9" fillId="4" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="10" fillId="4" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
   </cellXfs>
 </styleSheet>
 """,

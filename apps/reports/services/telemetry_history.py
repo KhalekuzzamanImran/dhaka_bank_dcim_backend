@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import date, datetime
 from datetime import timedelta
 from functools import lru_cache
+import math
 
 from django.db import connection
 from django.utils import timezone
@@ -21,6 +22,58 @@ MIRROR_AGGREGATES = {
     "telemetry_1h": "telemetry_1h",
     "telemetry_1d": "telemetry_1d",
 }
+
+
+def _metric_family(metric_code: str) -> str:
+    code = str(metric_code or "").strip().lower()
+    if any(token in code for token in ("humidity", "humid", "relative_humidity", "rh")):
+        return "humidity"
+    if any(token in code for token in ("temperature", "temp", "dew_point", "dewpoint")):
+        return "temperature"
+    if any(token in code for token in ("fan_speed", "load_percent", "load_percentage", "utilization", "percent")):
+        return "percentage"
+    return "generic"
+
+
+def _is_exportable_value(metric: MetricDefinition, value) -> bool:
+    if isinstance(value, bool):
+        return True
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return True
+    if not math.isfinite(numeric_value) or abs(numeric_value) >= 1_000_000:
+        return False
+
+    family = _metric_family(metric.code)
+    if family == "humidity" or family == "percentage":
+        return 0 <= numeric_value <= 100
+    if family == "temperature":
+        return -50 <= numeric_value <= 80
+    return True
+
+
+def _format_export_value(metric: MetricDefinition, value):
+    if value is None or isinstance(value, bool):
+        return value
+    if metric.data_type == MetricDataType.INTEGER:
+        return int(round(float(value)))
+    if metric.data_type == MetricDataType.FLOAT:
+        return round(float(value), 2)
+    return value
+
+
+def _format_export_unit(metric: MetricDefinition) -> str | None:
+    unit = metric.unit
+    if not unit:
+        return unit
+    family = _metric_family(metric.code)
+    normalized = str(unit).strip().upper()
+    if family == "temperature" and normalized in {"C", "°C"}:
+        return "°C"
+    if family == "humidity" and normalized in {"%", "%RH", "RH"}:
+        return "%RH"
+    return unit
 
 
 def _parse_date_range(parameters: dict | None):
@@ -313,6 +366,10 @@ def _decorate_rows(*, rows: list[dict], devices_by_id: dict[str, Device], metric
             if value is None:
                 value = row.get("value_text") or row.get("raw_value_text")
 
+        if value is not None and not _is_exportable_value(metric, value):
+            continue
+        value = _format_export_value(metric, value)
+
         payload.append(
             {
                 "timestamp": row.get("time"),
@@ -334,7 +391,7 @@ def _decorate_rows(*, rows: list[dict], devices_by_id: dict[str, Device], metric
                 "metric_code": metric.code,
                 "metric_name": metric.name,
                 "value": value,
-                "unit": metric.unit,
+                "unit": _format_export_unit(metric),
                 "quality": row.get("quality") or ("BUCKETED" if aggregate else None),
                 "source": row.get("source"),
             }
